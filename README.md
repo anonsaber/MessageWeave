@@ -1,4 +1,4 @@
-# stalwart-bot
+# MessageWeave
 
 一个把 **Stalwart 邮箱**接入 **Telegram** 的个人邮件助手：新邮件来了在 Telegram 提醒你，还能按需查看/总结邮件内容。
 

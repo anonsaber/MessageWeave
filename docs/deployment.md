@@ -1,4 +1,4 @@
-# Stalwart-bot 部署方案（通用 HTTPS-only Docker）
+# MessageWeave 部署方案（通用 HTTPS-only Docker）
 
 > 部署目标：**通用 Docker 容器平台**（任何能跑 Docker 的 VPS / 云主机 / k8s / 自托管容器平台），
 > **不绑定** Cloud Run / Lambda / CF Workers / Deno Deploy 等任何具体平台（`NG-SERVERLESS-BIND`）。
@@ -58,7 +58,7 @@
 ## 3. Rust 多阶段构建与运行
 
 ### 3.1 构建阶段
-（保留既有 rust:bookworm 构建 + 缓存分层约定；产物为单个静态编译二进制 `stalwart-bot`）
+（保留既有 rust:bookworm 构建 + 缓存分层约定；产物为单个静态编译二进制 `message-weave`）
 
 > **实现现状**（阶段0 + 阶段1，`ARCH-STAGE0`/`ARCH-DEPS-STAGE0`/`ARCH-DEPS-STAGE1`）：自动依赖含 `axum 0.8`（单端口入口）/`serde`/`serde_json`/`thiserror`/`secrecy`/`subtle`（常数时间比较）/`url`/`tokio`/`tracing` 等；**`jmap-client =0.4.2` 已引入**（阶段1，`default-features=false, features=["async","rustls"]`，**禁用 WebSocket feature**，`C-NO-LONG-CONN`）；三条入口路由的鉴权已 fail-closed 落地（`R1`/`SAF-AUTH-*`），**JMAP 只读 adapter（G1/D-G1-1）代码已实现、待真实 `cargo test -- --ignored jmap::` 验证**，其余业务体仍为**占位**；`teloxide`(阶段2)/`redis`(阶段3/4)/`reqwest`(阶段3.5) 尚未引入；配置为环境变量手工解析（`ARCH-CONFIG-ENV`，无 figment/TOML）。CI 门禁见 §8（`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`，在 Debian 容器内，`GATE-P0`）。
 
@@ -150,8 +150,8 @@ TLS 必须由 Cloudflare 或受信任反向代理终结；代理到容器的链�
 
 | RUN_MODE | 命令 | 说明 |
 |---|---|---|
-| `webhook`（默认） | `stalwart-bot webhook`（或单一入口按 env 分派） | 单进程：TG Webhook handler + JMAP Push 回调 handler + Redis Streams worker + `/reconcile` + health |
-| `reconcile` | `stalwart-bot reconcile` | 一次性对账补差后 exit，由外部调度器/容器任务触发 |
+| `webhook`（默认） | `message-weave webhook`（或单一入口按 env 分派） | 单进程：TG Webhook handler + JMAP Push 回调 handler + Redis Streams worker + `/reconcile` + health |
+| `reconcile` | `message-weave reconcile` | 一次性对账补差后 exit，由外部调度器/容器任务触发 |
 
 ### 6.1 入口路由（单端口 `PORT`，全部经平台 HTTPS URL 入站）
 ```
@@ -237,7 +237,7 @@ GET  /ready          ⚠️ 阶段0 为**占位 200**（ARCH-READY-PLACEHOLDER�
 ```yaml
 services:
   bot:
-    image: stalwart-bot:latest
+    image: messageweave:latest
     ports:
       - "8080:8080"        # 平台 ingress/反代映射 HTTPS → 8080（C-HTTPS-INBOUND）
     environment:
@@ -245,7 +245,7 @@ services:
       RUN_MODE: webhook
       # BOT_TOKEN / JMAP_* / CHAT_ALLOWLIST / REDIS_URL
       # RECONCILE_TOKEN / TG_WEBHOOK_SECRET / JMAP_PUSH_VERIFICATION（三入口鉴权，均为必填 SAF-AUTH-*）
-    healthcheck: { test: ["CMD", "stalwart-bot", "health", "--addr", "127.0.0.1:8080"], interval: 30s }
+    healthcheck: { test: ["CMD", "message-weave", "health", "--addr", "127.0.0.1:8080"], interval: 30s }
     # REDIS_URL 指向外部、已认证的 Redis；不在此 compose 中运行 Redis。
 ```
 
@@ -393,8 +393,8 @@ npx wrangler secret put LB_HEALTH_TTL_MS        # 默认 30000ms
 
 ```json
 [
-  {"url":"https://stalwart-bot-a.example.com","weight":100},
-  {"url":"https://stalwart-bot-b.example.com","weight":100}
+  {"url":"https://messageweave-a.example.com","weight":100},
+  {"url":"https://messageweave-b.example.com","weight":100}
 ]
 ```
 

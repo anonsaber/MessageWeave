@@ -11,10 +11,10 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --create-home --home-dir /nonroot --shell /usr/sbin/nologin stalwart-bot
-COPY --from=builder /build/target/release/stalwart-bot /usr/local/bin/stalwart-bot
-USER stalwart-bot
+    && useradd --system --create-home --home-dir /nonroot --shell /usr/sbin/nologin messageweave
+COPY --from=builder /build/target/release/message-weave /usr/local/bin/message-weave
+USER messageweave
 ENV PORT=8080 \
     RUN_MODE=webhook
 EXPOSE 8080
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/stalwart-bot"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/message-weave"]

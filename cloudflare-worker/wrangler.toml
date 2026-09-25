@@ -1,5 +1,5 @@
 /**
- * Wrangler 示例配置 — Stalwart-bot 多实例 LB/HA（ARCH-LB-WORKER / deployment.md §10）。
+ * Wrangler 示例配置 — MessageWeave 多实例 LB/HA（ARCH-LB-WORKER / deployment.md §10）。
  *
  * 安全约束（AGENTS.md §2/§4，稳定 ID）：
  * - 后端 origin 仅允许 https（C-HTTPS-INBOUND / C-HTTPS-URL）；env 校验时拒绝
@@ -16,7 +16,7 @@
  *   npx wrangler secret put BACKEND_ORIGINS_JSON    # 见下方示例格式
  *   npx wrangler deploy
  */
-name = "stalwart-bot-lb"
+name = "messageweave-lb"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat_v2"]

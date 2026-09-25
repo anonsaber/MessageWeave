@@ -1,5 +1,5 @@
 /**
- * Cloudflare Worker 入口 — Stalwart-bot 多实例 LB/HA（ARCH-LB-WORKER / deployment.md §10）。
+ * Cloudflare Worker 入口 — MessageWeave 多实例 LB/HA（ARCH-LB-WORKER / deployment.md §10）。
  *
  * 稳定 ID（AGENTS.md §5/§7）：
  * - SAF-LB-PASSTHRU：透传 headers/body（含鉴权头），不做鉴权改写。

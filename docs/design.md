@@ -1,7 +1,7 @@
 # Stalwart JMAP ↔ Telegram Bot — Rust 方案设计
 
 > 状态：**调研与方案设计**（未写代码）
-> 作者：Cowork（team: stalwart-bot）
+> 作者：Cowork（team: MessageWeave）
 > 日期：2026-09-21
 > 目标读者：Codex CLI（lead）、后续 AI coding agent、最终用户评审
 >
@@ -258,7 +258,7 @@ teloxide = { version = "0.17", features = [
 - **不做什么**：不定义多态配置注册表、不预先抽象"渠道能力矩阵"、不建 plugins 机制；按需再演进（YAGNI）。
 
 ### 5.3 运行模型（短请求，无长连接）
-- 单一二进制 `stalwart-bot`，`#[tokio::main]`。
+- 单一二进制 `message-weave`，`#[tokio::main]`。
 - 启动时：
   1. 加载配置（`config::Config`）。
   2. 构造 `JmapService`（`Client::connect` 完成 session 解析、account_id 缓存、mailbox role→id 映射预热）；sinceState 从外部 Redis 恢复（`MOD-SINCESTATE`）。

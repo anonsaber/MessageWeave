@@ -1,4 +1,4 @@
-# Stalwart-bot Cloudflare Worker（ARCH-LB-WORKER）
+# MessageWeave Cloudflare Worker（ARCH-LB-WORKER）
 
 统一 HTTPS 入口 + 多后端 origin 故障转移（HA/LB 子项目）。
 **透传模型**：Worker 不感知业务，原样转发请求到多个 https 后端 origin；仅「超时 / 5xx」做有界故障转移。
@@ -96,6 +96,6 @@ npx wrangler deploy
 健康探针：
 
 ```bash
-curl https://lb.stalwart-bot.example/healthz
+curl https://lb.messageweave.example/healthz
 # => {"status":"ok","available":2,"total":2,"backends":[{"origin":"https://a.example","up":true,"status":200},...]}
 ```
