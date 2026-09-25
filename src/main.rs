@@ -24,6 +24,9 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> Result<(), error::BotError> {
     tracing_subscriber::fmt().with_env_filter("info").init();
+    // reqwest/JMAP and Redis can activate different rustls crypto backends. Install
+    // ring explicitly before any client is constructed to avoid rustls provider panic.
+    let _ = install_rustls_provider();
     let port = std::env::var("PORT")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -174,4 +177,21 @@ async fn main() -> Result<(), error::BotError> {
     .merge(web::router());
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn install_rustls_provider() -> bool {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .is_ok()
+        || rustls::crypto::CryptoProvider::get_default().is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::install_rustls_provider;
+
+    #[test]
+    fn rustls_provider_is_installable_without_network() {
+        assert!(install_rustls_provider());
+    }
 }
