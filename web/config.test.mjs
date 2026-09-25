@@ -5,6 +5,7 @@ import vm from "node:vm";
 
 const html = readFileSync(new URL("./index.html", import.meta.url), "utf8");
 const source = readFileSync(new URL("./config.js", import.meta.url), "utf8");
+const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 
 class FakeElement {
   constructor(hidden = false) {
@@ -134,4 +135,14 @@ test("status errors keep the authorization form hidden until readiness is confir
   assert.equal(elements.get("auth-card").hidden, true);
   assert.equal(elements.get("config-panel").hidden, true);
   assert.match(elements.get("setup-message").textContent, /授权入口保持隐藏/);
+});
+
+test("setup card inherits desktop layout width and follows the existing mobile layout width", () => {
+  const setupRules = [...styles.matchAll(/\.setup-panel[^{}]*\{([^}]*)\}/g)].map((match) => match[1]);
+  const setupDeclarations = setupRules.join("\n");
+
+  assert.doesNotMatch(setupDeclarations, /\b(?:width|max-width)\s*:/);
+  assert.match(styles, /\.layout\s*\{[^}]*width:\s*min\(960px,\s*calc\(100% - 40px\)\)/);
+  assert.match(styles, /@media \(max-width: 720px\)\s*\{[\s\S]*?\.layout\s*\{[^}]*width:\s*calc\(100% - 32px\)/);
+  assert.match(styles, /\.auth-panel\s*\{[^}]*padding:\s*27px 29px 25px/);
 });
