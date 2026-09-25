@@ -681,7 +681,7 @@ fn unix_now() -> i64 {
         .map_or(0, |duration| duration.as_secs() as i64)
 }
 
-const CONFIG_AAD: &[u8] = b"stalwart-bot/config:business/v1";
+const CONFIG_AAD: &[u8] = b"message-weave/config:business/v1";
 
 fn encrypt_config(
     key: Option<&[u8; 32]>,

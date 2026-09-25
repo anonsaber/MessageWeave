@@ -48,7 +48,7 @@
 
 ### 1.3 调研依据
 - [`stalwartlabs/jmap-client`](https://github.com/stalwartlabs/jmap-client)（main 分支，截至本次调研）
-- 项目目录：`/home/okabe/Repo/stalwart-bot/`（greenfield，首次构建需装 Rust 工具链，见 §10.0 与 AGENTS.md）
+- 项目目录：`/home/okabe/Repo/MessageWeave/`（greenfield，首次构建需装 Rust 工具链，见 §10.0 与 AGENTS.md）
 
 ---
 
@@ -324,7 +324,7 @@ TG /read 3 → handler 取会话里的 folder+page 游标
 
 目标 cargo 工程结构（**阶段0 已落地** `main.rs`/`config.rs`/`error.rs`/`domain.rs`/`channel.rs`/`notify.rs`；下方 `jmap/`、`llm/`、`channel/telegram/`、`notify/*` 为**后续阶段目标**，详见 §10）：
 ```
-stalwart-bot/
+message-weave/
 ├── Cargo.toml
 ├── .gitignore                    # 排除 target/ 等（阶段0 P0 门禁 GATE-P0）
 ├── src/
@@ -805,5 +805,5 @@ LlmService.call(kind: LlmKind, input, ctx)
 - `stalwartlabs/jmap-client` main 分支：`src/lib.rs`（URI/Method/DataType/Error）、`src/client.rs`（认证/连接/event_source）、`src/email/`、`src/email_submission/helpers.rs`、`src/event_source/`、`src/push_subscription/`（create/verify/update_types/destroy）、`src/core/error.rs`、`Cargo.toml`、`README.md`、`examples/`。
 - crates.io：`teloxide` 0.17（features 列表）、`jmap-client` 元数据。
 - `stalwartlabs/mail-server` main 分支：`crates/common/src/auth/credential.rs`（Password/AppPassword/ApiKey）、`crates/http/src/auth/authenticate.rs`（AccessScope 权限裁剪）、`crates/jmap/src/push/`、`api/v1/openapi.yml`（`securitySchemes`: basicAuth/bearerAuth/liveToken 60s）。
-- 项目目录 `/home/okabe/Repo/stalwart-bot/`：greenfield（首次构建需 `rustup`）。
+- 项目目录 `/home/okabe/Repo/MessageWeave/`：greenfield（首次构建需 `rustup`）。
 - 部署/平台相关调研依据（lambda_runtime/worker/aws-sdk 等）见 deployment.md。
