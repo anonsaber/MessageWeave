@@ -80,6 +80,30 @@ test("Worker: business config PUT is proxied with the session bearer and empty 2
   }
 });
 
+test("Worker: public setup status is proxied without an authorization header", async () => {
+  const restore = stubFetch(async (url, init) => {
+    assert.match(url, /^https:\/\/(a|b)\.example\/api\/status$/);
+    assert.equal(init.method, "GET");
+    assert.equal(new Headers(init.headers).has("authorization"), false);
+    return new Response(JSON.stringify({
+      ready: false,
+      mode: "configuration-setup",
+      missing: ["REDIS_URL"],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  });
+  try {
+    const res = await handleFetch(new Request("https://lb.example/api/status"), makeEnv());
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), {
+      ready: false,
+      mode: "configuration-setup",
+      missing: ["REDIS_URL"],
+    });
+  } finally {
+    restore();
+  }
+});
+
 test("Worker: misconfigured origins => 503 fail-closed (no env leak)", async () => {
   const res = await handleFetch(
     new Request("https://lb.example/reconcile", { method: "POST", body: "{}" }),

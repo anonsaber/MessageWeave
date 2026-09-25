@@ -60,6 +60,10 @@ h1 { margin-bottom: 12px; font-size: clamp(29px, 5vw, 40px); line-height: 1.16; 
 h2 { margin-bottom: 0; font-size: 20px; line-height: 1.3; letter-spacing: -.025em; }
 h3 { margin-bottom: 4px; color: #35364e; font-size: 15px; }
 .panel-copy { max-width: 760px; margin-bottom: 22px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.setup-panel { max-width: 720px; }
+.setup-panel .panel-copy { margin-bottom: 14px; }
+.setup-missing { margin: 0 0 17px; padding: 12px 14px; border: 1px solid #f2e9c8; border-radius: 8px; background: #fffbef; color: #796132; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.setup-privacy { margin: 0 0 17px; color: #858697; font-size: 12px; line-height: 1.65; }
 code { padding: 2px 5px; border-radius: 4px; background: #f1f0fa; color: #534a9c; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
 .auth-form > label, .field > label, .setting-card > label { display: block; margin-bottom: 7px; color: #47485f; font-size: 12px; font-weight: 700; }
 .token-row { display: flex; gap: 10px; }

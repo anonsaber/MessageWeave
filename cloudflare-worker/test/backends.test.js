@@ -44,7 +44,7 @@ test("BACKEND_ORIGINS_JSON parses, dedups, validates all entries", () => {
 
 test("route safelist excludes /healthz and unknown paths (C-LB-SINGLE-REG-URL)", () => {
   for (const r of [
-    "/", "/assets/config.js", "/assets/styles.css", "/ready", "/webhook/tg", "/push/jmap", "/reconcile",
+    "/", "/assets/config.js", "/assets/styles.css", "/api/status", "/ready", "/webhook/tg", "/push/jmap", "/reconcile",
     "/api/config", "/api/business-config", "/api/admin/session", "/api/admin/session/revoke",
   ]) {
     assert.ok(PROXIED_ROUTES.includes(r), `proxied: ${r}`);

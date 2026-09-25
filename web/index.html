@@ -22,17 +22,30 @@
     </header>
 
     <main class="layout">
-      <section class="intro" aria-labelledby="page-title">
+      <section id="intro" class="intro" aria-labelledby="page-title" hidden>
         <p class="eyebrow">服务管理 <span>·</span> CONFIGURATION</p>
         <h1 id="page-title">管理你的服务连接</h1>
         <p class="intro-copy">配置 JMAP、Telegram、LLM、访问白名单和运行参数。业务配置保存在外部 Redis，成功保存后会立即热加载。</p>
       </section>
 
-      <div id="notice" class="notice notice-info" role="status" aria-live="polite">
+      <div id="notice" class="notice notice-info" role="status" aria-live="polite" hidden>
         使用 Redis 管理凭据创建短期管理会话。
       </div>
 
-      <section id="auth-card" class="panel auth-panel" aria-labelledby="auth-title">
+      <section id="setup-card" class="panel auth-panel setup-panel" aria-labelledby="setup-title" aria-live="polite">
+        <div class="panel-heading">
+          <div class="icon-tile icon-violet" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 3 4 7v5c0 4.4 3.1 7.6 8 9 4.9-1.4 8-4.6 8-9V7l-8-4Z"/><path d="M12 8v5M12 16h.01"/></svg>
+          </div>
+          <div><p class="eyebrow">配置引导</p><h2 id="setup-title">服务启动配置</h2></div>
+        </div>
+        <p id="setup-message" class="panel-copy">正在检查服务启动配置…</p>
+        <p id="setup-missing" class="setup-missing" hidden></p>
+        <p class="setup-privacy">启动所需密钥请在部署环境中配置。密钥不会在页面保存或回显。</p>
+        <button id="status-retry-button" class="button button-quiet" type="button">重新检查</button>
+      </section>
+
+      <section id="auth-card" class="panel auth-panel" aria-labelledby="auth-title" hidden>
         <div class="panel-heading">
           <div class="icon-tile icon-violet" aria-hidden="true">
             <svg viewBox="0 0 24 24"><path d="M7.5 10V7.5a4.5 4.5 0 0 1 9 0V10M6 10h12v10H6z"/><path d="M12 14v2"/></svg>
@@ -140,7 +153,7 @@
         </section>
       </section>
 
-      <aside class="privacy-note"><span class="privacy-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 2.8 8 7 10 4.2-2 7-5.5 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg></span><p><strong>密钥不会回显或持久化到浏览器。</strong>业务配置只提交至同源 API，并由后端加密写入 Redis；本页面不读取邮箱内容、不使用本地文件或数据库。</p></aside>
+      <aside id="privacy-note" class="privacy-note" hidden><span class="privacy-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 2.8 8 7 10 4.2-2 7-5.5 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg></span><p><strong>密钥不会回显或持久化到浏览器。</strong>业务配置只提交至同源 API，并由后端加密写入 Redis；本页面不读取邮箱内容、不使用本地文件或数据库。</p></aside>
     </main>
 
     <footer class="footer"><span>STALWART BOT</span><span>配置由你的服务端管理</span></footer>

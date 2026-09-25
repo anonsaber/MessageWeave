@@ -10,6 +10,7 @@ export const SAFE_ROUTES = Object.freeze([
   "/",
   "/assets/config.js",
   "/assets/styles.css",
+  "/api/status",
   "/api/config",
   "/api/business-config",
   "/api/admin/session",

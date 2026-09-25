@@ -158,6 +158,7 @@ TLS 必须由 Cloudflare 或受信任反向代理终结；代理到容器的链�
 # 平台公网 URL: https://bot.example.com  → 反代 → 容器 127.0.0.1:8080
 GET  /                  业务配置与运行参数管理 SPA
 GET  /assets/config.js  SPA 脚本；GET /assets/styles.css  SPA 样式
+GET  /api/status              公开启动状态；只返回 ready/mode/missing 环境变量名
 POST /api/admin/session       Bearer Redis ACL 密码；成功返回 900 秒 admin session
 POST /api/admin/session/revoke Bearer admin session；成功返回 204
 GET|PUT /api/config           Bearer admin session 或 WORKER_TOKEN；Redis 错误返回 503
@@ -338,7 +339,7 @@ Stalwart PushSub ────┼─▶ https://lb.<you>.workers.dev      ← 唯
 
 ### 10.4 路由与故障转移
 
-- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 `GET /`、SPA 静态资源、`GET|PUT /api/config`、`PUT /api/business-config`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`POST /webhook/tg`、`POST /push/jmap`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
+- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 `GET /`、SPA 静态资源、`GET /api/status`、`GET|PUT /api/config`、`PUT /api/business-config`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`POST /webhook/tg`、`POST /push/jmap`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
 - **健康聚合（`MOD-HEALTH-AGG`）**：Worker 自行承载 `GET /healthz`，按 TTL 缓存（默认 30s，`LB_HEALTH_TTL_MS` 可调）探测各后端 `/healthz`，返回 `{status, available, total, backends:[{origin,up,status}]}`；≥1 后端 up → 200，全 down → 503。`/ready` 仍**透传**给后端，由 `GATE-READY-DEPS` 承担真实依赖探测。
 - **故障转移（`proxyWithFailover`）**：每次请求最多 `min(LB_MAX_ATTEMPTS, origins.length)` 次尝试；**仅**超时（AbortError）或 5xx 触发换下一个 origin；4xx/2xx/3xx 直接返回；默认 `LB_MAX_ATTEMPTS=2`（首次 + 1 次故障转移）。
 - **随机分摊**：起点 origin 按 `Math.random` 随机化，实现双活；单 origin 配置时退化为确定性。

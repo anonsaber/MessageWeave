@@ -24,7 +24,13 @@
 
   const bootstrapInput = document.querySelector("#bootstrap-input");
   const authForm = document.querySelector("#auth-form");
+  const intro = document.querySelector("#intro");
   const authCard = document.querySelector("#auth-card");
+  const setupCard = document.querySelector("#setup-card");
+  const setupMessage = document.querySelector("#setup-message");
+  const setupMissing = document.querySelector("#setup-missing");
+  const statusRetryButton = document.querySelector("#status-retry-button");
+  const privacyNote = document.querySelector("#privacy-note");
   const configPanel = document.querySelector("#config-panel");
   const businessForm = document.querySelector("#business-form");
   const businessFields = document.querySelector("#business-fields");
@@ -50,6 +56,7 @@
   let expiryTimer = 0;
   let busyAction = "";
   let runtimeLoaded = false;
+  let setupMode = true;
 
   class ApiError extends Error {
     constructor(status, message) {
@@ -59,6 +66,7 @@
   }
 
   function showNotice(kind, message) {
+    notice.hidden = false;
     notice.className = `notice notice-${kind}`;
     notice.textContent = message;
     notice.setAttribute("role", kind === "error" ? "alert" : "status");
@@ -122,27 +130,71 @@
   }
 
   async function showSetupStatus() {
+    showSetupView("正在检查服务启动配置…");
+    statusRetryButton.disabled = true;
+    statusRetryButton.textContent = "正在检查…";
     try {
       const status = await request("/api/status", "GET", undefined, "");
-      if (status && status.ready === false) {
-        const missing = Array.isArray(status.missing) ? status.missing.join("、") : "启动配置";
-        showNotice("error", `服务处于配置引导模式。请在部署环境设置：${missing}；密钥不会在页面保存或回显。`);
+      if (status && status.ready === true) {
+        setupMode = false;
+        setupCard.hidden = true;
+        notice.hidden = false;
+        intro.hidden = false;
+        authCard.hidden = false;
+        configPanel.hidden = true;
+        privacyNote.hidden = false;
+        showNotice("info", "使用 Redis 管理凭据创建短期管理会话。");
+        return;
       }
+      const isSetup = status && status.ready === false && status.mode === "configuration-setup";
+      if (isSetup) {
+        const knownMissing = Array.isArray(status.missing)
+          ? status.missing.filter((name) => name === "REDIS_URL" || name === "CONFIG_ENCRYPTION_KEY")
+          : [];
+        const message = knownMissing.length
+          ? "服务处于配置引导模式。请在部署环境补齐以下启动变量："
+          : "服务处于配置引导模式，但状态接口未返回缺少的启动变量名称。";
+        showSetupView(message, knownMissing);
+        return;
+      }
+      showSetupView("无法确认服务是否已完成启动配置。管理授权入口保持隐藏，请重新检查服务状态。");
     } catch {
-      // The regular connection flow reports unavailable services without exposing details.
+      showSetupView("暂时无法读取服务启动状态。为保护管理凭据，授权入口保持隐藏；请确认服务可用后重新检查。");
+    } finally {
+      statusRetryButton.disabled = false;
+      statusRetryButton.textContent = "重新检查";
     }
   }
 
+  function showSetupView(message, missing = []) {
+    setupMode = true;
+    setupMessage.textContent = message;
+    setupMissing.textContent = missing.join("、");
+    setupMissing.hidden = missing.length === 0;
+    setupCard.hidden = false;
+    intro.hidden = true;
+    notice.hidden = true;
+    authCard.hidden = true;
+    configPanel.hidden = true;
+    privacyNote.hidden = true;
+  }
+
   function showConfigView() {
+    setupCard.hidden = true;
+    intro.hidden = false;
+    privacyNote.hidden = false;
     authCard.hidden = true;
     configPanel.hidden = false;
   }
 
   function showAuthView() {
+    setupCard.hidden = true;
+    intro.hidden = false;
+    privacyNote.hidden = false;
     configPanel.hidden = true;
-    authCard.hidden = false;
+    authCard.hidden = setupMode;
     bootstrapInput.value = "";
-    bootstrapInput.focus();
+    if (!setupMode) bootstrapInput.focus();
   }
 
   function clearSecretFields() {
@@ -490,6 +542,8 @@
     showNotice("info", "已退出；管理会话和表单中的密钥已从页面内存清除。");
   });
 
+  statusRetryButton.addEventListener("click", showSetupStatus);
+
   defaultsButton.addEventListener("click", () => {
     if (!runtimeLoaded || busyAction) return;
     fillRuntimeFields(RUNTIME_DEFAULTS);
@@ -574,7 +628,7 @@
     clearForms();
     clearSecretFields();
     configPanel.hidden = true;
-    authCard.hidden = false;
+    authCard.hidden = setupMode;
     bootstrapInput.value = "";
     setBusy("");
   });

@@ -31,6 +31,7 @@
   + 相同 App Password（各后端实例的 `JMAP` 可不同，§10.2）。
 
 ### 路由 safelist（ARCH-LB-WORKER / C-LB-SINGLE-REG-URL）
+- 透传公开 `GET /api/status` 启动状态，以及管理 SPA API：`POST /api/admin/session[/revoke]`、`GET|PUT /api/config`、`PUT /api/business-config`。启动状态只包含缺少的环境变量名称；管理 API 的鉴权仍由后端执行。
 - 只透传 `POST /webhook/tg`、`POST /push/jmap`、`POST /reconcile`、`GET /ready`。
 - 其它路径 → **404**（不透传，避免 Worker 沦为后端任意路径的跳板）。
 - method 不符 → **405**。
