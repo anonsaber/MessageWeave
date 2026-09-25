@@ -58,6 +58,9 @@ HostStack 使用根目录 `hoststack.yaml` 构建并运行 Rust 服务：执行
 进行 30 秒间隔、5 秒超时的健康检查。请在 HostStack Secret 中注入 `REDIS_URL` 与
 `CONFIG_ENCRYPTION_KEY`；密钥不写入 YAML、镜像或仓库文件。
 
+管理会话内的“启用业务处理”开关持久化在 Redis `config:enabled`；缺失或读取失败均按关闭处理。
+关闭时 Webhook、Push、Reconcile 和 Worker 返回 HTTP 503，不确认或丢弃上游事件；SPA、状态和管理配置 API 仍可用。
+
 ---
 
 ## 启动后怎么看它是否正常

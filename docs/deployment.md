@@ -90,6 +90,11 @@ HTTP 端口并以 `/healthz` 做 interval 30 秒、timeout 5 秒的健康检查�
 `CONFIG_ENCRYPTION_KEY` 必须配置为 HostStack Secret；不得将密钥值写入 YAML、镜像、日志
 或代码仓库。现有 Dockerfile 部署方式仍受支持。
 
+全局业务开关通过受保护的 `GET|PUT /api/enabled` 管理，持久化 Redis key 为
+`config:enabled`，默认关闭且读取失败 fail-closed。关闭时 `/webhook/tg`、`/push/jmap`、
+`/reconcile`、`/worker` 返回 503，不执行入队、ACK 或业务处理；SPA、`/api/status`、管理
+会话和配置 API 保持可用，打开后立即生效。
+
 > 迁移后生产环境仅需 `REDIS_URL` 与 `CONFIG_ENCRYPTION_KEY`；下表中的业务环境变量是历史阶段说明，不应再注入生产容器。业务密钥通过受保护的 `/api/bootstrap` 或管理员 PUT 写入 Redis，并在成功后热重建客户端。
 
 （保留既有 Secrets 注入约定：禁入镜像、`secrecy` 包裹、日志屏蔽；新增运行模式相关变量）

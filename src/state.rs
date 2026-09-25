@@ -114,6 +114,9 @@ pub trait ReliableState: Send + Sync {
     async fn admin_session_valid(&self, digest: &str) -> Result<bool, StateError>;
     async fn revoke_admin_session(&self, digest: &str) -> Result<(), StateError>;
     async fn business_config_revision(&self) -> Result<u64, StateError>;
+    /// Global durable enable gate; missing/read failures are interpreted by callers as disabled.
+    async fn is_enabled(&self) -> Result<bool, StateError>;
+    async fn set_enabled(&self, enabled: bool) -> Result<(), StateError>;
 }
 
 pub struct RedisState {
@@ -430,6 +433,25 @@ impl ReliableState for RedisState {
             .await?;
         Ok(value.unwrap_or(0))
     }
+
+    async fn is_enabled(&self) -> Result<bool, StateError> {
+        let mut connection = self.connection.clone();
+        let value: Option<bool> = redis::cmd("GET")
+            .arg("config:enabled")
+            .query_async(&mut connection)
+            .await?;
+        Ok(value.unwrap_or(false))
+    }
+
+    async fn set_enabled(&self, enabled: bool) -> Result<(), StateError> {
+        let mut connection = self.connection.clone();
+        redis::cmd("SET")
+            .arg("config:enabled")
+            .arg(if enabled { "1" } else { "0" })
+            .query_async::<()>(&mut connection)
+            .await?;
+        Ok(())
+    }
 }
 
 fn stream_id_to_message(item: redis::streams::StreamId) -> Option<StreamMessage> {
@@ -464,6 +486,15 @@ pub struct MemoryState {
     inner: Arc<Mutex<MemoryInner>>,
 }
 
+#[cfg(test)]
+impl MemoryState {
+    pub fn enabled_for_tests() -> Self {
+        let state = Self::default();
+        state.inner.lock().expect("new state lock").enabled = true;
+        state
+    }
+}
+
 #[derive(Default)]
 struct MemoryInner {
     dedup: HashSet<String>,
@@ -476,6 +507,7 @@ struct MemoryInner {
     business_config: Option<serde_json::Value>,
     admin_session: Option<(String, i64)>,
     business_revision: u64,
+    enabled: bool,
 }
 
 #[async_trait]
@@ -672,6 +704,15 @@ impl ReliableState for MemoryState {
     async fn business_config_revision(&self) -> Result<u64, StateError> {
         let inner = self.inner.lock().map_err(|_| StateError::Poisoned)?;
         Ok(inner.business_revision)
+    }
+
+    async fn is_enabled(&self) -> Result<bool, StateError> {
+        Ok(self.inner.lock().map_err(|_| StateError::Poisoned)?.enabled)
+    }
+
+    async fn set_enabled(&self, enabled: bool) -> Result<(), StateError> {
+        self.inner.lock().map_err(|_| StateError::Poisoned)?.enabled = enabled;
+        Ok(())
     }
 }
 

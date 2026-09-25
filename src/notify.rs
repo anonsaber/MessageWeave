@@ -83,6 +83,9 @@ async fn telegram_webhook(
     body: Bytes,
 ) -> Response {
     refresh_business_config(&app).await;
+    if !business_enabled(&app).await {
+        return (StatusCode::SERVICE_UNAVAILABLE, "service disabled").into_response();
+    }
     let (auth, _, allowlist) = auth_snapshot(&app);
     if !header_value_matches(
         &headers,
@@ -117,6 +120,9 @@ async fn telegram_webhook(
 
 async fn reconcile(State(app): State<AppState>, headers: HeaderMap) -> Response {
     refresh_business_config(&app).await;
+    if !business_enabled(&app).await {
+        return (StatusCode::SERVICE_UNAVAILABLE, "service disabled").into_response();
+    }
     let (auth, _, _) = auth_snapshot(&app);
     let valid = headers
         .get(header::AUTHORIZATION)
@@ -146,6 +152,9 @@ async fn reconcile(State(app): State<AppState>, headers: HeaderMap) -> Response 
 
 async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     refresh_business_config(&app).await;
+    if !business_enabled(&app).await {
+        return (StatusCode::SERVICE_UNAVAILABLE, "service disabled").into_response();
+    }
     let (_, worker_token, _) = auth_snapshot(&app);
     let valid = headers
         .get(header::AUTHORIZATION)
@@ -284,6 +293,33 @@ async fn put_config(State(app): State<AppState>, headers: HeaderMap, body: Bytes
         }
         Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
+}
+
+async fn get_enabled(State(app): State<AppState>, headers: HeaderMap) -> Response {
+    if !config_authorized(&app, &headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    axum::Json(serde_json::json!({"enabled": business_enabled(&app).await})).into_response()
+}
+
+async fn put_enabled(State(app): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    if !config_authorized(&app, &headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(enabled) = payload.get("enabled").and_then(serde_json::Value::as_bool) else {
+        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+    };
+    if app.state.set_enabled(enabled).await.is_err() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    axum::Json(serde_json::json!({"enabled": enabled})).into_response()
+}
+
+async fn business_enabled(app: &AppState) -> bool {
+    app.state.is_enabled().await.unwrap_or(false)
 }
 
 /// Replace the complete encrypted business configuration. Client construction is performed
@@ -504,6 +540,9 @@ struct WorkerRequest {
 
 async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
     refresh_business_config(&app).await;
+    if !business_enabled(&app).await {
+        return (StatusCode::SERVICE_UNAVAILABLE, "service disabled").into_response();
+    }
     let (auth, _, _) = auth_snapshot(&app);
     // Stalwart's PushSubscription callback carries verificationCode in its
     // JSON object. Check it before any future queue/Redis side effect.
@@ -730,6 +769,7 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
         .route("/reconcile", post(reconcile))
         .route("/worker", post(worker))
         .route("/api/config", get(get_config).put(put_config))
+        .route("/api/enabled", get(get_enabled).put(put_enabled))
         .route("/api/business-config", put(put_business_config))
         .route("/api/bootstrap", post(bootstrap))
         .route("/api/admin/session/revoke", post(revoke_admin_session))
@@ -768,7 +808,7 @@ mod tests {
                 jmap_push_verification: SecretString::new("jmap-verification".into()),
             },
             SecretString::new("worker-secret".into()),
-            MemoryState::default(),
+            MemoryState::enabled_for_tests(),
             HashSet::new(),
         )
     }
@@ -1036,6 +1076,62 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn disabled_gate_rejects_business_entry_without_side_effects() {
+        let app = router_with_state(
+            AuthSecrets {
+                reconcile_token: SecretString::new("r".into()),
+                telegram_webhook_secret: SecretString::new("t".into()),
+                jmap_push_verification: SecretString::new("p".into()),
+            },
+            SecretString::new("w".into()),
+            MemoryState::default(),
+            HashSet::new(),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook/tg")
+                    .header("x-telegram-bot-api-secret-token", "t")
+                    .body(Body::from(r#"{"update_id":1}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn enabled_api_persists_toggle() {
+        let app = test_router();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/enabled")
+                    .header("authorization", "Bearer worker-secret")
+                    .body(Body::from(r#"{"enabled":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/enabled")
+                    .header("authorization", "Bearer worker-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

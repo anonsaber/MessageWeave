@@ -44,6 +44,8 @@
   const runtimeSaveButton = document.querySelector("#runtime-save-button");
   const businessSaveState = document.querySelector("#business-save-state");
   const runtimeSaveState = document.querySelector("#runtime-save-state");
+  const serviceEnabled = document.querySelector("#service-enabled");
+  const serviceEnabledState = document.querySelector("#service-enabled-state");
   const sessionExpiry = document.querySelector("#session-expiry");
   const llmEnabled = document.querySelector("#llm-enabled");
   const llmApiKey = document.querySelector("#llm-api-key");
@@ -164,6 +166,12 @@
       statusRetryButton.disabled = false;
       statusRetryButton.textContent = "重新检查";
     }
+  }
+
+  async function loadEnabled() {
+    const state = await request("/api/enabled");
+    serviceEnabled.checked = state.enabled === true;
+    serviceEnabledState.textContent = serviceEnabled.checked ? "业务入口已启用" : "业务入口已关闭（fail-closed）";
   }
 
   function showSetupView(message, missing = []) {
@@ -516,6 +524,7 @@
       setBusy("");
       showNotice("success", "管理会话已创建。运行参数正在读取；业务配置需要完整重新填写。 ");
       await loadRuntimeConfig();
+      await loadEnabled();
     } catch (error) {
       bootstrapCredential = "";
       setBusy("");
@@ -528,6 +537,23 @@
   });
 
   reloadButton.addEventListener("click", loadRuntimeConfig);
+
+  serviceEnabled.addEventListener("change", async () => {
+    if (!adminSession || busyAction) return;
+    const desired = serviceEnabled.checked;
+    serviceEnabled.disabled = true;
+    try {
+      await request("/api/enabled", "PUT", { enabled: desired });
+      serviceEnabledState.textContent = desired ? "业务入口已启用" : "业务入口已关闭（fail-closed）";
+      showNotice("success", desired ? "业务处理已启用。" : "业务处理已关闭，入口将返回未启用状态。 ");
+    } catch (error) {
+      serviceEnabled.checked = !desired;
+      serviceEnabledState.textContent = serviceEnabled.checked ? "业务入口已启用" : "业务入口已关闭（fail-closed）";
+      showNotice("error", error.status === 401 ? "管理会话已失效，请重新授权。" : "无法保存业务开关状态。 ");
+    } finally {
+      serviceEnabled.disabled = false;
+    }
+  });
 
   logoutButton.addEventListener("click", async () => {
     if (!adminSession || busyAction) return;
