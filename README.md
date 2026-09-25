@@ -51,6 +51,13 @@ AI 摘要默认关闭。Telegram 用户可发送 `/ai on`（1小时）、`临时
 
 > 缺少 `REDIS_URL` 或 `CONFIG_ENCRYPTION_KEY` 时服务进入 configuration-setup 模式，仍提供 SPA、`/api/status` 和探针；SPA 隐藏管理会话授权区，只显示缺少的环境变量与密钥不保存、不回显说明。配置恢复后 `/api/status` ready=true 才显示授权入口。
 
+### HostStack 原生部署
+
+HostStack 使用根目录 `hoststack.yaml` 构建并运行 Rust 服务：执行
+`cargo build --release --locked`，运行 `./target/release/message-weave`，并以 `/healthz`
+进行 30 秒间隔、5 秒超时的健康检查。请在 HostStack Secret 中注入 `REDIS_URL` 与
+`CONFIG_ENCRYPTION_KEY`；密钥不写入 YAML、镜像或仓库文件。
+
 ---
 
 ## 启动后怎么看它是否正常

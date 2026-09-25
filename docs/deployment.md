@@ -82,6 +82,14 @@
 
 ## 5. Secret 管理与环境变量
 
+### 5.1 HostStack 原生 Rust 部署
+
+HostStack 使用仓库根目录 `hoststack.yaml`：Rust runtime 执行
+`cargo build --release --locked`，服务命令为 `./target/release/message-weave`，监听单个
+HTTP 端口并以 `/healthz` 做 interval 30 秒、timeout 5 秒的健康检查。`REDIS_URL` 与
+`CONFIG_ENCRYPTION_KEY` 必须配置为 HostStack Secret；不得将密钥值写入 YAML、镜像、日志
+或代码仓库。现有 Dockerfile 部署方式仍受支持。
+
 > 迁移后生产环境仅需 `REDIS_URL` 与 `CONFIG_ENCRYPTION_KEY`；下表中的业务环境变量是历史阶段说明，不应再注入生产容器。业务密钥通过受保护的 `/api/bootstrap` 或管理员 PUT 写入 Redis，并在成功后热重建客户端。
 
 （保留既有 Secrets 注入约定：禁入镜像、`secrecy` 包裹、日志屏蔽；新增运行模式相关变量）
