@@ -1,0 +1,10 @@
+target/
+.git/
+.github/
+.env
+.env.*
+*.pem
+*.key
+Dockerfile*
+docs/
+AGENTS.md

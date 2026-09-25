@@ -1,0 +1,31 @@
+/**
+ * Wrangler 示例配置 — Stalwart-bot 多实例 LB/HA（ARCH-LB-WORKER / deployment.md §10）。
+ *
+ * 安全约束（AGENTS.md §2/§4，稳定 ID）：
+ * - 后端 origin 仅允许 https（C-HTTPS-INBOUND / C-HTTPS-URL）；env 校验时拒绝
+ *   http/非 https/内嵌凭据。
+ * - 不代理 Redis/JMAP（C-NO-DB / C-REDIS-ONLY-STATE）：Worker 只做请求转发，后端连自己的 Redis。
+ * - 不使用 WebSocket/SSE/长轮询（C-NO-LONG-CONN）：纯请求-响应转发。
+ * - 后端 secret 走 `wrangler secret`（见 README），不进代码/日志（SAF-LOG-PURITY / C-NO-SECRET-IN-IMAGE；
+ *   C-LB-SHARED-SECRETS：所有后端实例共享同一组 secret）。
+ * - 日志无密钥（SAF-LOG-PURITY）：只打「方法/路径/origin/失败类别」，origin 清单走 secret。
+ * - 仅允许转发 safelist 路由（C-LB-SINGLE-REG-URL）；未知路径 404。
+ *
+ * 部署：
+ *   cd cloudflare-worker
+ *   npx wrangler secret put BACKEND_ORIGINS_JSON    # 见下方示例格式
+ *   npx wrangler deploy
+ */
+name = "stalwart-bot-lb"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat_v2"]
+
+# 统一 HTTPS 入站（C-HTTPS-URL；平台代 TLS，Worker 内为短请求模型）。
+# 后端 origin 为 secret（不经明文 env 流转）：
+#   BACKEND_ORIGINS_JSON  形如 ["https://a.platform1.example","https://b.platform2.example"]
+#   LB_HEALTH_TTL_MS      可选，健康缓存 TTL（默认 30000）
+#   LB_REQUEST_TIMEOUT_MS 可选，单 origin 超时（默认 10000，建议 > 最坏 cold start）
+#   LB_MAX_ATTEMPTS      可选，每请求最多 origin 尝试次数（默认 2：首次 + 1 次故障转移，
+#                        对应 deployment.md §10.4「有界重试其它实例（建议 1 次）」）
+vars = {}

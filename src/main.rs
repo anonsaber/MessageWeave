@@ -1,0 +1,153 @@
+mod ai;
+mod channel;
+mod config;
+pub mod domain;
+mod error;
+mod notify;
+pub mod state;
+mod web;
+mod worker;
+
+use secrecy::ExposeSecret;
+use std::net::SocketAddr;
+
+use crate::channel::telegram::TelegramClient;
+use crate::domain::jmap::{client::JmapClientBackend, JmapService};
+use config::{encryption_key_from_env, Config};
+use notify::{
+    router_with_worker_state_runtime_bootstrap, MetadataWorker, WorkerHandle, WorkerHandler,
+};
+use state::{runtime_provider, RedisState};
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> Result<(), error::BotError> {
+    tracing_subscriber::fmt().with_env_filter("info").init();
+    // The Redis URL is the only bootstrap credential in the migration path. Until
+    // the bootstrap route is wired, retain the legacy parser solely to obtain it.
+    let bootstrap_config = match Config::from_env() {
+        Ok(config) => config,
+        Err(_) => {
+            let redis_url = std::env::var("REDIS_URL")
+                .map_err(|_| error::BotError::Config("missing REDIS_URL".into()))?;
+            Config::redis_only(secrecy::SecretString::new(redis_url))
+        }
+    };
+    let encryption_key = encryption_key_from_env()?;
+    let redis_url = bootstrap_config.redis_url.clone();
+    // RUN_MODE is intentionally explicit even while both modes share the stage-0
+    // no-op router; later stages attach webhook/reconcile side effects here.
+    match bootstrap_config.run_mode.as_str() {
+        "webhook" => tracing::info!("RUN_MODE=webhook"),
+        "reconcile" => tracing::info!("RUN_MODE=reconcile"),
+        mode => {
+            return Err(error::BotError::Config(format!(
+                "RUN_MODE must be webhook or reconcile, got {mode}"
+            )))
+        }
+    }
+    let addr: SocketAddr = format!("0.0.0.0:{}", bootstrap_config.port)
+        .parse()
+        .map_err(|e| error::BotError::Config(format!("invalid PORT: {e}")))?;
+    tracing::info!(
+        port = bootstrap_config.port,
+        "starting webhook HTTP entrypoint"
+    );
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let redis =
+        RedisState::connect_with_encryption(redis_url.expose_secret(), Some(encryption_key))
+            .await?;
+    let bootstrap_token = url::Url::parse(redis_url.expose_secret())
+        .ok()
+        .and_then(|value| value.password().map(ToOwned::to_owned))
+        .map(secrecy::SecretString::new)
+        .unwrap_or_else(|| secrecy::SecretString::new(String::new()));
+    let worker_state: std::sync::Arc<dyn state::ReliableState> = std::sync::Arc::new(
+        RedisState::connect_with_encryption(redis_url.expose_secret(), Some(encryption_key))
+            .await?,
+    );
+    let config = match worker_state
+        .get_business_config()
+        .await
+        .map_err(|_| error::BotError::Config("business config unavailable".into()))?
+    {
+        Some(value) => Config::from_business_json(redis_url.clone(), value)?,
+        None => bootstrap_config,
+    };
+    let outbound = worker_state
+        .get_outbound_config()
+        .await
+        .map_err(|_| error::BotError::Config("runtime outbound config unavailable".into()))?;
+    let runtime = runtime_provider(outbound.clone());
+    let llm = if config.llm.enabled && config.llm.allow_net {
+        Some(std::sync::Arc::new(
+            ai::LlmClient::with_runtime(
+                config.llm.base_url.clone().unwrap_or_default(),
+                config
+                    .llm
+                    .api_key
+                    .clone()
+                    .unwrap_or_else(|| secrecy::SecretString::new("".into())),
+                config.llm.model.clone().unwrap_or_default(),
+                config.llm.summary_target_chars,
+                runtime.clone(),
+            )
+            .map_err(|_| error::BotError::Config("LLM endpoint must use HTTPS".into()))?,
+        ))
+    } else {
+        None
+    };
+    let allowlist: std::collections::HashSet<i64> =
+        config.telegram.chat_allowlist.iter().copied().collect();
+    let chat_id = config.telegram.chat_id;
+    let worker: Arc<dyn WorkerHandler> = if config.telegram.bot_token.expose_secret().is_empty() {
+        Arc::new(notify::NoopWorker)
+    } else {
+        match JmapClientBackend::connect_with_runtime(
+            &config.jmap.session_url,
+            &config.jmap.username,
+            config.jmap.app_password.expose_secret(),
+            config.account_id.as_deref(),
+            runtime.clone(),
+            // All subsequent JMAP calls read this provider, so SPA updates apply
+            // without restarting the process.
+        )
+        .await
+        {
+            Ok(backend) => {
+                let account = backend.account_id().to_owned();
+                match JmapService::new(backend, account) {
+                    Ok(jmap) => Arc::new(MetadataWorker::new(
+                        jmap,
+                        TelegramClient::with_runtime(config.telegram.bot_token, runtime.clone()),
+                        chat_id,
+                        worker_state,
+                        llm,
+                    )) as Arc<dyn WorkerHandler>,
+                    Err(_) => {
+                        tracing::warn!(
+                            "JMAP service unavailable; starting configuration-only mode"
+                        );
+                        Arc::new(notify::NoopWorker)
+                    }
+                }
+            }
+            Err(_) => {
+                tracing::warn!("JMAP connection unavailable; starting configuration-only mode");
+                Arc::new(notify::NoopWorker)
+            }
+        }
+    };
+    let app = router_with_worker_state_runtime_bootstrap(
+        config.auth,
+        config.worker_token,
+        redis,
+        allowlist,
+        Arc::new(WorkerHandle::new(worker)),
+        runtime,
+        bootstrap_token,
+    )
+    .merge(web::router());
+    axum::serve(listener, app).await?;
+    Ok(())
+}

@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    container: rust:1-slim-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      # rust:1-slim-bookworm exposes rustup under /usr/local/cargo/bin but does
+      # not guarantee that directory is in a non-login shell's PATH.
+      - name: Install Rust toolchain components
+        run: |
+          export PATH="/usr/local/cargo/bin:$PATH"
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup component add rustfmt clippy
+      - name: Format check
+        run: export PATH="/usr/local/cargo/bin:$PATH"; cargo fmt --all -- --check
+      - name: Clippy
+        run: export PATH="/usr/local/cargo/bin:$PATH"; cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        run: export PATH="/usr/local/cargo/bin:$PATH"; cargo test

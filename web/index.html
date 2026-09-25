@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="referrer" content="no-referrer" />
+    <title>业务配置 · Stalwart Bot</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+    <script src="/assets/config.js" defer></script>
+  </head>
+  <body>
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Stalwart Bot 配置首页">
+        <span class="brand-mark" aria-hidden="true">S</span>
+        <span class="brand-copy"><strong>stalwart bot</strong><span>业务配置</span></span>
+      </a>
+      <span class="topbar-note"><span class="secure-dot"></span>安全配置通道</span>
+    </header>
+
+    <main class="layout">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">服务管理 <span>·</span> CONFIGURATION</p>
+        <h1 id="page-title">管理你的服务连接</h1>
+        <p class="intro-copy">配置 JMAP、Telegram、LLM、访问白名单和运行参数。业务配置保存在外部 Redis，成功保存后会立即热加载。</p>
+      </section>
+
+      <div id="notice" class="notice notice-info" role="status" aria-live="polite">
+        使用 Redis 管理凭据创建短期管理会话。
+      </div>
+
+      <section id="auth-card" class="panel auth-panel" aria-labelledby="auth-title">
+        <div class="panel-heading">
+          <div class="icon-tile icon-violet" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M7.5 10V7.5a4.5 4.5 0 0 1 9 0V10M6 10h12v10H6z"/><path d="M12 14v2"/></svg>
+          </div>
+          <div><p class="eyebrow">需要授权</p><h2 id="auth-title">创建管理会话</h2></div>
+        </div>
+        <p class="panel-copy">输入部署时 <code>REDIS_URL</code> 中 Redis ACL 用户的密码。服务端会签发有效期 15 分钟的管理会话；密码和会话只在当前页面内存中使用。</p>
+        <form id="auth-form" class="auth-form" autocomplete="off">
+          <label for="bootstrap-input">Redis 管理凭据</label>
+          <div class="token-row">
+            <input id="bootstrap-input" name="bootstrap-credential" type="password" autocomplete="new-password" spellcheck="false" required placeholder="输入 Redis URL 中的 ACL 密码" aria-describedby="bootstrap-hint" />
+            <button id="connect-button" class="button button-primary" type="submit">创建会话</button>
+          </div>
+          <p id="bootstrap-hint" class="field-hint">不会写入 localStorage、sessionStorage 或 Cookie。关闭或刷新页面后需要重新授权。</p>
+        </form>
+      </section>
+
+      <section id="config-panel" class="config-panel" aria-label="业务配置与运行参数" hidden>
+        <div class="panel config-toolbar">
+          <div class="session-state"><span class="status-pulse" aria-hidden="true"></span><div><strong>管理会话有效</strong><span id="session-expiry">会话仅保存在当前页面内存</span></div></div>
+          <div class="toolbar-actions">
+            <button id="reload-button" class="button button-quiet" type="button">重新读取运行参数</button>
+            <button id="logout-button" class="button button-quiet" type="button">退出并清除会话</button>
+          </div>
+        </div>
+
+        <section class="panel config-section" aria-labelledby="business-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">完整替换</p><h2 id="business-title">业务连接与鉴权</h2></div>
+            <span class="persist-label"><span class="persist-dot"></span>Redis 加密保存</span>
+          </div>
+          <div class="callout callout-warning">
+            <strong>业务配置不会从服务器读取。</strong>为避免密钥回显，API 不提供业务配置 GET。每次提交都必须重新填写完整配置，包括所有必填密钥；可选的 account ID 与 LLM 字段留空时会发送为 <code>null</code>。
+          </div>
+
+          <form id="business-form" novalidate>
+            <fieldset id="business-fields" disabled>
+              <legend class="visually-hidden">完整业务配置</legend>
+
+              <section class="form-section" aria-labelledby="jmap-title">
+                <div class="form-section-heading"><span class="section-number">01</span><div><h3 id="jmap-title">JMAP 邮箱</h3><p>服务端必须使用 HTTPS，URL 中不能包含凭据、查询参数或片段。</p></div></div>
+                <div class="field-grid">
+                  <div class="field field-wide"><label for="jmap-session-url">JMAP Session URL <span class="required-mark">必填</span></label><input id="jmap-session-url" name="jmap_session_url" type="url" inputmode="url" autocomplete="url" required placeholder="https://mail.example.com/.well-known/jmap" /><small>HTTPS 地址，不含用户名、密码、查询参数或 #片段。</small></div>
+                  <div class="field"><label for="jmap-username">邮箱用户名 <span class="required-mark">必填</span></label><input id="jmap-username" name="jmap_username" type="text" autocomplete="username" required /></div>
+                  <div class="field"><label for="jmap-password">应用专用密码 <span class="required-mark">必填</span></label><input id="jmap-password" name="jmap_password" type="password" autocomplete="new-password" spellcheck="false" required placeholder="每次完整保存时重新输入" /></div>
+                  <div class="field"><label for="account-id">JMAP Account ID <span class="optional-mark">可选</span></label><input id="account-id" name="account_id" type="text" autocomplete="off" placeholder="留空使用 session 主账户" /></div>
+                  <div class="field"><label for="jmap-push-verification">JMAP Push 验证码 <span class="required-mark">必填</span></label><input id="jmap-push-verification" name="jmap_push_verification" type="password" autocomplete="new-password" spellcheck="false" required placeholder="每次完整保存时重新输入" /></div>
+                </div>
+              </section>
+
+              <section class="form-section" aria-labelledby="telegram-title">
+                <div class="form-section-heading"><span class="section-number">02</span><div><h3 id="telegram-title">Telegram 与访问鉴权</h3><p>仅允许白名单中的 chat ID 触发机器人操作。</p></div></div>
+                <div class="field-grid">
+                  <div class="field"><label for="telegram-bot-token">Telegram Bot Token <span class="required-mark">必填</span></label><input id="telegram-bot-token" name="bot_token" type="password" autocomplete="new-password" spellcheck="false" required placeholder="每次完整保存时重新输入" /></div>
+                  <div class="field"><label for="telegram-chat-id">目标 Chat ID <span class="required-mark">必填</span></label><input id="telegram-chat-id" name="telegram_chat_id" type="text" inputmode="numeric" autocomplete="off" required placeholder="例如 -1001234567890" /><small>接受完整有符号 64 位整数。</small></div>
+                  <div class="field field-wide"><label for="chat-allowlist">Chat allowlist <span class="required-mark">至少一项</span></label><textarea id="chat-allowlist" name="chat_allowlist" rows="3" required spellcheck="false" placeholder="每行或逗号分隔一个 chat ID"></textarea><small>整数列表；保存前会检查格式与重复项。</small></div>
+                  <div class="field"><label for="telegram-webhook-secret">Telegram Webhook Secret <span class="required-mark">必填</span></label><input id="telegram-webhook-secret" name="telegram_webhook_secret" type="password" autocomplete="new-password" spellcheck="false" required placeholder="每次完整保存时重新输入" /></div>
+                  <div class="field"><label for="reconcile-token">Reconcile Bearer Token <span class="required-mark">必填</span></label><input id="reconcile-token" name="reconcile_token" type="password" autocomplete="new-password" spellcheck="false" required placeholder="每次完整保存时重新输入" /></div>
+                  <div class="field field-wide"><label for="worker-token">Worker Token <span class="required-mark">必填</span></label><input id="worker-token" name="worker_token" type="password" autocomplete="new-password" spellcheck="false" required placeholder="/worker 与兼容管理 API 使用；每次完整保存时重新输入" /><small>此值与当前管理会话不同。页面不会读取或回显已有 token。</small></div>
+                </div>
+              </section>
+
+              <section class="form-section" aria-labelledby="llm-title">
+                <div class="form-section-heading"><span class="section-number">03</span><div><h3 id="llm-title">LLM 服务</h3><p>启用后要求 HTTPS Base URL、模型名和 API key。</p></div></div>
+                <div class="toggle-grid">
+                  <label class="toggle-card" for="llm-enabled"><input id="llm-enabled" name="llm_enabled" type="checkbox" /><span><strong>启用 LLM</strong><small>允许机器人调用兼容 OpenAI 的模型服务。</small></span></label>
+                  <label class="toggle-card" for="llm-allow-net"><input id="llm-allow-net" name="llm_allow_net" type="checkbox" /><span><strong>允许网络调用</strong><small>关闭时不会创建 LLM 客户端。</small></span></label>
+                </div>
+                <div class="field-grid llm-fields">
+                  <div class="field"><label for="llm-base-url">LLM Base URL <span id="llm-url-required" class="optional-mark">可选</span></label><input id="llm-base-url" name="llm_base_url" type="url" inputmode="url" autocomplete="url" placeholder="https://api.example.com/v1" /><small>启用 LLM 时必须使用 HTTPS。</small></div>
+                  <div class="field"><label for="llm-model">模型名称 <span id="llm-model-required" class="optional-mark">可选</span></label><input id="llm-model" name="llm_model" type="text" autocomplete="off" placeholder="留空表示 null" /></div>
+                  <div class="field field-wide"><label for="llm-api-key">LLM API Key <span id="llm-key-required" class="optional-mark">可选</span></label><input id="llm-api-key" name="llm_api_key" type="password" autocomplete="new-password" spellcheck="false" placeholder="启用 LLM 时必填；不会回显" /></div>
+                </div>
+              </section>
+            </fieldset>
+
+            <div class="form-footer">
+              <p id="business-save-state" class="save-state" aria-live="polite">完成管理会话验证后可填写完整配置。</p>
+              <button id="business-save-button" class="button button-primary" type="submit" disabled><span class="button-label">保存业务配置并热加载</span><span class="button-spinner" aria-hidden="true"></span></button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel config-section runtime-section" aria-labelledby="runtime-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">出站请求</p><h2 id="runtime-title">超时与重试</h2></div>
+            <span class="persist-label"><span class="persist-dot"></span>Redis 保存</span>
+          </div>
+          <p class="section-copy">运行参数由 <code>GET /api/config</code> 读取、由 <code>PUT /api/config</code> 更新；新值保存后立即用于后续请求。</p>
+          <form id="runtime-form" novalidate>
+            <fieldset id="runtime-fields" disabled>
+              <legend class="visually-hidden">运行参数</legend>
+              <div class="settings-grid">
+                <article class="setting-card"><label for="jmap-timeout">JMAP 超时</label><p class="setting-description">单次 JMAP 请求的等待上限。</p><div class="number-control"><input id="jmap-timeout" name="jmap_timeout_ms" type="number" min="100" max="300000" step="1" required /><span>毫秒</span></div><small>100–300,000；默认 15,000。</small></article>
+                <article class="setting-card"><label for="telegram-timeout">Telegram 超时</label><p class="setting-description">单次 Telegram 请求的等待上限。</p><div class="number-control"><input id="telegram-timeout" name="telegram_timeout_ms" type="number" min="100" max="300000" step="1" required /><span>毫秒</span></div><small>100–300,000；默认 10,000。</small></article>
+                <article class="setting-card"><label for="llm-timeout">LLM 超时</label><p class="setting-description">单次模型请求的等待上限。</p><div class="number-control"><input id="llm-timeout" name="llm_timeout_ms" type="number" min="100" max="300000" step="1" required /><span>毫秒</span></div><small>100–300,000；默认 30,000。</small></article>
+                <article class="setting-card"><label for="max-retries">最大重试次数</label><p class="setting-description">失败后额外尝试的次数，0 表示不重试。</p><div class="number-control"><input id="max-retries" name="max_retries" type="number" min="0" max="5" step="1" required /><span>次</span></div><small>0–5；默认 3。</small></article>
+              </div>
+            </fieldset>
+            <div class="form-footer">
+              <p id="runtime-save-state" class="save-state" aria-live="polite">读取成功后可编辑运行参数。</p>
+              <div class="form-actions"><button id="defaults-button" class="button button-quiet" type="button" disabled>恢复默认值</button><button id="runtime-save-button" class="button button-primary" type="submit" disabled><span class="button-label">保存运行参数</span><span class="button-spinner" aria-hidden="true"></span></button></div>
+            </div>
+          </form>
+        </section>
+      </section>
+
+      <aside class="privacy-note"><span class="privacy-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 2.8 8 7 10 4.2-2 7-5.5 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg></span><p><strong>密钥不会回显或持久化到浏览器。</strong>业务配置只提交至同源 API，并由后端加密写入 Redis；本页面不读取邮箱内容、不使用本地文件或数据库。</p></aside>
+    </main>
+
+    <footer class="footer"><span>STALWART BOT</span><span>配置由你的服务端管理</span></footer>
+  </body>
+</html>
