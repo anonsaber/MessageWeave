@@ -764,6 +764,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rediss_url_accepts_default_acl_and_encoded_password() {
+        let client = redis::Client::open("rediss://default:p%40ss%3Aword@example.invalid:6379/0");
+        assert!(client.is_ok());
+        let client = redis::Client::open("redis://default:p%40ss%3Aword@example.invalid:6379/0");
+        assert!(client.is_ok());
+    }
+
+    #[test]
     fn encrypted_config_roundtrip_and_tamper_fail_closed() {
         let key = [7_u8; 32];
         let value = serde_json::json!({"secret": "value"});

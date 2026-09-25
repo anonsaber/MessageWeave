@@ -93,7 +93,7 @@
 | `JMAP_SESSION_URL` | ✅ | Stalwart JMAP session URL（`REQ-JMAP-SESSION-URL`）：填**服务基地址**（`https://mail.example.com`）或**完整** `…/.well-known/jmap` 均可；代码归一化为 origin/base 后再交 `jmap-client`，**不产生重复路径**。仅 HTTPS；**禁止 URL 内嵌凭据**（`SAF-JMAP-URL`） |
 | `JMAP_USERNAME` / `JMAP_PASSWORD` | ✅ | **Stalwart 认证 = App Password + Basic**（已确认 `C-AUTH-APP-BASIC`）：账号填邮箱，密码填在 Stalwart 生成的**应用专用密码**（可独立吊销/设到期）；不用主密码、不用 OAuth |
 | `CHAT_ALLOWLIST` | ✅ | 聊天白名单（**硬约束 `SAF-CHAT-ALLOWLIST`**）：逗号分隔整数 chat id；处理任何事件前先校验，非白名单直接拒绝 |
-| `REDIS_URL` | ✅ | **外部 Redis（用户托管 + AOF）**（`C-REDIS-ONLY-STATE`/`C-REDIS-MANAGED-AOF`）：session / dedup / Streams / fuse / sinceState 全部在此；Redis 进程不在本 compose 内 |
+| `REDIS_URL` | ✅ | **外部 Redis（用户托管 + AOF）**（`C-REDIS-ONLY-STATE`/`C-REDIS-MANAGED-AOF`）：session / dedup / Streams / fuse / sinceState 全部在此；支持 `redis://` 与带默认 ACL 用户的 `rediss://default:<url-encoded-password>@host:6379/0`，Redis 进程不在此 compose 内 |
 | `PORT` | 默认 8080 | 单监听端口（`C-NO-TCP-EXPOSE`） |
 | `RUN_MODE` | 默认 `webhook` | `webhook` / `reconcile` 二选一（`NG-SERVER-MODE` 已删除） |
 | `RECONCILE_TOKEN` | ✅ | `/reconcile` 的 `Authorization: Bearer <token>` 承载令牌（`SAF-AUTH-RECONCILE`）。因 `/reconcile` 路由**始终挂载**，此变量为**必填**（`SecretString`） |
