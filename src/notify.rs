@@ -867,6 +867,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn configuration_setup_status_lists_both_bootstrap_requirements() {
+        let response =
+            router_configuration_setup(vec!["REDIS_URL".into(), "CONFIG_ENCRYPTION_KEY".into()])
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/api/status")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["missing"].as_array().unwrap().len(), 2);
+        assert_eq!(value["missing"][0], "REDIS_URL");
+        assert_eq!(value["missing"][1], "CONFIG_ENCRYPTION_KEY");
+    }
+
+    #[tokio::test]
     async fn failed_bootstrap_does_not_consume_initialization_slot() {
         let app = router_with_worker_state_runtime_bootstrap(
             AuthSecrets {

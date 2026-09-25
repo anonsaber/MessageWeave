@@ -32,27 +32,30 @@ async fn main() -> Result<(), error::BotError> {
         .parse()
         .map_err(|e| error::BotError::Config(format!("invalid PORT: {e}")))?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let mut missing = Vec::new();
     let redis_value = match std::env::var("REDIS_URL") {
         Ok(value) if !value.trim().is_empty() => value,
         _ => {
-            tracing::warn!("REDIS_URL is not configured; serving configuration setup mode");
-            let app = router_configuration_setup(vec!["REDIS_URL".into()]).merge(web::router());
-            axum::serve(listener, app).await?;
-            return Ok(());
+            missing.push("REDIS_URL".to_owned());
+            String::new()
         }
     };
     let encryption_key = match encryption_key_from_env() {
         Ok(key) => key,
         Err(_) => {
-            tracing::warn!(
-                "CONFIG_ENCRYPTION_KEY is not configured or invalid; serving setup mode"
-            );
-            let app = router_configuration_setup(vec!["CONFIG_ENCRYPTION_KEY".into()])
-                .merge(web::router());
-            axum::serve(listener, app).await?;
-            return Ok(());
+            missing.push("CONFIG_ENCRYPTION_KEY".to_owned());
+            [0_u8; 32]
         }
     };
+    if !missing.is_empty() {
+        tracing::warn!(
+            ?missing,
+            "required bootstrap environment is incomplete; serving setup mode"
+        );
+        let app = router_configuration_setup(missing).merge(web::router());
+        axum::serve(listener, app).await?;
+        return Ok(());
+    }
     // The Redis URL is the only bootstrap credential in the migration path. Until
     // the bootstrap route is wired, retain the legacy parser solely to obtain it.
     let bootstrap_config = match Config::from_env() {
