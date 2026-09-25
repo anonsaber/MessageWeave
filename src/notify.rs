@@ -20,6 +20,7 @@ use crate::config::{
     session_digest, validate_business_wire, AuthSecrets, BusinessConfig, BusinessConfigWire,
 };
 use crate::domain::jmap::{client::JmapClientBackend, JmapService};
+use crate::state::MemoryState;
 use crate::state::{runtime_provider, OutboundConfig, ReliableState, RuntimeConfigProvider};
 pub use crate::worker::{
     MetadataWorker, NoopWorker, ReloadCoordinator, WorkerHandle, WorkerHandler,
@@ -44,6 +45,7 @@ struct AppState {
     business_config: Arc<RwLock<Option<serde_json::Value>>>,
     business_runtime: Arc<RwLock<Option<BusinessConfig>>>,
     business_revision: Arc<RwLock<u64>>,
+    setup_missing: Arc<Vec<String>>,
     reload: Arc<ReloadCoordinator>,
 }
 
@@ -63,6 +65,16 @@ async fn healthz() -> impl IntoResponse {
 
 async fn ready() -> impl IntoResponse {
     (StatusCode::OK, "ready")
+}
+
+async fn setup_status(State(app): State<AppState>) -> Response {
+    let ready = app.setup_missing.is_empty();
+    axum::Json(serde_json::json!({
+        "ready": ready,
+        "mode": if ready { "configured" } else { "configuration-setup" },
+        "missing": app.setup_missing.as_ref(),
+    }))
+    .into_response()
 }
 
 async fn telegram_webhook(
@@ -619,6 +631,26 @@ pub fn router_with_state<S: ReliableState + 'static>(
     )
 }
 
+/// Configuration-only listener used when bootstrap credentials are absent. MemoryState is
+/// deliberately not advertised as persistence: all business writes remain unavailable until
+/// Redis is configured.
+pub fn router_configuration_setup(missing: Vec<String>) -> Router {
+    router_with_worker_state_runtime_bootstrap_config(
+        AuthSecrets {
+            reconcile_token: SecretString::new(String::new()),
+            telegram_webhook_secret: SecretString::new(String::new()),
+            jmap_push_verification: SecretString::new(String::new()),
+        },
+        SecretString::new(String::new()),
+        MemoryState::default(),
+        HashSet::new(),
+        Arc::new(NoopWorker),
+        runtime_provider(OutboundConfig::default()),
+        SecretString::new(String::new()),
+        missing,
+    )
+}
+
 pub fn router_with_worker_state<S: ReliableState + 'static>(
     secrets: AuthSecrets,
     worker_token: SecretString,
@@ -672,9 +704,14 @@ pub fn router_with_worker_state_runtime_bootstrap<S: ReliableState + 'static>(
         worker_handler,
         runtime,
         bootstrap_token,
+        Vec::new(),
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "router wiring keeps state dependencies explicit"
+)]
 fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>(
     secrets: AuthSecrets,
     worker_token: SecretString,
@@ -683,6 +720,7 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
     worker_handler: Arc<dyn WorkerHandler>,
     runtime: RuntimeConfigProvider,
     bootstrap_token: SecretString,
+    setup_missing: Vec<String>,
 ) -> Router {
     let worker_handle = Arc::new(WorkerHandle::new(worker_handler));
     let reload = Arc::new(ReloadCoordinator::new(worker_handle.clone(), None));
@@ -698,6 +736,7 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
         .route("/api/admin/session", post(create_admin_session))
         .route("/healthz", get(healthz))
         .route("/ready", get(ready))
+        .route("/api/status", get(setup_status))
         .with_state(AppState {
             auth: AuthState::from(secrets),
             worker_token,
@@ -709,6 +748,7 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
             business_config: Arc::new(RwLock::new(None)),
             business_runtime: Arc::new(RwLock::new(None)),
             business_revision: Arc::new(RwLock::new(0)),
+            setup_missing: Arc::new(setup_missing),
             reload,
         })
 }
@@ -802,6 +842,28 @@ mod tests {
             .await,
             StatusCode::UNAUTHORIZED
         );
+    }
+
+    #[tokio::test]
+    async fn configuration_setup_status_lists_only_missing_names() {
+        let response = router_configuration_setup(vec!["REDIS_URL".into()])
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["mode"], "configuration-setup");
+        assert_eq!(value["missing"][0], "REDIS_URL");
+        assert!(!body.windows(4).any(|part| part == b"pass"));
     }
 
     #[tokio::test]

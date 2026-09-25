@@ -49,7 +49,7 @@
 
 AI 摘要默认关闭。Telegram 用户可发送 `/ai on`（1小时）、`临时一次`、`1小时`、`今天`、`7天` 或 `直到我撤销` 明确授权，再发送 `/summary <email_id>`；授权到期不会自动续期，`/ai off` 立即撤销。未授权时仅返回邮件元数据，LLM 失败则回退为本地截断摘要。
 
-> Redis 未初始化时服务进入 configuration-only 模式，仅提供 SPA、bootstrap 和探针。
+> 缺少 `REDIS_URL` 或 `CONFIG_ENCRYPTION_KEY` 时服务进入 configuration-setup 模式，仍提供 SPA、`/api/status` 和探针；状态页会提示缺少的环境变量，不回显任何密钥，也不会伪造 Redis 持久化成功。
 
 ---
 

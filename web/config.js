@@ -121,6 +121,18 @@
     return parseResponseText(responseText, response.status);
   }
 
+  async function showSetupStatus() {
+    try {
+      const status = await request("/api/status", "GET", undefined, "");
+      if (status && status.ready === false) {
+        const missing = Array.isArray(status.missing) ? status.missing.join("、") : "启动配置";
+        showNotice("error", `服务处于配置引导模式。请在部署环境设置：${missing}；密钥不会在页面保存或回显。`);
+      }
+    } catch {
+      // The regular connection flow reports unavailable services without exposing details.
+    }
+  }
+
   function showConfigView() {
     authCard.hidden = true;
     configPanel.hidden = false;
@@ -568,6 +580,7 @@
   });
 
   showRuntimePreview();
+  showSetupStatus();
   updateLLMRequirements();
   updateButtons();
 })();

@@ -15,7 +15,8 @@ use crate::channel::telegram::TelegramClient;
 use crate::domain::jmap::{client::JmapClientBackend, JmapService};
 use config::{encryption_key_from_env, Config};
 use notify::{
-    router_with_worker_state_runtime_bootstrap, MetadataWorker, WorkerHandle, WorkerHandler,
+    router_configuration_setup, router_with_worker_state_runtime_bootstrap, MetadataWorker,
+    WorkerHandle, WorkerHandler,
 };
 use state::{runtime_provider, RedisState};
 use std::sync::Arc;
@@ -23,17 +24,41 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> Result<(), error::BotError> {
     tracing_subscriber::fmt().with_env_filter("info").init();
+    let port = std::env::var("PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(8080_u16);
+    let addr: SocketAddr = format!("0.0.0.0:{port}")
+        .parse()
+        .map_err(|e| error::BotError::Config(format!("invalid PORT: {e}")))?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let redis_value = match std::env::var("REDIS_URL") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => {
+            tracing::warn!("REDIS_URL is not configured; serving configuration setup mode");
+            let app = router_configuration_setup(vec!["REDIS_URL".into()]).merge(web::router());
+            axum::serve(listener, app).await?;
+            return Ok(());
+        }
+    };
+    let encryption_key = match encryption_key_from_env() {
+        Ok(key) => key,
+        Err(_) => {
+            tracing::warn!(
+                "CONFIG_ENCRYPTION_KEY is not configured or invalid; serving setup mode"
+            );
+            let app = router_configuration_setup(vec!["CONFIG_ENCRYPTION_KEY".into()])
+                .merge(web::router());
+            axum::serve(listener, app).await?;
+            return Ok(());
+        }
+    };
     // The Redis URL is the only bootstrap credential in the migration path. Until
     // the bootstrap route is wired, retain the legacy parser solely to obtain it.
     let bootstrap_config = match Config::from_env() {
         Ok(config) => config,
-        Err(_) => {
-            let redis_url = std::env::var("REDIS_URL")
-                .map_err(|_| error::BotError::Config("missing REDIS_URL".into()))?;
-            Config::redis_only(secrecy::SecretString::new(redis_url))
-        }
+        Err(_) => Config::redis_only(secrecy::SecretString::new(redis_value.clone())),
     };
-    let encryption_key = encryption_key_from_env()?;
     let redis_url = bootstrap_config.redis_url.clone();
     // RUN_MODE is intentionally explicit even while both modes share the stage-0
     // no-op router; later stages attach webhook/reconcile side effects here.
@@ -46,14 +71,10 @@ async fn main() -> Result<(), error::BotError> {
             )))
         }
     }
-    let addr: SocketAddr = format!("0.0.0.0:{}", bootstrap_config.port)
-        .parse()
-        .map_err(|e| error::BotError::Config(format!("invalid PORT: {e}")))?;
     tracing::info!(
         port = bootstrap_config.port,
         "starting webhook HTTP entrypoint"
     );
-    let listener = tokio::net::TcpListener::bind(addr).await?;
     let redis =
         RedisState::connect_with_encryption(redis_url.expose_secret(), Some(encryption_key))
             .await?;

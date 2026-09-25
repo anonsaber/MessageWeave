@@ -105,7 +105,7 @@
 AI 授权期限由用户选择（临时一次、1小时、今天、7天或直到撤销），Redis 仅保存 chat id、授权状态和带 TTL 的到期时间；不会保存正文或摘要。到期后摘要请求回到元数据模式并提示重新授权。
 | `ACCOUNT_ID` | 默认空 | **单账户**（`REQ-SINGLE-ACCOUNT`）：留空则取 session 主账户；多账户 = 部署多个 bot 实例（各自独立 token/配置），不做多账户单实例 |
 
-> **三个入口鉴权变量均为必填（fail-closed，`SAF-AUTH-*`）**：`RECONCILE_TOKEN` / `TG_WEBHOOK_SECRET` / `JMAP_PUSH_VERIFICATION` 缺失即**启动失败**（`Config::from_env()` 报缺失），不存在"未配置则放行"的降级路径。三个入口分别校验：`/reconcile`（Bearer 头）、`/webhook/tg`（secret 头）、`/push/jmap`（Body `verificationCode`）；校验失败一律返回 `401`，且在鉴权通过前**不产生任何副作用**。`/healthz` 与 `/ready` 为公开探针，不含敏感信息。
+> 业务鉴权变量由 Redis `config:business` 管理，不再要求作为启动环境变量。缺少 `REDIS_URL` 或非法/缺失 `CONFIG_ENCRYPTION_KEY` 时服务仍监听并提供 SPA、`/api/status` 与探针，状态为 `configuration-setup`，不会伪造持久化成功；配置恢复后再启用业务入口鉴权。
 > 示例占位见仓库根目录 [`.env.example`](../.env.example)（仅占位符，**严禁**放入真实密钥）。
 
 > **配置管理页面**：服务根路径 `/` 提供嵌入 Rust 二进制的 SPA。输入 Redis URL 的 ACL 密码后，`POST /api/admin/session` 签发 900 秒 admin session；页面只在内存中保存 opaque session。运行参数通过 `/api/config` 读取和保存；完整业务配置通过 `PUT /api/business-config` 替换并热加载。业务配置 API 不提供 GET，密钥不会回显；每次完整替换都需重新输入必填密钥。配置保存在外部 Redis（`C-REDIS-ONLY-STATE`），静态资源编译时随二进制打包，无运行期本地文件。
