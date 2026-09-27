@@ -10,7 +10,10 @@ use ring::rand::SecureRandom;
 use secrecy::{ExposeSecret, SecretString};
 use std::{
     collections::HashSet,
-    sync::{Arc, RwLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, RwLock,
+    },
 };
 use subtle::ConstantTimeEq;
 
@@ -30,7 +33,6 @@ pub use crate::worker::{
 struct AuthState {
     reconcile_token: SecretString,
     telegram_webhook_secret: SecretString,
-    jmap_push_verification: SecretString,
 }
 
 #[derive(Clone)]
@@ -54,7 +56,6 @@ impl From<AuthSecrets> for AuthState {
         Self {
             reconcile_token: value.reconcile_token,
             telegram_webhook_secret: value.telegram_webhook_secret,
-            jmap_push_verification: value.jmap_push_verification,
         }
     }
 }
@@ -63,8 +64,23 @@ async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
-async fn ready() -> impl IntoResponse {
-    (StatusCode::OK, "ready")
+async fn ready(State(app): State<AppState>) -> Response {
+    let configured = app.setup_missing.is_empty();
+    let redis = app.state.is_enabled().await.is_ok();
+    let ready = configured && redis;
+    let body = axum::Json(serde_json::json!({
+        "status": if ready { "ready" } else { "not_ready" },
+        "configured": configured,
+        "redis": redis,
+        "jmap": configured,
+        "push": configured,
+        "telegram": configured,
+    }));
+    if ready {
+        (StatusCode::OK, body).into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, body).into_response()
+    }
 }
 
 async fn setup_status(State(app): State<AppState>) -> Response {
@@ -84,7 +100,7 @@ async fn telegram_webhook(
 ) -> Response {
     refresh_business_config(&app).await;
     if !business_enabled(&app).await {
-        return (StatusCode::SERVICE_UNAVAILABLE, "service disabled").into_response();
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
     }
     let (auth, _, allowlist) = auth_snapshot(&app);
     if !header_value_matches(
@@ -92,13 +108,13 @@ async fn telegram_webhook(
         "x-telegram-bot-api-secret-token",
         auth.telegram_webhook_secret.expose_secret(),
     ) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
     }
     let Ok(update) = serde_json::from_slice::<TelegramUpdate>(&body) else {
-        return StatusCode::BAD_REQUEST.into_response();
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
     };
     if !allowlist.is_empty() && update.chat_id().is_some_and(|id| !allowlist.contains(&id)) {
-        return StatusCode::FORBIDDEN.into_response();
+        return error_response(StatusCode::FORBIDDEN, "forbidden", false);
     }
     let key = format!("dedup:tg:{}", update.update_id);
     match app.state.claim_dedup(&key, 86_400).await {
@@ -111,17 +127,17 @@ async fn telegram_webhook(
             Ok(_) => StatusCode::NO_CONTENT.into_response(),
             Err(_) => {
                 let _ = app.state.release_dedup(&key).await;
-                StatusCode::SERVICE_UNAVAILABLE.into_response()
+                error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true)
             }
         },
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(_) => error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true),
     }
 }
 
 async fn reconcile(State(app): State<AppState>, headers: HeaderMap) -> Response {
     refresh_business_config(&app).await;
     if !business_enabled(&app).await {
-        return (StatusCode::SERVICE_UNAVAILABLE, "service disabled").into_response();
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
     }
     let (auth, _, _) = auth_snapshot(&app);
     let valid = headers
@@ -136,24 +152,106 @@ async fn reconcile(State(app): State<AppState>, headers: HeaderMap) -> Response 
         })
         .unwrap_or(false);
     if !valid {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
     }
-    match app.state.acquire_lock("lock:reconcile", 300).await {
+    let lock_owner = reconcile_lock_owner();
+    match app
+        .state
+        .acquire_lock("lock:reconcile", &lock_owner, 300)
+        .await
+    {
         Ok(true) => {
-            // JMAP changes/reconciliation is intentionally not implemented in
-            // this bounded HTTP slice; do not report a false successful run.
-            let _ = app.state.release_lock("lock:reconcile").await;
-            (StatusCode::NOT_IMPLEMENTED, "reconcile changes unavailable").into_response()
+            const MAX_CHANGES: usize = 100;
+            let heartbeat_state = Arc::clone(&app.state);
+            let heartbeat_owner = lock_owner.clone();
+            let lease_lost = Arc::new(AtomicBool::new(false));
+            let heartbeat_lease_lost = Arc::clone(&lease_lost);
+            let heartbeat = tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    match heartbeat_state
+                        .renew_lock("lock:reconcile", &heartbeat_owner, 90)
+                        .await
+                    {
+                        Ok(true) => {}
+                        _ => {
+                            heartbeat_lease_lost.store(true, Ordering::Release);
+                            break;
+                        }
+                    }
+                }
+            });
+            let since = match app.state.get_reconcile_state().await {
+                Ok(value) => value,
+                Err(_) => {
+                    heartbeat.abort();
+                    let _ = app.state.release_lock("lock:reconcile", &lock_owner).await;
+                    return error_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "service_unavailable",
+                        true,
+                    );
+                }
+            };
+            let result = app.worker.reconcile(since.as_deref(), MAX_CHANGES).await;
+            heartbeat.abort();
+            let response = if lease_lost.load(Ordering::Acquire) {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                match result {
+                    Ok(new_state) => match app.state.set_reconcile_state(&new_state).await {
+                        Ok(()) => StatusCode::NO_CONTENT,
+                        Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+                    },
+                    Err(()) => StatusCode::SERVICE_UNAVAILABLE,
+                }
+            };
+            let _ = app.state.release_lock("lock:reconcile", &lock_owner).await;
+            if response == StatusCode::SERVICE_UNAVAILABLE {
+                error_response(response, "reconcile_retry", true)
+            } else {
+                response.into_response()
+            }
         }
-        Ok(false) => StatusCode::CONFLICT.into_response(),
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Ok(false) => error_response(StatusCode::CONFLICT, "conflict", false),
+        Err(_) => error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true),
+    }
+}
+
+fn reconcile_lock_owner() -> String {
+    let mut bytes = [0_u8; 16];
+    if SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes).is_err() {
+        // CSPRNG failure is effectively unreachable on Linux (getrandom-backed),
+        // but never fall back to a constant token: two instances landing on the
+        // same static value would make the release/renew CAS useless because
+        // they could cancel each other's leases. Derive a still-unique value
+        // from time + pid + counter instead (建议-2).
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        return format!("fallback-{:x}-{:x}-{:x}", nanos, std::process::id(), nonce);
+    }
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn error_response(status: StatusCode, code: &'static str, retry: bool) -> Response {
+    let request_id = reconcile_lock_owner();
+    let body = axum::Json(serde_json::json!({"error": code, "request_id": request_id}));
+    if retry {
+        (status, [(header::RETRY_AFTER, "30")], body).into_response()
+    } else {
+        (status, body).into_response()
     }
 }
 
 async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     refresh_business_config(&app).await;
     if !business_enabled(&app).await {
-        return (StatusCode::SERVICE_UNAVAILABLE, "service disabled").into_response();
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
     }
     let (_, worker_token, _) = auth_snapshot(&app);
     let valid = headers
@@ -163,7 +261,7 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
         .map(|token| constant_time_eq(token.as_bytes(), worker_token.expose_secret().as_bytes()))
         .unwrap_or(false);
     if !valid {
-        StatusCode::UNAUTHORIZED.into_response()
+        error_response(StatusCode::UNAUTHORIZED, "unauthorized", false)
     } else {
         const GROUP: &str = "stalwart-workers";
         const CONSUMER: &str = "http-worker";
@@ -172,7 +270,7 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
             MAX
         } else {
             let Ok(request) = serde_json::from_slice::<WorkerRequest>(&body) else {
-                return StatusCode::BAD_REQUEST.into_response();
+                return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
             };
             request
                 .batch
@@ -182,7 +280,13 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
         for stream in ["stalwart:jmap", "stalwart:telegram"] {
             let messages = match app.state.read_batch(stream, GROUP, CONSUMER, batch).await {
                 Ok(messages) => messages,
-                Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                Err(_) => {
+                    return error_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "service_unavailable",
+                        true,
+                    )
+                }
             };
             for message in messages.into_iter().take(batch) {
                 // Commit is written only after send succeeds. Before send,
@@ -192,27 +296,51 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
                 match app.state.dedup_exists(&delivery_key).await {
                     Ok(true) => {
                         if app.state.ack(stream, GROUP, &message.id).await.is_err() {
-                            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                            return error_response(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "service_unavailable",
+                                true,
+                            );
                         }
                         continue;
                     }
                     Ok(false) => {}
-                    Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                    Err(_) => {
+                        return error_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "service_unavailable",
+                            true,
+                        )
+                    }
                 }
                 let inflight_key = format!("delivery:inflight:{stream}:{}", message.id);
                 match app.state.claim_dedup(&inflight_key, 60).await {
                     Ok(false) => continue,
-                    Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                    Err(_) => {
+                        return error_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "service_unavailable",
+                            true,
+                        )
+                    }
                     Ok(true) => {}
                 }
                 if app.worker.process(stream, &message.payload).await.is_ok() {
                     if app.state.claim_dedup(&delivery_key, 604_800).await.is_err() {
                         let _ = app.state.release_dedup(&inflight_key).await;
-                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                        return error_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "service_unavailable",
+                            true,
+                        );
                     }
                     let _ = app.state.release_dedup(&inflight_key).await;
                     if app.state.ack(stream, GROUP, &message.id).await.is_err() {
-                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                        return error_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "service_unavailable",
+                            true,
+                        );
                     }
                 } else {
                     let _ = app.state.release_dedup(&inflight_key).await;
@@ -222,7 +350,11 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
                         .await
                         .is_err()
                     {
-                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                        return error_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "service_unavailable",
+                            true,
+                        );
                     }
                 }
             }
@@ -261,28 +393,32 @@ async fn config_authorized(app: &AppState, headers: &HeaderMap) -> bool {
 async fn get_config(State(app): State<AppState>, headers: HeaderMap) -> Response {
     refresh_business_config(&app).await;
     if !config_authorized(&app, &headers).await {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
     }
     match app.state.get_outbound_config().await {
         Ok(config) => axum::Json(config).into_response(),
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(_) => error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true),
     }
 }
 
 async fn put_config(State(app): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     refresh_business_config(&app).await;
     if !config_authorized(&app, &headers).await {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
     }
     let Ok(config) = serde_json::from_slice::<OutboundConfig>(&body) else {
-        return StatusCode::BAD_REQUEST.into_response();
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
     };
     if !(100..=300_000).contains(&config.jmap_timeout_ms)
         || !(100..=300_000).contains(&config.telegram_timeout_ms)
         || !(100..=300_000).contains(&config.llm_timeout_ms)
         || config.max_retries > 5
     {
-        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_configuration",
+            false,
+        );
     }
     match app.state.set_outbound_config(&config).await {
         Ok(()) => {
@@ -291,29 +427,33 @@ async fn put_config(State(app): State<AppState>, headers: HeaderMap, body: Bytes
             }
             axum::Json(config).into_response()
         }
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(_) => error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true),
     }
 }
 
 async fn get_enabled(State(app): State<AppState>, headers: HeaderMap) -> Response {
     if !config_authorized(&app, &headers).await {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
     }
     axum::Json(serde_json::json!({"enabled": business_enabled(&app).await})).into_response()
 }
 
 async fn put_enabled(State(app): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     if !config_authorized(&app, &headers).await {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
     }
     let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return StatusCode::BAD_REQUEST.into_response();
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
     };
     let Some(enabled) = payload.get("enabled").and_then(serde_json::Value::as_bool) else {
-        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_configuration",
+            false,
+        );
     };
     if app.state.set_enabled(enabled).await.is_err() {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
     }
     axum::Json(serde_json::json!({"enabled": enabled})).into_response()
 }
@@ -331,28 +471,40 @@ async fn put_business_config(
 ) -> Response {
     refresh_business_config(&app).await;
     if !config_authorized(&app, &headers).await {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
     }
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return StatusCode::BAD_REQUEST.into_response();
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
     };
     let Ok(wire) = serde_json::from_value::<BusinessConfigWire>(value.clone()) else {
-        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_configuration",
+            false,
+        );
     };
     if validate_business_wire(wire.clone()).is_err() {
-        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_configuration",
+            false,
+        );
     }
     let Ok(config): Result<BusinessConfig, _> = wire.try_into() else {
-        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_configuration",
+            false,
+        );
     };
     let Ok(worker) = build_worker(config.clone(), app.clone()).await else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
     };
     if app.state.set_business_config(&value).await.is_err() {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
     }
     if app.reload.commit(config.clone(), worker).is_err() {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
     }
     if let Ok(mut current) = app.business_config.write() {
         *current = Some(value);
@@ -374,29 +526,45 @@ async fn bootstrap(State(app): State<AppState>, headers: HeaderMap, body: Bytes)
     if app.bootstrap_token.expose_secret().is_empty()
         || !worker_authorized(&headers, app.bootstrap_token.expose_secret())
     {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
     }
     let Ok(config) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return StatusCode::BAD_REQUEST.into_response();
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
     };
     let Ok(wire) = serde_json::from_value::<BusinessConfigWire>(config.clone()) else {
-        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_configuration",
+            false,
+        );
     };
     if validate_business_wire(wire.clone()).is_err() {
-        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_configuration",
+            false,
+        );
     }
     let Ok(next_config): Result<BusinessConfig, _> = wire.try_into() else {
-        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_configuration",
+            false,
+        );
     };
     // Build and connect all clients before SET-NX: an unreachable JMAP must not consume
     // the one-shot bootstrap slot or leave an unusable encrypted snapshot in Redis.
     let Ok(next_worker) = build_worker(next_config.clone(), app.clone()).await else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
     };
     match app.state.initialize_business_config(&config).await {
         Ok(true) => {
             if app.reload.commit(next_config.clone(), next_worker).is_err() {
-                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                return error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "service_unavailable",
+                    true,
+                );
             }
             if let Ok(mut current) = app.business_config.write() {
                 *current = Some(config);
@@ -411,8 +579,8 @@ async fn bootstrap(State(app): State<AppState>, headers: HeaderMap, body: Bytes)
             }
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(false) => StatusCode::CONFLICT.into_response(),
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Ok(false) => error_response(StatusCode::CONFLICT, "conflict", false),
+        Err(_) => error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true),
     }
 }
 
@@ -506,12 +674,12 @@ async fn revoke_admin_session(State(app): State<AppState>, headers: HeaderMap) -
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
     else {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
     };
     let digest = session_digest(token);
     match app.state.revoke_admin_session(&digest).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(_) => error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true),
     }
 }
 
@@ -519,16 +687,16 @@ async fn create_admin_session(State(app): State<AppState>, headers: HeaderMap) -
     if app.bootstrap_token.expose_secret().is_empty()
         || !worker_authorized(&headers, app.bootstrap_token.expose_secret())
     {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
     }
     let mut bytes = [0_u8; 32];
     if ring::rand::SystemRandom::new().fill(&mut bytes).is_err() {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", false);
     }
     let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     let digest = session_digest(&token);
     if app.state.put_admin_session(&digest, 900).await.is_err() {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
     }
     axum::Json(serde_json::json!({"session": token, "expires_in": 900})).into_response()
 }
@@ -541,34 +709,61 @@ struct WorkerRequest {
 async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
     refresh_business_config(&app).await;
     if !business_enabled(&app).await {
-        return (StatusCode::SERVICE_UNAVAILABLE, "service disabled").into_response();
-    }
-    let (auth, _, _) = auth_snapshot(&app);
-    // Stalwart's PushSubscription callback carries verificationCode in its
-    // JSON object. Check it before any future queue/Redis side effect.
-    let valid = serde_json::from_slice::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("verificationCode")
-                .and_then(|code| code.as_str())
-                .map(str::to_owned)
-        })
-        .map(|code| {
-            constant_time_eq(
-                code.as_bytes(),
-                auth.jmap_push_verification.expose_secret().as_bytes(),
-            )
-        })
-        .unwrap_or(false);
-    if !valid {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
     }
     let Ok(push) = serde_json::from_slice::<JmapPush>(&body) else {
-        return StatusCode::BAD_REQUEST.into_response();
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
     };
+    let (Some(subscription), Some(code)) = (
+        push.subscription_id.as_deref(),
+        push.verification_code.as_deref(),
+    ) else {
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
+    };
+    if !matches!(
+        app.state
+            .push_subscription_verified(subscription, code)
+            .await,
+        Ok(true)
+    ) {
+        let limit_key = format!("ratelimit:push-verify:{subscription}");
+        if matches!(app.state.claim_dedup(&limit_key, 30).await, Ok(false)) {
+            return error_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                "push_verify_rate_limited",
+                true,
+            );
+        }
+        if app
+            .worker
+            .verify_push_subscription(subscription, code)
+            .await
+            .is_err()
+        {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "push_verify_failed", true);
+        }
+        if app
+            .state
+            .remember_push_subscription(subscription, code, 300)
+            .await
+            .is_err()
+        {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "push_state_unavailable",
+                true,
+            );
+        }
+        let _ = app
+            .state
+            .set_push_subscription_status(subscription, "verified", 300)
+            .await;
+    }
+    if push.account_id.is_none() && push.email_id.is_none() {
+        return StatusCode::NO_CONTENT.into_response();
+    }
     let (Some(account), Some(email)) = (push.account_id, push.email_id) else {
-        return StatusCode::BAD_REQUEST.into_response();
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
     };
     let key = format!("dedup:jmap:{account}:{email}");
     match app.state.claim_dedup(&key, 86_400).await {
@@ -581,11 +776,235 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
             Ok(_) => StatusCode::NO_CONTENT.into_response(),
             Err(_) => {
                 let _ = app.state.release_dedup(&key).await;
-                StatusCode::SERVICE_UNAVAILABLE.into_response()
+                error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true)
             }
         },
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(_) => error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct PushRegistration {
+    callback_url: String,
+}
+
+#[derive(serde::Deserialize)]
+struct PushDisable {
+    callback_url: String,
+}
+
+/// Registers the callback through JMAP; the verification code is generated by
+/// Stalwart and is never accepted from SPA configuration.
+async fn register_push(State(app): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    if !config_authorized(&app, &headers).await {
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
+    }
+    let Ok(request) = serde_json::from_slice::<PushRegistration>(&body) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
+    };
+    let Ok(url) = url::Url::parse(&request.callback_url) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
+    };
+    if url.scheme() != "https" || url.username() != "" || url.password().is_some() {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
+    }
+    let registration_lock = format!(
+        "lock:push-register:{}",
+        session_digest(&request.callback_url)
+    );
+    let registration_owner = reconcile_lock_owner();
+    match app
+        .state
+        // The lock must outlive the configured 300s maximum JMAP request
+        // timeout; this prevents a slow create from admitting a duplicate.
+        .acquire_lock(&registration_lock, &registration_owner, 360)
+        .await
+    {
+        Ok(false) => return error_response(StatusCode::CONFLICT, "conflict", false),
+        Err(_) => {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true)
+        }
+        Ok(true) => {}
+    }
+    if let Ok(Some(subscription_id)) = app
+        .state
+        .get_push_subscription_for_callback(&request.callback_url)
+        .await
+    {
+        let _ = app
+            .state
+            .release_lock(&registration_lock, &registration_owner)
+            .await;
+        return axum::Json(serde_json::json!({
+            "push_subscription_id": subscription_id,
+            "idempotent": true
+        }))
+        .into_response();
+    }
+    let Ok(subscription_id) = app
+        .worker
+        .create_push_subscription(&request.callback_url)
+        .await
+    else {
+        let _ = app
+            .state
+            .release_lock(&registration_lock, &registration_owner)
+            .await;
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
+    };
+    if app
+        .state
+        .remember_push_subscription_id(&subscription_id)
+        .await
+        .is_err()
+    {
+        let request_id = cleanup_push_orphan(&app, &subscription_id).await;
+        let _ = app
+            .state
+            .release_lock(&registration_lock, &registration_owner)
+            .await;
+        return error_response_with_id(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "push_state_unavailable",
+            request_id,
+        );
+    }
+    if app
+        .state
+        .set_push_subscription_status(&subscription_id, "pending", 900)
+        .await
+        .is_err()
+    {
+        let request_id = cleanup_push_orphan(&app, &subscription_id).await;
+        let _ = app
+            .state
+            .release_lock(&registration_lock, &registration_owner)
+            .await;
+        return error_response_with_id(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "push_state_unavailable",
+            request_id,
+        );
+    }
+    if app
+        .state
+        .remember_push_subscription_for_callback(&request.callback_url, &subscription_id)
+        .await
+        .is_err()
+    {
+        let request_id = cleanup_push_orphan(&app, &subscription_id).await;
+        let _ = app
+            .state
+            .release_lock(&registration_lock, &registration_owner)
+            .await;
+        return error_response_with_id(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "push_state_unavailable",
+            request_id,
+        );
+    }
+    let _ = app
+        .state
+        .release_lock(&registration_lock, &registration_owner)
+        .await;
+    axum::Json(serde_json::json!({"push_subscription_id": subscription_id})).into_response()
+}
+
+/// Disable and remove a persisted push registration. Destruction is attempted
+/// before deleting the callback mapping so a transient JMAP failure is
+/// retryable and cannot silently orphan a live subscription.
+async fn disable_push(State(app): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    if !config_authorized(&app, &headers).await {
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
+    }
+    let Ok(request) = serde_json::from_slice::<PushDisable>(&body) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
+    };
+    let Ok(Some(subscription_id)) = app
+        .state
+        .get_push_subscription_for_callback(&request.callback_url)
+        .await
+    else {
+        return error_response(StatusCode::NOT_FOUND, "push_subscription_not_found", false);
+    };
+    if app
+        .worker
+        .destroy_push_subscription(&subscription_id)
+        .await
+        .is_err()
+    {
+        let request_id = cleanup_push_orphan(&app, &subscription_id).await;
+        return error_response_with_id(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "push_destroy_failed",
+            request_id,
+        );
+    }
+    if app
+        .state
+        .set_push_subscription_status(&subscription_id, "disabled", 86_400)
+        .await
+        .is_err()
+    {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "push_state_unavailable",
+            true,
+        );
+    }
+    // Drop the verification digest as well: otherwise a push arriving within the
+    // residual TTL of the last verify call still passes
+    // `push_subscription_verified` and gets enqueued after disable.
+    if app
+        .state
+        .forget_push_subscription(&subscription_id)
+        .await
+        .is_err()
+    {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "push_state_unavailable",
+            true,
+        );
+    }
+    if app
+        .state
+        .remove_push_subscription_for_callback(&request.callback_url)
+        .await
+        .is_err()
+    {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "push_state_unavailable",
+            true,
+        );
+    }
+    axum::Json(serde_json::json!({"disabled": true})).into_response()
+}
+
+async fn cleanup_push_orphan(app: &AppState, subscription_id: &str) -> String {
+    let request_id = reconcile_lock_owner();
+    if app
+        .worker
+        .destroy_push_subscription(subscription_id)
+        .await
+        .is_err()
+    {
+        let _ = app
+            .state
+            .record_push_orphan(subscription_id, &request_id)
+            .await;
+    }
+    request_id
+}
+
+fn error_response_with_id(status: StatusCode, code: &'static str, request_id: String) -> Response {
+    (
+        status,
+        [(header::RETRY_AFTER, "30")],
+        axum::Json(serde_json::json!({"error": code, "request_id": request_id})),
+    )
+        .into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -609,6 +1028,10 @@ impl TelegramUpdate {
 }
 #[derive(serde::Deserialize)]
 struct JmapPush {
+    #[serde(rename = "pushSubscriptionId")]
+    subscription_id: Option<String>,
+    #[serde(rename = "verificationCode")]
+    verification_code: Option<String>,
     #[serde(rename = "accountId")]
     account_id: Option<String>,
     #[serde(rename = "emailId")]
@@ -634,7 +1057,6 @@ fn auth_snapshot(app: &AppState) -> (AuthState, SecretString, HashSet<i64>) {
                 AuthState {
                     reconcile_token: config.reconcile_token.clone(),
                     telegram_webhook_secret: config.telegram_webhook_secret.clone(),
-                    jmap_push_verification: config.jmap_push_verification.clone(),
                 },
                 config.worker_token.clone(),
                 config.chat_allowlist.iter().copied().collect(),
@@ -678,7 +1100,6 @@ pub fn router_configuration_setup(missing: Vec<String>) -> Router {
         AuthSecrets {
             reconcile_token: SecretString::new(String::new()),
             telegram_webhook_secret: SecretString::new(String::new()),
-            jmap_push_verification: SecretString::new(String::new()),
         },
         SecretString::new(String::new()),
         MemoryState::default(),
@@ -766,6 +1187,8 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
     Router::new()
         .route("/webhook/tg", post(telegram_webhook))
         .route("/push/jmap", post(jmap_push))
+        .route("/api/push/register", post(register_push))
+        .route("/api/push/disable", post(disable_push))
         .route("/reconcile", post(reconcile))
         .route("/worker", post(worker))
         .route("/api/config", get(get_config).put(put_config))
@@ -805,7 +1228,6 @@ mod tests {
             AuthSecrets {
                 reconcile_token: SecretString::new("reconcile-secret".into()),
                 telegram_webhook_secret: SecretString::new("telegram-secret".into()),
-                jmap_push_verification: SecretString::new("jmap-verification".into()),
             },
             SecretString::new("worker-secret".into()),
             MemoryState::enabled_for_tests(),
@@ -864,7 +1286,7 @@ mod tests {
                     .unwrap(),
             )
             .await,
-            StatusCode::NOT_IMPLEMENTED
+            StatusCode::SERVICE_UNAVAILABLE
         );
     }
 
@@ -934,7 +1356,6 @@ mod tests {
             AuthSecrets {
                 reconcile_token: SecretString::new("r".into()),
                 telegram_webhook_secret: SecretString::new("t".into()),
-                jmap_push_verification: SecretString::new("p".into()),
             },
             SecretString::new("w".into()),
             MemoryState::default(),
@@ -943,7 +1364,10 @@ mod tests {
             runtime_provider(OutboundConfig::default()),
             SecretString::new("acl-root".into()),
         );
-        let body = r#"{"bot_token":"bot","telegram_chat_id":1,"chat_allowlist":[],"telegram_webhook_secret":"hook","jmap_session_url":"https://127.0.0.1:1","jmap_username":"u","jmap_password":"p","jmap_push_verification":"v","account_id":null,"llm_enabled":false,"llm_allow_net":false,"llm_api_key":null,"llm_base_url":null,"llm_model":null,"reconcile_token":"r","worker_token":"w"}"#;
+        // 本用例验证的是"失败的 bootstrap 不消耗一次性初始化槽位"，失败原因应是
+        // JMAP 不可达（127.0.0.1:1 → 503），因此 allowlist 必须合法，避免被
+        // SAF-CHAT-ALLOWLIST 的非空校验提前拦成 422。
+        let body = r#"{"bot_token":"bot","telegram_chat_id":1,"chat_allowlist":[1],"telegram_webhook_secret":"hook","jmap_session_url":"https://127.0.0.1:1","jmap_username":"u","jmap_password":"p","account_id":null,"llm_enabled":false,"llm_allow_net":false,"llm_api_key":null,"llm_base_url":null,"llm_model":null,"reconcile_token":"r","worker_token":"w"}"#;
         for _ in 0..2 {
             let response = app
                 .clone()
@@ -1056,12 +1480,12 @@ mod tests {
                     .uri("/push/jmap")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"verificationCode":"jmap-verification","accountId":"a","emailId":"e"}"#
+                        r#"{"pushSubscriptionId":"push-1","verificationCode":"code","accountId":"a","emailId":"e"}"#
                     ))
                     .unwrap(),
             )
             .await,
-            StatusCode::NO_CONTENT
+            StatusCode::SERVICE_UNAVAILABLE
         );
     }
 
@@ -1084,7 +1508,6 @@ mod tests {
             AuthSecrets {
                 reconcile_token: SecretString::new("r".into()),
                 telegram_webhook_secret: SecretString::new("t".into()),
-                jmap_push_verification: SecretString::new("p".into()),
             },
             SecretString::new("w".into()),
             MemoryState::default(),
@@ -1221,5 +1644,284 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // ── /api/push/register 与 /api/push/disable（handoff #51）──
+    //
+    // 这两条路由此前只有实现、没有 HTTP 层测试。这里用可控 Worker 覆盖
+    // 鉴权、入参校验、注册锁冲突、幂等、以及失败时的 retry 语义。
+
+    /// 可控 Worker：`create_id` 为 None 时模拟创建失败；`destroy_ok=false` 模拟销毁失败。
+    struct PushMockWorker {
+        create_id: Option<&'static str>,
+        destroy_ok: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl WorkerHandler for PushMockWorker {
+        async fn process(&self, _stream: &str, _payload: &str) -> Result<(), ()> {
+            Err(())
+        }
+
+        async fn create_push_subscription(&self, _callback_url: &str) -> Result<String, ()> {
+            self.create_id.map(str::to_owned).ok_or(())
+        }
+
+        async fn destroy_push_subscription(&self, _subscription_id: &str) -> Result<(), ()> {
+            if self.destroy_ok {
+                Ok(())
+            } else {
+                Err(())
+            }
+        }
+    }
+
+    fn push_router(worker: PushMockWorker) -> (Router, MemoryState) {
+        let state = MemoryState::enabled_for_tests();
+        let router = router_with_worker_state(
+            AuthSecrets {
+                reconcile_token: SecretString::new("reconcile-secret".into()),
+                telegram_webhook_secret: SecretString::new("telegram-secret".into()),
+            },
+            SecretString::new("worker-secret".into()),
+            state.clone(),
+            HashSet::new(),
+            Arc::new(worker),
+        );
+        (router, state)
+    }
+
+    fn push_req(uri: &str, body: &str, bearer: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json");
+        if let Some(token) = bearer {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        builder.body(Body::from(body.to_owned())).unwrap()
+    }
+
+    async fn json_body(response: Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn push_register_requires_bearer_token() {
+        let (router, _state) = push_router(PushMockWorker {
+            create_id: Some("sub-1"),
+            destroy_ok: true,
+        });
+        let body = r#"{"callback_url":"https://example.com/push"}"#;
+        for bearer in [None, Some("wrong-token")] {
+            let response = router
+                .clone()
+                .oneshot(push_req("/api/push/register", body, bearer))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+    }
+
+    #[tokio::test]
+    async fn push_register_rejects_malformed_or_insecure_payload() {
+        let (router, _state) = push_router(PushMockWorker {
+            create_id: Some("sub-1"),
+            destroy_ok: true,
+        });
+        // 缺字段 / 非 JSON / 非 https / 带 URL 凭据，一律 400 且不触达 Worker。
+        let bodies = [
+            r#"{}"#,
+            r#"not-json"#,
+            r#"{"callback_url":"http://insecure.example/push"}"#,
+            r#"{"callback_url":"https://user:pw@example.com/push"}"#,
+        ];
+        for body in bodies {
+            let response = router
+                .clone()
+                .oneshot(push_req("/api/push/register", body, Some("worker-secret")))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "body: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn push_register_conflicts_when_registration_lock_is_held() {
+        let (router, state) = push_router(PushMockWorker {
+            create_id: Some("sub-1"),
+            destroy_ok: true,
+        });
+        let url = "https://example.com/push";
+        let lock = format!("lock:push-register:{}", session_digest(url));
+        assert!(state
+            .acquire_lock(&lock, "another-owner", 360)
+            .await
+            .unwrap());
+        let body = format!(r#"{{"callback_url":"{url}"}}"#);
+        let response = router
+            .oneshot(push_req("/api/push/register", &body, Some("worker-secret")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn push_register_persists_subscription_then_is_idempotent() {
+        let (router, state) = push_router(PushMockWorker {
+            create_id: Some("sub-abc"),
+            destroy_ok: true,
+        });
+        let url = "https://example.com/push";
+        let body = format!(r#"{{"callback_url":"{url}"}}"#);
+
+        let first = router
+            .clone()
+            .oneshot(push_req("/api/push/register", &body, Some("worker-secret")))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_json = json_body(first).await;
+        assert_eq!(first_json["push_subscription_id"], "sub-abc");
+        assert!(first_json.get("idempotent").is_none());
+        assert_eq!(
+            state
+                .get_push_subscription_for_callback(url)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("sub-abc")
+        );
+
+        // 同一 callback_url 再次注册：命中已存映射，返回 idempotent 标记。
+        let second = router
+            .oneshot(push_req("/api/push/register", &body, Some("worker-secret")))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_json = json_body(second).await;
+        assert_eq!(second_json["push_subscription_id"], "sub-abc");
+        assert_eq!(second_json["idempotent"], true);
+    }
+
+    #[tokio::test]
+    async fn push_register_returns_503_and_releases_lock_when_worker_fails() {
+        let (router, state) = push_router(PushMockWorker {
+            create_id: None,
+            destroy_ok: true,
+        });
+        let url = "https://example.com/push";
+        let body = format!(r#"{{"callback_url":"{url}"}}"#);
+        let response = router
+            .oneshot(push_req("/api/push/register", &body, Some("worker-secret")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        // 失败路径必须释放注册锁，否则同一 callback 会被 409 永久挡住。
+        let lock = format!("lock:push-register:{}", session_digest(url));
+        assert!(state.acquire_lock(&lock, "retry-owner", 360).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn push_disable_requires_bearer_token_and_uses_error_envelope() {
+        let (router, _state) = push_router(PushMockWorker {
+            create_id: Some("sub-1"),
+            destroy_ok: true,
+        });
+        let body = r#"{"callback_url":"https://example.com/push"}"#;
+        let response = router
+            .oneshot(push_req("/api/push/disable", body, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = json_body(response).await;
+        assert_eq!(json["error"], "unauthorized");
+        assert!(json["request_id"].is_string());
+    }
+
+    #[tokio::test]
+    async fn push_disable_returns_404_for_unregistered_callback() {
+        let (router, _state) = push_router(PushMockWorker {
+            create_id: Some("sub-1"),
+            destroy_ok: true,
+        });
+        let body = r#"{"callback_url":"https://example.com/unknown"}"#;
+        let response = router
+            .oneshot(push_req("/api/push/disable", body, Some("worker-secret")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let json = json_body(response).await;
+        assert_eq!(json["error"], "push_subscription_not_found");
+    }
+
+    #[tokio::test]
+    async fn push_disable_removes_registration_on_success() {
+        let (router, state) = push_router(PushMockWorker {
+            create_id: Some("sub-1"),
+            destroy_ok: true,
+        });
+        let url = "https://example.com/push";
+        state
+            .remember_push_subscription_for_callback(url, "sub-1")
+            .await
+            .unwrap();
+        // 预先用验证码哈希登记：disable 后该摘要键也应被清除，避免残存 TTL
+        // 窗口内同一订阅的 push 仍能通过校验被入队（建议-5b）。
+        state
+            .remember_push_subscription("sub-1", "verify-code", 300)
+            .await
+            .unwrap();
+        let body = format!(r#"{{"callback_url":"{url}"}}"#);
+        let response = router
+            .oneshot(push_req("/api/push/disable", &body, Some("worker-secret")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_body(response).await["disabled"], true);
+        assert!(state
+            .get_push_subscription_for_callback(url)
+            .await
+            .unwrap()
+            .is_none());
+        // 摘要键已被清除：同样的验证码不再能通过校验。
+        assert!(!state
+            .push_subscription_verified("sub-1", "verify-code")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn push_disable_keeps_mapping_and_reports_503_when_destroy_fails() {
+        let (router, state) = push_router(PushMockWorker {
+            create_id: Some("sub-1"),
+            destroy_ok: false,
+        });
+        let url = "https://example.com/push";
+        state
+            .remember_push_subscription_for_callback(url, "sub-1")
+            .await
+            .unwrap();
+        let body = format!(r#"{{"callback_url":"{url}"}}"#);
+        let response = router
+            .oneshot(push_req("/api/push/disable", &body, Some("worker-secret")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let json = json_body(response).await;
+        assert_eq!(json["error"], "push_destroy_failed");
+        assert!(json["request_id"].is_string());
+        // 销毁失败时保留映射，使这次 disable 可重试而不静默丢失订阅。
+        assert_eq!(
+            state
+                .get_push_subscription_for_callback(url)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("sub-1")
+        );
     }
 }
