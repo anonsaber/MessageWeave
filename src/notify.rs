@@ -67,19 +67,18 @@ async fn healthz() -> impl IntoResponse {
 async fn ready(State(app): State<AppState>) -> Response {
     let configured = app.setup_missing.is_empty();
     let redis = app.state.is_enabled().await.is_ok();
-    let ready = configured && redis;
-    let body = axum::Json(serde_json::json!({
-        "status": if ready { "ready" } else { "not_ready" },
-        "configured": configured,
-        "redis": redis,
-        "jmap": configured,
-        "push": configured,
-        "telegram": configured,
-    }));
-    if ready {
-        (StatusCode::OK, body).into_response()
+    if configured && redis {
+        axum::Json(serde_json::json!({
+            "status": "ready",
+            "configured": configured,
+            "redis": redis,
+            "jmap": configured,
+            "push": configured,
+            "telegram": configured,
+        }))
+        .into_response()
     } else {
-        (StatusCode::SERVICE_UNAVAILABLE, body).into_response()
+        error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true)
     }
 }
 

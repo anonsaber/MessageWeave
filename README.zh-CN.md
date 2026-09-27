@@ -66,7 +66,7 @@ HostStack 使用根目录 `hoststack.yaml` 构建并运行 Rust 服务：执行 
 ## 启动后怎么看它是否正常
 
 - 浏览器或命令行访问 **`你的公网地址/healthz`**：能返回正常状态，说明机器人进程活着。
-- `/ready` 返回 JSON 就绪状态并检查配置完整性与 Redis 可访问性；200 表示基础依赖就绪，503 表示不应接收业务流量。它不会调用 JMAP、Telegram 或触发任何业务副作用。
+- `/ready` 检查配置完整性与 Redis 可访问性：就绪时返回 `200` 与 JSON 就绪报告（`{"status":"ready","configured":…,…}`）；不就绪时返回 `503` 与标准错误 envelope `{"error":"service_unavailable","request_id":"<id>"}`，并带 `Retry-After: 30`。它不会调用 JMAP、Telegram 或触发任何业务副作用。
 - 运行监控建议使用 Uptime Kuma：为 `/healthz` 建立存活 HTTP 检查，为 `/ready` 建立就绪 HTTP 检查（期望 200，间隔 30 秒、超时 5 秒）。项目不引入 Prometheus 或 exporter。
 - `/reconcile` 执行鉴权、Redis 单飞锁与有界 JMAP `Email/changes` 对账；事件先幂等入 Redis Streams，全部成功后才推进 Redis `sinceState`，依赖暂时失败返回 `503` 以便 Cron 重试。Push 事件仍按鉴权、去重、入队路径处理，不能将其宣传为完整实时同步。
 - 冷启动基线也有页数、邮件数和时间预算；超出预算时保存断点，下一次 `/reconcile` 从断点继续，避免大邮箱反复从头扫描。

@@ -434,7 +434,7 @@ message-weave/
   比较使用**常数时间**算法（`subtle`，防时序侧信道）；校验失败一律 `401` 且**在鉴权通过前不产生任何副作用/状态变更**。业务配置完成后，Webhook、Push、Reconcile 和 Push 注册接口的凭证必须有效；启动引导变量缺失时进入配置引导模式，不绕过鉴权（§7.1）。
 - **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz`（`ARCH-HEALTHZ`）与 `/ready` 为**公开探针**——无鉴权、只返回健康状态、**不含任何敏感信息**（不回显配置/密钥/内部错误细节）。
   - `/healthz` = liveness（进程存活），语义长期稳定。
-  - `/ready` 检查配置完整性与 Redis 可访问性；未就绪返回 `503`，不执行 JMAP/Telegram 请求，也不触发邮件同步等业务副作用。
+  - `/ready` 检查配置完整性与 Redis 可访问性；未就绪返回 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`），就绪返回 `200` 与就绪报告（`{"status":"ready","configured":...,...}`）；不执行 JMAP/Telegram 请求，也不触发邮件同步等业务副作用。
 - **chat 白名单（硬约束 `SAF-CHAT-ALLOWLIST`）**：`CHAT_ALLOWLIST` 是**必填**配置；任何入站事件（TG 命令 / 回调触发的动作）在**做任何 JMAP 调用、AI 调用或状态变更之前**，必须先校验 `chat.id ∈ CHAT_ALLOWLIST`，不在白名单则**直接拒绝并终止**（防止 token 泄露后被任意人调用）。阶段0 已完成 `CHAT_ALLOWLIST` 解析骨架；强制拒绝逻辑已随 Telegram 渠道接入落地（`src/notify.rs` 的 `telegram_webhook` 在任何 JMAP/AI/状态操作之前先校验白名单，拒绝即终止）。
 - **命令最小化**：仅暴露必要命令；`/send` 需二次确认。
 - **速率**：出站侧未建本地令牌桶（未引入 `teloxide`）；Telegram 出站发送按 Redis 运行参数 `max_retries`（默认 3、上限 5）重试；当前仅对 Push 验证码写入做 Redis 限流（`ratelimit:push-verify:*`）。Telegram 服务端 30 msg/s 限制下的 429 不做专门的自动退避处理。
@@ -551,7 +551,7 @@ pub enum BotError {
   - 分析结果不落盘：处理后无新增磁盘/Redis 写入路径；
   - AI 3 次失败 → 熔断确认 → 回退带"AI 不可用"徽标。
   - **入口鉴权（`SAF-AUTH-*`）**：`/reconcile`、`/webhook/tg`、`/push/jmap` 在**缺少或错误的**凭证下返回 `401`，并断言鉴权失败时**无副作用**（无 Redis 写入、无 JMAP/AI 调用）；正确凭证放行。
-  - **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz` 返回 `200` 表示进程存活；`/ready` 以 `200/503` 表示配置与 Redis 是否就绪，响应体不含敏感信息。
+  - **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz` 返回 `200` 表示进程存活；`/ready` 以 `200/503` 表示配置与 Redis 是否就绪——就绪返回就绪报告 JSON，不就绪返回标准错误 envelope（`service_unavailable` + `Retry-After: 30`）；响应体不含敏感信息。Uptime Kuma 按状态码（`/ready` 期望 200）监控，不受响应体变化影响。
   - **渠道解耦**：领域模块（jmap/llm/intent/notify::core）编译不依赖 teloxide（crate 分层 + clippy/评审约束）；`channel::telegram` 是唯一导入 teloxide 的模块。
   - **JMAP session URL（`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）**：基地址与完整 `…/.well-known/jmap` 两种输入**均接受且归一化结果一致**，传给 `Client::connect` 的 URL **不含重复 `/.well-known/jmap`**；`http://` 被拒绝；**内嵌凭据（`https://user:pass@host`）被拒绝**；危险 query 被拒绝。
   - **JMAP 多 part 原文（`REQ-JMAP-RAW-MULTIPART`）**：`read_email` 对多 part 正文按 `text_body` 顺序拼接"有 `part_id` 且有 `bodyValue`"的部分；构造"无可用部分"用例断言返回**明确错误**（非空串）。
@@ -584,7 +584,7 @@ pub enum BotError {
 8. 所有新增代码有引用稳定 ID 的必要注释；单 `.rs` ≤ 500 行。
 
 **运行监控（`GATE-UPTIME-KUMA`）：**
-- 使用 Uptime Kuma HTTP(s) Monitor 检查 `/healthz`（进程存活）和 `/ready`（配置/Redis 就绪），分别期望 HTTP 200。
+- 使用 Uptime Kuma HTTP(s) Monitor 检查 `/healthz`（进程存活）和 `/ready`（配置/Redis 就绪），分别期望 HTTP 200；`/ready` 不就绪时返回 `503` 与标准错误 envelope（`service_unavailable` + `Retry-After: 30`），Uptime Kuma 仍按状态码判定，不受响应体变化影响。
 - `/healthz` 保持纯 liveness；`/ready` 不执行 JMAP/Telegram 请求或业务副作用。
 - 不引入 Prometheus、Exporter 或额外指标端口；真实 Stalwart/Telegram 端到端链路仍需单独联调。
 

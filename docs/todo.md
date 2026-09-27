@@ -29,6 +29,6 @@
 
 ## 本轮已收口（2026-09-26）
 
-- **错误 envelope 统一**：全部公开写路由错误响应改为 `{"error":<code>,"request_id":<id>}`，可重试的 503 追加 `Retry-After: 30`；`GET /ready` 保留结构化诊断 JSON（Uptime Kuma 运行契约），不改 envelope。
+- **错误 envelope 统一**：全部公开路由错误响应（含 `GET /ready` 不就绪时的 503）统一为 `{"error":<code>,"request_id":<id>}`，可重试的 503 追加 `Retry-After: 30`；`/ready` 就绪时 `200` 仍返回结构化诊断报告。Uptime Kuma 按 HTTP 状态码（`/ready` 期望 200）监控，不受响应体变化影响。
 - **Web SPA i18n**：按浏览器语言判断 `zh`/`en`，默认英文，保持纯静态 SPA（`data-i18n` 属性 + 内联消息字典，无新增资源文件）。
 - **文档**：`README.md` 改英文默认，新增 `README.zh-CN.md`，两版章节与关键事实 1:1 对齐；`docs/design.md`、`docs/deployment.md`、`AGENTS.md` 同步修正滞后描述。

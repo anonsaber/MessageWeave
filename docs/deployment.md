@@ -183,7 +183,7 @@ POST /push/jmap       Stalwart Push 回调 → [鉴权 SAF-AUTH-JMAP-PUSH: Body 
 POST /reconcile      外部 HTTPS Cron 触发 → [鉴权 SAF-AUTH-RECONCILE: Authorization: Bearer RECONCILE_TOKEN]
                       → 对账补差 FLOW-RECONCILE
 GET  /healthz        liveness（ARCH-HEALTHZ：进程存活；公开探针 SAF-PROBE-PUBLIC，无鉴权、无敏感信息）
-GET  /ready          公开 JSON 就绪探针；检查配置完整性与 Redis 可访问性，未就绪返回 503（无鉴权、无敏感信息）
+GET  /ready          公开就绪探针；检查配置完整性与 Redis 可访问性，就绪返回 200+就绪报告 JSON，未就绪返回 503+标准错误 envelope（无鉴权、无敏感信息）
 ```
 `/reconcile` 使用 Redis owner-token 单飞锁并在长任务期间续租；每次最多处理 100 页、10,000 封基线邮件或 20 秒。已完成入队的 changes 页会提交最新游标；冷启动基线超出预算时把基线状态与位置编码后持久化，下一次从断点继续，不从头扫描，也不会提前跳过未列举邮件。
 > **写入口鉴权（fail-closed，`SAF-AUTH-*`）**：Webhook、Push、Reconcile 以及 Push 注册接口都必须先通过鉴权，**失败返回 `401` 且不产生副作用**；比较使用常数时间（`subtle`，防时序侧信道）。secret 未配置 → 启动失败，**无"缺省放行"**。
@@ -227,7 +227,7 @@ GET  /ready          公开 JSON 就绪探针；检查配置完整性与 Redis �
 ## 7. 健康检查（通用 HTTP 约定）
 
 - `GET /healthz` → liveness（`ARCH-HEALTHZ`；进程存活，长期语义）
-- `GET /ready` → 基础就绪探针（`ARCH-READY-BASELINE`）：检查配置完整性与 Redis 可访问性，不就绪返回 `503`；**不代表** Redis/JMAP/TG 依赖已通过端到端检查。
+- `GET /ready` → 基础就绪探针（`ARCH-READY-BASELINE`）：检查配置完整性与 Redis 可访问性；就绪 `200`（就绪报告 JSON），不就绪 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`）；**不代表** Redis/JMAP/TG 依赖已通过端到端检查。Uptime Kuma 按状态码（期望 200）监控，不受响应体变化影响。
 - 两者均为**公开探针**（`SAF-PROBE-PUBLIC`）：无鉴权、仅返回健康状态、**不含敏感信息**。
 - `/ready` 已检查配置完整性与 Redis 可访问性，但不代表 JMAP/Telegram 已完成真实端到端验收；编排与 Uptime Kuma 可用它做基础就绪探测。
 - Docker `HEALTHCHECK` 指向同一监听端口（app 内置 `health` 子命令或 wget 同端口），**不依赖独立端口**（`C-NO-TCP-EXPOSE`）
