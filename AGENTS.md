@@ -145,14 +145,29 @@
 
 | 文件 | 内容 | 何时更新 |
 |---|---|---|
+| `README.md` / `README.zh-CN.md` | 面向最终用户：是什么 / 五分钟跑起来 / 配置入口 / 安全边界一句话 / 去哪读更多（英文版 / 中文版，内容须对等，顶部互链） | 用户可见行为或流程变更时 |
+| `docs/reference.md` | **可核对事实的唯一权威来源**：Redis 键与 TTL、错误 envelope 与错误码、后端路由与网关白名单矩阵、环境变量三层、出站与预算常量 | 公共 API 或 Redis 键名/TTL 变更时（**必更**） |
 | `docs/design.md` | 产品行为、架构、模块接口、状态机、数据流、错误处理、测试、实施阶段、渠道抽象（Channel/Notifier/MessageAdapter）、产品/架构类待确认问题 | 行为/接口变更时 |
-| `docs/deployment.md` | 通用 HTTPS-only Docker、Debian、构建/运行时、Secrets、Redis（状态唯一载体）、Webhook/Push/对账短请求路由、**多实例 LB/HA（Worker 前置，§10）**、健康检查、CI、2 项待确认（`Q-DEP-A` 监控日志落盘 / `Q-DEP-B` 日志采集） | 部署/发布变更时 |
+| `docs/deployment.md` | 通用 HTTPS-only Docker、Debian、构建/运行时、Secrets、Redis（状态唯一载体）、Webhook/Push/对账短请求路由、**多实例 LB/HA（Worker 前置，§10）**、健康检查、CI、2 项待确认（`Q-DEP-A` 平台 URL/域名与证书配置 / `Q-DEP-B` 外部调度器选型） | 部署/发布变更时 |
+| `docs/roadmap.md` | **只放缺口、阻塞与阶段目标**（取代 `docs/todo.md`，已删除） | 缺口或阻塞项增减时 |
 | `AGENTS.md`（本文件） | 目标、硬性安全边界、实现顺序、禁止事项、测试验收、文档引用关系、**跨文档引用索引（§7）** | 安全边界/流程变更时 |
-| `README.md` / `README.zh-CN.md` | 面向最终用户的项目简介、安全模型、配置/环境变量、首次联调流程、已知限制（英文版 / 中文版，内容须对等，顶部互链） | 用户可见行为或流程变更时 |
-| `docs/todo.md` | 未完成项与阻塞原因（替代已删除的根目录 `HANDOFF.md`） | 待办项增减时 |
+
+### 6.1 权威与冲突仲裁
+
+- **`docs/reference.md` 是可核对事实的唯一权威来源。两份文档表述冲突时，以 `docs/reference.md` 为准。**
+- 可核对事实（Redis 键名与 TTL、错误码、路由、环境变量分层、预算常量）**只存在于 `docs/reference.md`**。
+  `design.md` 保留"为什么"，`deployment.md` 保留"怎么配"；两者不得复制 reference.md 的表格或数值，只引用它。
+
+### 6.2 同轮同步规则
+
+- **`README.md` 与 `README.zh-CN.md` 必须同轮更新。**改了一个就必须同轮改另一个并保持内容对等；只改一份的改动不予合入。
+- **改动 `src/config.rs`、`src/state.rs`、`src/worker.rs`、`src/notify.rs` 的公共 API，或改动任何 Redis 键名 / TTL，必须同轮更新 `docs/reference.md`。**评审按此拦截。
+
+### 6.3 边界
 
 - 改动产品规则必须同步三份文档的相关表述，保持一致、不重复堆砌。
 - `design.md` 不写部署细节，`deployment.md` 不写产品行为/接口；交叉处用**稳定 ID**（§7 索引）互相引用，不用章节号。
+- `README.md` 只回答"是什么 / 怎么跑 / 去哪配 / 安全边界 / 去哪读"；**不写缺口、不写 roadmap、不写深水区、不写历史环境变量清单**。缺口一律进 `docs/roadmap.md`。
 
 ---
 

@@ -246,25 +246,43 @@ GET  /ready          公开就绪探针；检查配置完整性与 Redis 可访�
 
 容器以 `--user 1000:1000` 运行，并把 `RUSTUP_HOME`/`CARGO_HOME` 挂载到仓库内持久缓存目录（`-v "$PWD/.gate-cache/rustup:$RUSTUP_HOME" -v "$PWD/.gate-cache/cargo:$CARGO_HOME"`），否则缓存写入因权限失败、工具链每次重建；`.gate-cache/` 已在 `.gitignore` 中，不得提交。门禁结果必须基于**当前仓库快照**重跑得到，不得复用先前快照的通过结果。
 
-（其余 CI：镜像构建 → 镜像扫描 → 非 root → health 端点到容器验证；compose 示例收敛为单端口 + 外部 Redis URL + 无 volume）
+（其余 CI：镜像构建 → 镜像扫描 → 非 root → `/ready` 端点到容器验证；运行方式见 8.1）
 
-### 8.1 docker-compose 示例（收敛）
-```yaml
-services:
-  bot:
-    image: messageweave:latest
-    ports:
-      - "8080:8080"        # 平台 ingress/反代映射 HTTPS → 8080（C-HTTPS-INBOUND）
-    environment:
-      PORT: "8080"
-      RUN_MODE: webhook
-      # BOT_TOKEN / JMAP_* / CHAT_ALLOWLIST / REDIS_URL
-      # RECONCILE_TOKEN / TG_WEBHOOK_SECRET（写入口鉴权；Push verification 由 Stalwart 动态生成）
-    healthcheck: { test: ["CMD", "message-weave", "health", "--addr", "127.0.0.1:8080"], interval: 30s }
-    # REDIS_URL 指向外部、已认证的 Redis；不在此 compose 中运行 Redis。
+### 8.1 运行方式与就绪探测
+
+> **本仓库没有 `docker-compose.yml`。**此前本节给过一段 compose 片段，其中的 `healthcheck` 写成
+> `message-weave health --addr 127.0.0.1:8080` —— 这个子命令不存在（`src/main.rs` 无任何 CLI
+> 参数解析，二进制只起 axum 服务），而且 runtime 阶段是 `debian:bookworm-slim`，只装了
+> `ca-certificates tini`，镜像里没有 curl/wget。照抄那段示例必然得到两个结果之一：healthcheck
+> 永久失败，或容器被判定 healthy 却什么都不做。示例已删除，改为下面的事实约定。
+
+**运行**
+
+```sh
+cp .env.example .env           # 仅需 REDIS_URL 与 CONFIG_ENCRYPTION_KEY
+docker build -t messageweave:latest .
+docker run --env-file .env -p 8080:8080 messageweave:latest
 ```
 
-> 注意：本示例对接 Compose；真实部署可去掉 `ports` 直接挂到平台 ingress（HTTPS-only）。
+- 单端口 8080；平台 ingress/反代映射 HTTPS → 8080（`C-HTTPS-INBOUND`）。
+- runtime 阶段为 `debian:bookworm-slim`，非 root（uid 1000）；无本地 volume、无数据库引擎
+  （`C-NO-LOCAL-WRITE` / `C-NO-DB`）。
+- Redis 由外部已认证实例提供，不与此服务同容器运行（`C-REDIS-EXTERNAL`）。
+
+**就绪探测：用 `/ready`，不要用 `/healthz`**
+
+| 端点 | 语义 | 用途 |
+|---|---|---|
+| `GET /healthz` | 无条件 200 | 存活探测（进程还活着） |
+| `GET /ready` | 配置与 Redis 就绪前 503 | 就绪探测、负载均衡摘除、Uptime Kuma |
+| `GET /api/status` | 缺必需环境变量时 503 + `{"status":"configuration-setup","missing":[...]}` | 排查"起来了但没干活" |
+
+> **由平台 ingress 探测 `/ready`。**镜像内没有 curl/wget、也没有 CLI 子命令，不要依赖容器内
+> healthcheck。
+
+**缺必需环境变量不会崩溃，但也不会干活。**缺 `REDIS_URL` 或 `CONFIG_ENCRYPTION_KEY` 时，进程
+降级为只读配置路由（内存态、空 token、`NoopWorker`），容器继续应答请求但不做任何业务。排查这类
+现象：看启动日志告警，或查 `GET /api/status` 返回的 `missing` 列表。
 
 ### 8.2 镜像与部署验证检查项（红线自检）
 

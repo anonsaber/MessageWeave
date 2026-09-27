@@ -95,7 +95,7 @@ client_ws/        WebSocket 客户端（feature = "websockets"）
 | 读附件 | `Blob/get`（blobId）或 `email_parse` | 大附件需分片/流式下载 |
 | 发邮件（2 步） | ① `email_set`/`email_import` 建 draft ② `email_submission_set` 发送 | submission 关联 identityId |
 | 删除/归档 | `email_set`（keywords `$seen`/`$flagged`）、`mailbox_destroy` | JMAP 无真"删除"，靠 keyword/搬家 |
-| 搜索 | `email_query` Filter + `SearchSnippet/get` 高亮 | |
+| 搜索（未实现） | `email_query` Filter + `SearchSnippet/get` 高亮 | |
 | 实时通知（Push + 对账兜底） | Push HTTPS 回调 → `StateChange`；外部 Cron 调用 `/reconcile` 使用 `Email/changes` 补差 | 需公网 HTTPS 入口（deployment.md `C-HTTPS-INBOUND`/`FLOW-NEW-MAIL`）；Push 不是唯一可靠来源 |
 | SSE / WebSocket（非目标） | `event_source` / `client_ws` | 本部署**不使用**（deployment.md `NG-POLLING-SSE`/`NG-LONG-POLLING`/`C-NO-LONG-CONN`）；仅列 crate 能力供调研 |
 
@@ -154,7 +154,7 @@ WebSocket(...)              ws 错误（feature 开启时）
 | `read_email(id, want_body)` | → `EmailBody { text, html, attachments }` | `email_get`([BodyStructure, BodyValues, BlobIds])；**多 part 原文**（`REQ-JMAP-RAW-MULTIPART`）：按 `text_body` 顺序筛选"有 `part_id` 且 `bodyValue`"的 part 后**拼接**为 `text`；若无可用部分 → 返回**明确错误**（不静默返回空串）。附件用 `Blob/get` |
 | `send_email(to, subject, body, attachments)` | → `EmailId` | ① `email_import`/`email_set` 建 draft ② `email_submission_set`(onSend) |
 | `set_flag(id, keyword)` | → () | `email_set` keywords |
-| `search(query)` | → `Vec<EmailSummary>` | `email_query`(Filter::and[…]) + `SearchSnippet/get` |
+| `search(query)`（未实现） | → `Vec<EmailSummary>` | `email_query`(Filter::and[…]) + `SearchSnippet/get` |
 
 > 设计要点：`email_query` 的 `anchor`+`position` 分页是 JMAP 标准做法，比传统 offset 更稳；`sinceState` + `changes` 用于增量同步，避免重复拉全量。
 
@@ -169,7 +169,7 @@ WebSocket(...)              ws 错误（feature 开启时）
 | grammers | `grammers` / `grammerslib` | 维护一般 | MTProto（非 Bot API），无需 Telegram Bot Token | ★★ | 仅在不能用 Bot API 时 |
 | telegram-bot (旧) | `telegram-bot` | 基本停更 | reqwest + futures | ★ | 不推荐 |
 
-### 4.2 选定 teloxide 的理由
+### 4.2 曾评估 teloxide 的理由（曾评估，未采纳 —— 未采纳理由见下）
 1. 与 jmap-client 同为 tokio + reqwest 生态，运行时与 TLS 栈（rustls）可复用。
 2. 内建 Dispatcher + UpdateKind 枚举匹配命令，与 Bot 的命令路由天然契合。
 3. 支持 `webhooks-axum`（生产 Webhook 形态；**不使用长轮询** `NG-LONG-POLLING`）与 Redis 会话存储（记住用户上下文：当前选中的文件夹/分页游标；不用 SQLite）。
@@ -246,8 +246,8 @@ teloxide = { version = "0.17", features = [
 
   | 抽象 | 职责 | 首个实现 |
   |---|---|---|
-  | `Channel` | 渠道生命周期：接收输入、分发命令、配置端点 | `TelegramChannel`（teloxide Dispatcher） |
-  | `Notifier` | 主动推送：把领域 `Notification` 发送到用户 | `TelegramNotifier`（teloxide requester） |
+  | `Channel` | 渠道生命周期：接收输入、分发命令、配置端点 | `TelegramChannel`（teloxide Dispatcher；teloxide 未引入，计划） |
+  | `Notifier` | 主动推送：把领域 `Notification` 发送到用户 | `TelegramNotifier`（teloxide requester；teloxide 未引入，计划） |
   | `MessageAdapter` | 领域数据 ↔ 渠道消息渲染（文本/按钮/转义） | `TelegramMessageAdapter`（`render.rs`） |
 
   - 领域与渠道之间用**领域 Command / 领域 Notification** 数据结构传递，渠道只在边缘做适配（解析→领域 Command；领域 Notification→渲染）。
@@ -343,10 +343,10 @@ message-weave/
 │   ├── channel/                  # 渠道层（每渠道一个 submodule，见 §5.2）
 │   │   ├── mod.rs                # Channel / Notifier / MessageAdapter traits（thin）—— 阶段0 边界已落地
 │   │   └── telegram/             # 首个也是当前唯一渠道（adapter #1）—— 阶段2+
-│   │       ├── mod.rs            # TelegramChannel / TelegramNotifier 装配（teloxide Dispatcher）
-│   │       ├── commands.rs       # 领域 Command ↔ teloxide 命令映射（/folders /list /read /send /search /flag）
+│   │       ├── mod.rs            # TelegramChannel / TelegramNotifier 装配（teloxide Dispatcher；teloxide 未引入，计划）
+│   │       ├── commands.rs       # （未实现，文件不存在）领域 Command ↔ teloxide 命令映射（/folders /list /read /send /search /flag）
 │   │       ├── render.rs         # TelegramMessageAdapter：领域 Notification → TG 消息/行内按钮（HTML escape！）
-│   │       └── session.rs        # teloxide 会话键（当前 folder/page/last_email_id）
+│   │       └── session.rs        # teloxide 会话键（当前 folder/page/last_email_id；teloxide 未引入，计划）
 │   │       # 预留扩展位：dingtalk/、feishu/（不实现，见 §5.2）
 │   ├── notify/
 │   │   ├── core.rs               # 新邮件处理：JMAP 增量 → 领域 Notification（渠道无关）
@@ -359,7 +359,7 @@ message-weave/
 └── tests/
     ├── jmap_mock.rs              # 对 JmapService 的契约测试（mock Push 回调 + changes 响应）
     ├── channel_mock.rs           # MockChannel/Notifier 契约：领域流程不依赖 Telegram
-    └── telegram_dispatch.rs      # teloxide 测试模式（mock Bot，仅 channel::telegram）
+    └── telegram_dispatch.rs      # teloxide 测试模式（mock Bot，仅 channel::telegram；teloxide 未引入，计划）
 ```
 
 ### 6.1 模块职责矩阵
@@ -640,23 +640,23 @@ pub enum BotError {
 
 Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义如下：
 
-**键与 TTL**
+**键与 TTL 的唯一权威来源是 `docs/reference.md`（Redis 键与 TTL 各节）。**本节不再重复表格——重复的表
+会被改坏：此前曾把 `push:subscription:{id}` 标成 7d、把 `push:registration:{...}` 标成 360s 注册单飞锁，
+两处都错，而真正的 360s 单飞锁 `lock:push-register:{sha256(callback_url)}` 当时整行缺失。现已收敛到
+单一权威表，本节只保留影响设计判断的四条"为什么"：
 
-| 键 | 作用 | TTL | 说明 |
-|---|---|---|---|
-| `delivery:inflight:{stream}:{id}` | 处理中租约 | 60s | 崩溃后可被 XAUTOCLAIM 回收重试 |
-| `delivery:committed:{stream}:{id}` | 幂等/重放标记 | 7d | 已成功投递的哨兵，防止重放重复打扰 |
-| `dedup:jmap:{account}:{email}` | 对账去重 | 24h | 入队时原子抢占，同封邮件 24h 内只通知一次（有意设计，见 11.5） |
-| `config:enabled` 等配置 | — | — | 缺键视为关闭（fail-closed），不进业务 |
-| `push:subscription:{id}` | Push 订阅的验证码摘要 | 7d | 只存摘要不存明文；`push:disable` 一并清理 |
-| `push:orphan:{subscription_id}` | 注册失败后的 JMAP destroy 补偿记录 | 7d | 订阅已创建但回写/销毁失败时记录，供后续清理 |
-| `push:registration:{...}` | 注册单飞锁 | 360s | 幂等创建，owner-token 防并发重复注册 |
+- **对账锁 TTL 300s，刻意大于单页 120s 上限**，避免持锁期间锁过期导致同一账号重复进入对账
+  （`REQ-RECONCILE-IDEMPOTENCY`、`SAF-RECONCILE-LOCK`）。
+- **push 注册单飞锁 TTL 360s，刻意大于单条出站请求上限 300s**，否则一次慢注册会放进重复请求
+  （`SAF-AUTH-JMAP-PUSH`）。
+- **对账去重 24h 是有意设计**：同一封邮件 24h 内只通知一次（`MOD-DEDUP`，范围见本文 11.5）。
+- **配置键缺键即视为关闭（fail-closed）**，不进入业务路径。
 
 **投递流程**（`notify::worker`，一次 XREADGROUP 批量 ≤10 条）
 
 1. 读批 → 逐条 `process` → XACK。
 2. 处理中写入 `delivery:inflight`（60s）作租约；成功后写 `delivery:committed`（7d）。
-3. 崩溃于 `inflight` 租约窗口内的条目，由另一实例经 XAUTOCLAIM（idle 阈值 300s）回收重试 —— 至多重复、不丢。
+3. 崩溃于 `inflight` 租约窗口内的条目，由另一实例经 XAUTOCLAIM 回收重试（空闲阈值 = 批大小 × 单条上限 300s，**不是**固定 300s）—— 至多重复、不丢。
 4. `retry_or_dlq`（`state.rs`）：重试计数（`max_attempts.max(1)`）未到上限留在源流重试；达到上限则以**单个 Lua 脚本**原子地 `INCR`+`XADD`（入 DLQ）+`XACK`（源流确认），保证不会出现"源已 ACK 但既不在源也不在 DLQ"的缝隙。
 
 **告警边界（当前实现，见 §8.3 监控约定）**
@@ -665,7 +665,7 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 - DLQ 条数、inflight 积压深度、对账补齐条数等指标尚未自动上报（§8.3 标记为可选）。当前运维需通过 Redis 直接查看：`XLEN messageweave:dlq:*`、`XPENDING` 等。
 - 若需自动化告警，建议在 Uptime Kuma 增加对 `/ready` 或对账入口的健康检查，并手动复核 DLQ 深度。
 
-**已知边界（当前实现仍存在，见 `docs/todo.md`）**
+**已知边界（当前实现仍存在，见 `docs/roadmap.md`）**
 
 - Redis 错误映射：`read_batch` 与 `retry_or_dlq` 在 Redis 出错时仍可能返回 `Ok(())`，消费循环因此不会因单次失败而退出；这类故障只能靠 Redis 侧告警发现。
 - 多实例重复投递窗口：XAUTOCLAIM 空闲阈值已由固定 300s 改为「批大小 × 单条上限 300s」；单实例不受影响，仅当单条事件处理耗时接近 300s 上限时，多实例部署下另一实例仍可能提前认领，导致**重复投递（仅重复，不丢）**。
@@ -673,9 +673,9 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 **审计意见 → 收口（2026-09-26）**
 
 - 【应修-2】入队失败时 dedup 释放 best-effort 曾可能造成 24h 静默丢事件 → 已修复为 `claim_dedup_and_enqueue`（Lua 原子：`SET NX EX` 成功才 `XADD`），claim 与入队之间无中间失败窗口。
-- 【应修-1】`Email/changes` 依赖 `newState` 续传，`jmap-client 0.4.2` 无 `upToId` → 已改为「同 `sinceState` 下逐次翻倍 `maxChanges` 扩窗（上限 4096），仅在无法扩窗时才推进 `new_state`」，避免按页推进时漏批；`newState` 语义本身仍需真实 Stalwart 复验（见 `docs/todo.md`）。
+- 【应修-1】`Email/changes` 依赖 `newState` 续传，`jmap-client 0.4.2` 无 `upToId` → 已改为「同 `sinceState` 下逐次翻倍 `maxChanges` 扩窗（上限 4096），仅在无法扩窗时才推进 `new_state`」，避免按页推进时漏批；`newState` 语义本身仍需真实 Stalwart 复验（见 `docs/roadmap.md`）。
 - 其余低风险项均已收口：未知 stream 的空值改为 `Err`（fail-closed，进重试/DLQ）；`push:disable` 经 `forget_push_subscription` 清理验证码摘要键；`SET NX EX` TTL 下限收紧为 `.max(1)`；XAUTOCLAIM 空闲阈值按批大小缩放；无 payload 的畸形流条目由 `ack_malformed` 经 `XACK` 移出 PEL；CSPRNG 兜底 owner-token 改为「时间 + PID + 计数器」，不再使用常量。
-- 未排期待办（阶段 5「搜索 + 搜索片段 + 打磨」）见 `docs/todo.md`「未排期」。
+- 未排期待办（阶段 5「搜索 + 搜索片段」）见 `docs/roadmap.md`「代码缺口」。
 
 ### 10.6 总估时
 ~10.5 人日（不含等待用户确认与真实联调排障）。
