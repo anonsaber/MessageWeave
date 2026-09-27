@@ -85,7 +85,7 @@ async function startPage(statusResponse) {
   vm.runInNewContext(source, { document, window, fetch, Headers });
   await new Promise((resolve) => setImmediate(resolve));
   await Promise.resolve();
-  return { elements, fetchCalls };
+  return { elements, fetchCalls, window };
 }
 
 test("configuration-setup hides all authorization UI and lists only missing variable names", async () => {
@@ -103,8 +103,8 @@ test("configuration-setup hides all authorization UI and lists only missing vari
   assert.equal(elements.get("config-panel").hidden, true);
   assert.equal(elements.get("notice").hidden, true);
   assert.equal(elements.get("privacy-note").hidden, true);
-  assert.equal(elements.get("setup-missing").textContent, "REDIS_URL、CONFIG_ENCRYPTION_KEY");
-  assert.equal(elements.get("setup-message").textContent.includes("配置引导模式"), true);
+  assert.equal(elements.get("setup-missing").textContent, "REDIS_URL, CONFIG_ENCRYPTION_KEY");
+  assert.equal(elements.get("setup-message").textContent.includes("setup mode"), true);
   assert.equal(fetchCalls.length, 1);
   assert.equal(fetchCalls[0].path, "/api/status");
   assert.equal(fetchCalls[0].options.credentials, "omit");
@@ -134,7 +134,7 @@ test("status errors keep the authorization form hidden until readiness is confir
   assert.equal(elements.get("setup-card").hidden, false);
   assert.equal(elements.get("auth-card").hidden, true);
   assert.equal(elements.get("config-panel").hidden, true);
-  assert.match(elements.get("setup-message").textContent, /授权入口保持隐藏/);
+  assert.match(elements.get("setup-message").textContent, /authorization entry stays hidden/);
 });
 
 test("setup card inherits desktop layout width and follows the existing mobile layout width", () => {
@@ -145,4 +145,48 @@ test("setup card inherits desktop layout width and follows the existing mobile l
   assert.match(styles, /\.layout\s*\{[^}]*width:\s*min\(960px,\s*calc\(100% - 40px\)\)/);
   assert.match(styles, /@media \(max-width: 720px\)\s*\{[\s\S]*?\.layout\s*\{[^}]*width:\s*calc\(100% - 32px\)/);
   assert.match(styles, /\.auth-panel\s*\{[^}]*padding:\s*27px 29px 25px/);
+});
+
+test("i18n defaults to English and keeps the zh/en dictionaries in key parity", async () => {
+  const { window } = await startPage({
+    body: { ready: true, mode: "configured", missing: [] },
+  });
+
+  const { detectLocale, getLocale, t, messages } = window.__mw;
+  assert.equal(detectLocale(), "en");
+  assert.equal(getLocale(), "en");
+
+  const enKeys = Object.keys(messages.en).sort();
+  const zhKeys = Object.keys(messages.zh).sort();
+  assert.deepEqual(enKeys, zhKeys);
+  assert.ok(enKeys.length > 100, `expected a broad message catalog, got ${enKeys.length}`);
+
+  assert.equal(t("common.required"), "Required");
+  assert.equal(
+    t("session.expiry", { n: 5 }),
+    "Admin session expires in about 5 minutes; kept only in page memory",
+  );
+  assert.equal(t("missing.key"), "missing.key");
+});
+
+test("every data-i18n key in the markup resolves in both dictionaries", async () => {
+  const { window } = await startPage({
+    body: { ready: true, mode: "configured", missing: [] },
+  });
+  const { messages } = window.__mw;
+
+  const keys = new Set();
+  for (const match of html.matchAll(/data-i18n(?:-placeholder|-aria)?="([^"]+)"/g)) {
+    keys.add(match[1]);
+  }
+  assert.ok(keys.size > 40, `expected many i18n keys in the markup, got ${keys.size}`);
+
+  for (const key of keys) {
+    assert.ok(key in messages.en, `markup key missing from en dictionary: ${key}`);
+    assert.ok(key in messages.zh, `markup key missing from zh dictionary: ${key}`);
+  }
+
+  assert.match(html, /<html lang="en">/);
+  assert.match(html, /data-i18n-placeholder="auth\.placeholder"/);
+  assert.match(html, /data-i18n-aria="brand\.aria"/);
 });
