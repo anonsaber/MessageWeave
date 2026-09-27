@@ -484,6 +484,7 @@ message-weave/
 > 以下为设计目标形态。当前 `src/error.rs` 的 `BotError` 仅含 `Config` / `Io` / `Json` / `State` 四个变体；`Telegram` 变体未引入（`teloxide` 未使用）。
 
 ```rust
+// 目标形态（teloxide 未引入；当前 src/error.rs 仅 Config / Io / Json / State，见上方说明）
 #[derive(thiserror::Error, Debug)]
 pub enum BotError {
     #[error("jmap: {0}")]
