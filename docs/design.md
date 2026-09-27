@@ -28,7 +28,7 @@
 11. [待确认问题（产品/架构类）](#11-待确认问题产品架构类)
 12. [AI 辅助能力：架构、确认门槛、失败回退](#12-ai-辅助能力架构确认门槛失败回退)
 
-> 部署/平台类决策已确认（单账户、App Password+Basic、Redis 托管+AOF、平台 HTTPS URL、外部 Cron）并收敛；剩余待办仅 `Q-DEP-A`/`Q-DEP-B`，见 deployment.md §9。
+> 部署/平台类决策已确认（单账户、App Password+Basic、Redis 托管+AOF、平台 HTTPS URL、外部 Cron）并收敛；**无未完成代码缺口**，仅余 `Q-DEP-A`/`Q-DEP-B` 两项上线时的运维选择，见 `docs/roadmap.md`。
 
 ---
 
@@ -160,41 +160,11 @@ WebSocket(...)              ws 错误（feature 开启时）
 
 ---
 
-## 4. Telegram Rust 框架选型
+## 4. Telegram 渠道实现选型
 
-### 4.1 候选评估
-| 框架 | crate | 维护状态 | 特性 | 适配度 | 结论 |
-|---|---|---|---|---|---|
-| **teloxide** | `teloxide` | 活跃，最新 0.17，下载量大 | dptree 分发、对话 FSM、`webhooks`+`webhooks-axum`、Redis 会话存储、`throttle`、`macros`、`tracing`、`rustls` | ★★★★★ | **首选** |
-| grammers | `grammers` / `grammerslib` | 维护一般 | MTProto（非 Bot API），无需 Telegram Bot Token | ★★ | 仅在不能用 Bot API 时 |
-| telegram-bot (旧) | `telegram-bot` | 基本停更 | reqwest + futures | ★ | 不推荐 |
-
-### 4.2 曾评估 teloxide 的理由（曾评估，未采纳 —— 未采纳理由见下）
-1. 与 jmap-client 同为 tokio + reqwest 生态，运行时与 TLS 栈（rustls）可复用。
-2. 内建 Dispatcher + UpdateKind 枚举匹配命令，与 Bot 的命令路由天然契合。
-3. 支持 `webhooks-axum`（生产 Webhook 形态；**不使用长轮询** `NG-LONG-POLLING`）与 Redis 会话存储（记住用户上下文：当前选中的文件夹/分页游标；不用 SQLite）。
-4. `throttle` feature 天然契合 Telegram 的 30 msg/s 速率限制。
-5. `tracing` feature 与本项目观测性统一。
-6. `macros` feature 可用 `#[teloxide::command]` 自动解析命令参数，减少样板。
-
-### 4.3 teloxide 关键 feature 选择（**计划，阶段2 引入**）
-
-> ⚠️ 阶段0 **未引入 teloxide**（`ARCH-DEPS-STAGE0`）；下方为阶段2 引入时的目标 feature 集，不得据此认为 `Cargo.toml` 已含 teloxide。
-
-```
-# 阶段2 计划（尚未加入 Cargo.toml）
-teloxide = { version = "0.17", features = [
-  "macros", "rustls", "rustls-native-roots",     # TLS 与 jmap-client 一致
-  "redis-session",                                # 无状态会话：走外部 Redis（deployment.md C-REDIS-ONLY-STATE）
-  "throttle",                                      # 遵守 TG 速率限制
-  "tracing",
-] }
-# 部署形态 = Webhook（非长轮询，deployment.md NG-LONG-POLLING）；按需启用 "webhooks-axum"
-```
-
-### 4.4 备选/降级方案
-- 若 teloxide 升级/破坏性改动 → 可退到直接基于 `teloxide-core`（更薄、API 稳定）。
-- 若需更高吞吐（多账户）→ 用 `webhooks-axum` + 共享 `axum::Router`（与阶段0 的单端口 axum 入口叠加）。
+Telegram 渠道用 `src/channel.rs` 的 `reqwest` 自研实现（`ARCH-DEPS-STAGE4`），**不引入第三方 Bot 框架**。
+评估过 `teloxide` 但**未采用**：本项目只用 Bot API 的少数调用，不值得为它引入 dptree 调度与自带会话中间件这两层抽象；`throttle` 与 Redis 会话能力用 `src/channel.rs` 的重试与外部 Redis TTL 各实现了一部分。
+候选对比（`teloxide` / `grammers` / 旧 `telegram-bot`）、当初倾向 `teloxide` 的 6 条理由、feature 集计划与 `teloxide-core` 降级方案，全部记录在 `docs/retired.md`。
 
 ---
 
@@ -207,7 +177,7 @@ teloxide = { version = "0.17", features = [
             └───────────────────────┬───────────────────────────┘
                      Webhook(HTTPS) │
             ┌───────────────────────▼───────────────────────────┐
-            │   HTTP 入口 (axum/teloxide-webhooks，单端口 PORT)   │
+            │   HTTP 入口 (axum，单端口 PORT)   │
             │  POST /webhook/tg  ·  POST /push/jmap  ·          │
             │  POST /reconcile   ·  GET /healthz /ready          │
             │  GET / + admin session + config APIs (管理 SPA)     │
@@ -237,23 +207,24 @@ teloxide = { version = "0.17", features = [
 > 部署形态 = **通用 HTTPS-only Docker、无长连接**（deployment.md `C-NO-LONG-CONN`/`C-HTTPS-INBOUND`）：
 > Telegram 仅 Webhook；JMAP 实时仅 Push 回调；慢任务异步入 Redis Streams；对账由**外部 HTTPS Cron** 触发。
 > EventSource/SSE 与长轮询均为非目标（`NG-POLLING-SSE`/`NG-LONG-POLLING`）。
-> 渠道解耦（见 §5.2）：领域层（`domain/`）与渠道层（`channel/`）以领域 Command / Notification 交互，不出现 Telegram/teloxide 类型；钉钉/飞书仅保留扩展位，不提前实现。
+> 渠道解耦（见 §5.2）：领域层与渠道层以领域 Command / Notification 交互，领域层不出现任何具体渠道 SDK 类型；钉钉/飞书仅保留扩展位，不提前实现。
 
 ### 5.2 渠道抽象与多通道扩展策略
 - **现状**：首个（也是当前唯一）渠道是 Telegram。目标是保留平行扩展钉钉/飞书的能力，**但不提前实现**。
 - **原则**：领域层与渠道层解耦——邮件/JMAP/AI/意图状态机**不得依赖 Telegram 类型**。
 - **抽象（不过度设计）**：
 
-  | 抽象 | 职责 | 首个实现 |
+  | 抽象 | 职责 | 当前状态 |
   |---|---|---|
-  | `Channel` | 渠道生命周期：接收输入、分发命令、配置端点 | `TelegramChannel`（teloxide Dispatcher；teloxide 未引入，计划） |
-  | `Notifier` | 主动推送：把领域 `Notification` 发送到用户 | `TelegramNotifier`（teloxide requester；teloxide 未引入，计划） |
-  | `MessageAdapter` | 领域数据 ↔ 渠道消息渲染（文本/按钮/转义） | `TelegramMessageAdapter`（`render.rs`） |
+  | `Channel` | 渠道生命周期：接收输入、分发命令、配置端点 | **无实现**（阶段0占位）；命令解析实际在 `parse_intent`（`src/worker.rs`） |
+  | `Notifier` | 主动推送：把领域 `Notification` 发送到用户 | **无实现**（阶段0占位）；出站实际走 `TelegramClient::send`（`src/channel.rs`） |
+  | `MessageAdapter` | 领域数据 ↔ 渠道消息渲染（文本/按钮/转义） | **无实现**（阶段0占位）；渲染逻辑散在 `src/worker.rs` / `src/notify.rs` |
 
-  - 领域与渠道之间用**领域 Command / 领域 Notification** 数据结构传递，渠道只在边缘做适配（解析→领域 Command；领域 Notification→渲染）。
+  - `src/channel.rs` 里三个 trait（`Channel` / `Notifier` / `MessageAdapter`）目前**没有任何实现**，都标着 `#[expect(dead_code)]`（注释：阶段0占位，供后续 adapter 使用）。实际 Telegram 出站走 `channel::telegram::TelegramClient`（`reqwest` 自研），由 `worker.rs` 的 `MetadataWorker` 和 `notify.rs` 持有，**不经过这三个 trait**。
+  - 领域与渠道之间用**领域 `UserCommand` / `Notification`** 数据结构传递，渠道只在边缘做适配（解析→领域命令；领域 `Notification`→渲染）。
 - **约束**：
   - `jmap` / `llm` / 意图状态机 / `notify::core` 的公开接口只接受/返回领域类型；
-  - `teloxide` 类型只允许出现在 `channel/telegram/` 内；
+  - 领域层不得出现具体渠道 SDK 类型（渠道层当前不引入第三方 Bot 框架，见 §4）；
   - 新增渠道 = 新 adapter + 装配，不改领域层。
 - **不做什么**：不定义多态配置注册表、不预先抽象"渠道能力矩阵"、不建 plugins 机制；按需再演进（YAGNI）。
 
@@ -305,77 +276,63 @@ TG /read 3 → handler 取会话里的 folder+page 游标
 ```
 
 ### 5.6 会话状态机（对话 FSM）
-**目标设计**：命令路由基于对话 FSM（多步交互如 `/send`、`/summarize` 确认）。当前实现**未引入 teloxide**，worker 用 `parse_intent` 解析为 `Intent`，AI 授权态走 Redis TTL 而非多步确认态；AI 与附件相关流程必须经过显式确认态：
 
-| 状态 | 含义 | 进入 | 离开 |
-|---|---|---|---|
-| `Idle` | 空闲 | 任意完成态 | 收到消息 |
-| `AwaitClarify` | 目标/意图不明，等用户选择 | 意图或邮件目标不唯一 | 用户给出明确选择 |
-| `AwaitConfirm` | 等确认（AI 分析 / 附件下载） | 用户发起分析/下载但未确认 | 确认 / 取消 |
-| `Analyzing` | AI 请求 in-flight | 用户确认分析 | 成功 / 失败 |
-| `AwaitFallback` | AI 失败，等确认回退 | 连续 3 次失败熔断 | 用户确认 / 取消 |
+当前**没有 FSM**。命令路由由 `src/worker.rs` 的 `parse_intent` 解析为 `Intent`；AI 授权态是 Redis 里的一个布尔加过期时间（键与 TTL 见 `docs/reference.md` 的 AI 授权态一节），不是多步确认态。
 
-不变量：`AwaitConfirm`/`Analyzing`/`AwaitFallback` 涉及 AI 或附件下载，**未到确认态不得调用 LLM 或拉取附件**。会话状态为短期状态，统一走**外部 Redis 短期 TTL**（`C-REDIS-ONLY-STATE`；不使用 SQLite，丢失可接受），运维 TTL 见 deployment.md（`C-REDIS-ONLY-STATE`）。
-> 渠道中立：FSM 状态与事件用领域类型（`domain::state`），不依赖 teloxide；当前实现未引入 teloxide，会话/授权态统一走外部 Redis 短期 TTL。
+仍成立的不变量：AI 摘要必须先有用户显式授权，**没有授权态不得调用 LLM**。授权一旦生效，摘要会拉取邮件正文全文送 LLM（`read_email` 请求 `TextBody` + `BodyValues` 并 `fetch_text_body_values(true)`，见 `src/domain/jmap/client.rs`），但正文**不回传给 Telegram**——出站只发摘要，或失败时回退为前 300 字符（`worker.rs:150` 注释：body text never reaches Telegram）。
+
+曾设计过的 5 态 FSM（`Idle` / `AwaitClarify` / `AwaitConfirm` / `Analyzing` / `AwaitFallback`）连同状态转移表与渠道中立说明，见 `docs/retired.md`。
 
 ---
 
 ## 6. 模块划分
 
-目标 cargo 工程结构（**阶段0 已落地** `main.rs`/`config.rs`/`error.rs`/`domain.rs`/`channel.rs`/`notify.rs`；下方 `jmap/`、`llm/`、`channel/telegram/`、`notify/*` 为**后续阶段目标**，详见 §10）：
+实际工程结构（本文件所有代码锚点均指此结构；历史的目标模块拆分计划见 `docs/retired.md`）：
 ```
 message-weave/
-├── Cargo.toml
-├── .gitignore                    # 排除 target/ 等（阶段0 P0 门禁 GATE-P0）
+├── Cargo.toml                    # jmap-client 0.4.2 / redis 0.27 / reqwest 0.13；不含 teloxide
+├── .env.example                  # 仅 2 个必填项的占位样例（REDIS_URL / CONFIG_ENCRYPTION_KEY），不含业务配置
+├── .gitignore
+├── Dockerfile                    # debian:bookworm-slim + ca-certificates + tini（C-DEBIAN-SLIM）
+├── hoststack.yaml                # 网关编排清单，非应用代码
 ├── src/
-│   ├── main.rs                   # tokio main：装配置；按 RUN_MODE 分派 webhook / reconcile
+│   ├── main.rs                   # tokio main：校验 RUN_MODE 后启动 webhook HTTP 入口（两模式共用同一入口，无 CLI 子命令）
 │   ├── config.rs                 # 环境变量解析（ARCH-CONFIG-ENV：std::env，非 figment/TOML）
-│   ├── error.rs                  # BotError 统一错误（见 §8）
-│   ├── domain/                   # 领域层（不依赖任何渠道类型，见 §5.2）
-│   │   ├── command.rs            # 领域 Command（List/Read/Analyze/Confirm…，渠道无关）
-│   │   ├── notification.rs       # 领域 Notification（NewEmail/ResultMsg/ConfirmRequest…）
-│   │   ├── state.rs              # 会话状态机（§5.6：Idle/AwaitClarify/AwaitConfirm/Analyzing/AwaitFallback）
-│   │   ├── jmap/                 # JmapService（领域封装，§3.2）—— 阶段1+
-│   │   │   ├── client.rs         # 包装 jmap_client::Client（构造、重连、自定义 reqwest）
-│   │   │   ├── model.rs          # Folder / EmailSummary / EmailBody 领域模型
-│   │   │   └── state.rs          # mailbox role→id 缓存、sinceState 游标（写外部 Redis，MOD-SINCESTATE；不用 SQLite/本地卷）
-│   │   └── llm/                  # LlmService + policy + fallback + audit（§12.1）—— 阶段3.5
-│   ├── channel/                  # 渠道层（每渠道一个 submodule，见 §5.2）
-│   │   ├── mod.rs                # Channel / Notifier / MessageAdapter traits（thin）—— 阶段0 边界已落地
-│   │   └── telegram/             # 首个也是当前唯一渠道（adapter #1）—— 阶段2+
-│   │       ├── mod.rs            # TelegramChannel / TelegramNotifier 装配（teloxide Dispatcher；teloxide 未引入，计划）
-│   │       ├── commands.rs       # （未实现，文件不存在）领域 Command ↔ teloxide 命令映射（/folders /list /read /send /search /flag）
-│   │       ├── render.rs         # TelegramMessageAdapter：领域 Notification → TG 消息/行内按钮（HTML escape！）
-│   │       └── session.rs        # teloxide 会话键（当前 folder/page/last_email_id；teloxide 未引入，计划）
-│   │       # 预留扩展位：dingtalk/、feishu/（不实现，见 §5.2）
-│   ├── notify/
-│   │   ├── core.rs               # 新邮件处理：JMAP 增量 → 领域 Notification（渠道无关）
-│   │   ├── push_handler.rs       # POST /push/jmap：校验 subscription ID + verificationCode → 去重 → 入 Redis Streams → 2xx
-│   │   ├── worker.rs             # Redis Streams 消费：Email/changes → 通知 → 推进 sinceState → XACK
-│   │   └── reconcile.rs          # /reconcile：外部 Cron 触发对账补差（FLOW-RECONCILE，Redis 丢失恢复）
-│   └── util/
-│       ├── retry.rs              # 指数退避（Transport/RateLimit/ServerUnavailable）
-│       └── shutdown.rs           # CancellationToken 协调
-└── tests/
-    ├── jmap_mock.rs              # 对 JmapService 的契约测试（mock Push 回调 + changes 响应）
-    ├── channel_mock.rs           # MockChannel/Notifier 契约：领域流程不依赖 Telegram
-    └── telegram_dispatch.rs      # teloxide 测试模式（mock Bot，仅 channel::telegram；teloxide 未引入，计划）
+│   ├── error.rs                  # BotError 统一错误（见 §8.1）
+│   ├── domain.rs                 # 领域层根（渠道中立，见 §5.2）
+│   ├── domain/jmap.rs            # JmapBackend trait + MockBackend（契约测试不联网）
+│   ├── domain/jmap/client.rs     # 包装 jmap_client::Client（真实只读 adapter，MOD-JMAP-CLIENT）
+│   ├── state.rs                  # Redis 读写封装：配置/开关/会话/TTL 键（C-REDIS-ONLY-STATE）
+│   ├── channel.rs                # 渠道层：Channel/Notifier/MessageAdapter，Telegram 用 reqwest 自研
+│   ├── notify.rs                 # /push/jmap 校验入队 + Redis Streams worker + /reconcile 对账
+│   ├── worker.rs                 # parse_intent → Intent，命令路由与 AI 授权判定
+│   ├── ai.rs                     # LlmClient / summarize：LLM 摘要调用
+│   └── web.rs                    # /config 静态前端路由 + include_str! 嵌入 + CSP
+├── web/                          # 前端资源，构建期 include_str! 嵌入二进制（C-NO-LOCAL-WRITE）
+│   ├── index.html
+│   ├── styles.css
+│   ├── config.js
+│   └── config.test.mjs           # Node 原生断言测试（非 cargo 测试）
+└── cloudflare-worker/            # 边缘反向代理，JS，不在 Rust 工程中
 ```
+
+测试：**没有 `tests/` 集成测试目录**，也没有 `src/util/`。所有 Rust 测试是各模块内的 `#[cfg(test)]` 单元测试；前端唯一测试是 `web/config.test.mjs`。
 
 ### 6.1 模块职责矩阵
 
-> **依赖现况**：阶段0 已落地（`main` / `config` / `error` / `domain` / `channel` / `notify`，见 §10.0）；`jmap-client 0.4.2` **已引入**（`ARCH-DEPS-STAGE1`）；`redis`(`0.27`) / `reqwest`(`0.13`) 亦**已引入**（`ARCH-DEPS-STAGE4`，版本以 `Cargo.toml` 为准）。`teloxide` 经评估后**未引入**——Telegram 渠道改用 `reqwest` 自研实现。下表保留选型评估的原始记录（含未采纳方案），标「计划」的行已不代表当前计划。
+> **依赖现况**：`jmap-client 0.4.2`、`redis 0.27`、`reqwest 0.13` **均已引入**（`ARCH-DEPS-STAGE1` / `ARCH-DEPS-STAGE4`，版本以 `Cargo.toml` 为准）。`teloxide` 经评估**未引入**，Telegram 渠道用 `reqwest` 自研实现（§4，详见 `docs/retired.md`）。下表每一行都是**真实存在的模块**。
 
 | 模块 | 依赖 | 输出 | 可测性 | 现状 |
 |---|---|---|---|---|
-| `config` | 标准库 `env`（`ARCH-CONFIG-ENV`） | `Config` 结构 | 纯函数，易测 | 阶段0 已实现（手工 `from_env`，无 figment） |
-| `domain::jmap`（含 `client`） | **jmap-client 0.4.2（已引入）** | 领域动词（§3.2）；`client` = 真实只读 adapter（`MOD-JMAP-CLIENT`） | mock JMAP 响应 + `#[ignore]` 真机测试 | 阶段1（G1/D-G1-1 **代码已实现，待真实 `cargo test -- --ignored jmap::` 验证**） |
-| `domain::llm` | reqwest/axum（计划） | 摘要/意图/草稿 | mock OpenAI 端点 | 阶段3.5 |
-| `domain::state` | — | 意图路由 + 会话 FSM（零渠道依赖） | 表驱动纯单测 | 阶段3+ |
-| `channel`（traits） | — | Channel/Notifier/MessageAdapter | 契约测试（MockChannel） | 阶段0 边界已实现 |
-| `channel::telegram` | teloxide（计划） | TG adapter：事件→领域 Command；领域 Notification→渲染 | teloxide mock Bot / MockChannel | 阶段2+ |
-| `notify`（入口 + Push/worker/reconcile） | axum；Redis Streams | HTTP 鉴权、全局开关、Push 入队、`Email/changes` 对账和游标提交 | 领域 Notification → Streams worker | 当前实现已覆盖真实对账路径；仍需真实 Stalwart 环境做端到端验收 |
-| `util::retry` | — | 重试策略 | 纯逻辑 | 阶段1+ |
+| `config` | 标准库 `env`（`ARCH-CONFIG-ENV`） | `Config` 结构 | 纯函数，易测 | 已实现（手工 `from_env`，无 figment） |
+| `error` | — | `BotError`（§8.1，4 个变体） | 单测 | 已实现 |
+| `domain` + `domain::jmap::client` | **jmap-client 0.4.2** | JMAP 只读语义；`client` = 真实只读 adapter（`MOD-JMAP-CLIENT`） | mock JMAP 响应 + `#[ignore]` 真机测试 | 代码已实现，待真实 Stalwart 端到端验证（`cargo test -- --ignored jmap::`） |
+| `state` | redis 0.27 | Redis 读写：配置/开关/会话/TTL 键（`C-REDIS-ONLY-STATE`） | Redis mock | 已实现 |
+| `channel` | reqwest 0.13；jmap-client | `Channel` / `Notifier` / `MessageAdapter`，邮件与 TG 双渠道（事件→领域 Command；领域 Notification→渲染） | mock HTTP | 已实现（`src/channel.rs`，Telegram 为 `reqwest` 自研） |
+| `worker` | — | `parse_intent` → `Intent`，命令路由与 AI 授权判定 | 表驱动纯单测 | 已实现 |
+| `ai` | reqwest 0.13 | `LlmClient` / `summarize` | mock OpenAI 兼容端点 | 已实现 |
+| `notify` | axum；redis | HTTP 鉴权、全局开关、`/push/jmap` 入队、`Email/changes` 对账和游标提交 | webhook 校验失败路径覆盖 403 | 已覆盖真实对账路径；仍需真实 Stalwart 环境做端到端验收 |
+| `web` | axum | `/config` 静态页 + `include_str!` 嵌入 + CSP | 前端由 `web/config.test.mjs` 覆盖 | 已实现 |
 
 ---
 
@@ -436,8 +393,8 @@ message-weave/
   - `/healthz` = liveness（进程存活），语义长期稳定。
   - `/ready` 检查配置完整性与 Redis 可访问性；未就绪返回 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`），就绪返回 `200` 与就绪报告（`{"status":"ready","configured":...,...}`）；不执行 JMAP/Telegram 请求，也不触发邮件同步等业务副作用。
 - **chat 白名单（硬约束 `SAF-CHAT-ALLOWLIST`）**：`CHAT_ALLOWLIST` 是**必填**配置；任何入站事件（TG 命令 / 回调触发的动作）在**做任何 JMAP 调用、AI 调用或状态变更之前**，必须先校验 `chat.id ∈ CHAT_ALLOWLIST`，不在白名单则**直接拒绝并终止**（防止 token 泄露后被任意人调用）。阶段0 已完成 `CHAT_ALLOWLIST` 解析骨架；强制拒绝逻辑已随 Telegram 渠道接入落地（`src/notify.rs` 的 `telegram_webhook` 在任何 JMAP/AI/状态操作之前先校验白名单，拒绝即终止）。
-- **命令最小化**：仅暴露必要命令；`/send` 需二次确认。
-- **速率**：出站侧未建本地令牌桶（未引入 `teloxide`）；Telegram 出站发送按 Redis 运行参数 `max_retries`（默认 3、上限 5）重试；当前仅对 Push 验证码写入做 Redis 限流（`ratelimit:push-verify:*`）。Telegram 服务端 30 msg/s 限制下的 429 不做专门的自动退避处理。
+- **命令最小化**：只暴露必要命令；发邮件等写操作必须二次确认（当前未实现发信，见 §10.3）。
+- **速率**：出站侧未建本地令牌桶；Telegram 出站发送按 Redis 运行参数 `max_retries`（默认 3、上限 5）重试；当前仅对 Push 验证码写入做 Redis 限流（`ratelimit:push-verify:*`）。Telegram 服务端 30 msg/s 限制下的 429 不做专门的自动退避处理。
 
 ### 7.3.1 配置管理 API
 - `GET /` 提供嵌入 Rust 二进制的 SPA；`/assets/config.js` 与 `/assets/styles.css` 提供页面资源。服务不在运行时读取或写入本地文件（`C-NO-LOCAL-WRITE`）。
@@ -481,28 +438,26 @@ message-weave/
 ## 8. 错误处理与可观测性
 
 ### 8.1 统一错误枚举
-> 以下为设计目标形态。当前 `src/error.rs` 的 `BotError` 仅含 `Config` / `Io` / `Json` / `State` 四个变体；`Telegram` 变体未引入（`teloxide` 未使用）。
+
+当前实现（`src/error.rs` 全文，4 个变体）：
 
 ```rust
-// 目标形态（teloxide 未引入；当前 src/error.rs 仅 Config / Io / Json / State，见上方说明）
-#[derive(thiserror::Error, Debug)]
+use thiserror::Error;
+
+#[derive(Debug, Error)]
 pub enum BotError {
-    #[error("jmap: {0}")]
-    Jmap(#[from] jmap_client::Error),
-    #[error("telegram: {0}")]
-    Telegram(#[from] teloxide::errors::RequestError),
-    #[error("config: {0}")]
+    #[error("configuration error: {0}")]
     Config(String),
-    #[error("storage: {0}")]
-    Storage(#[from] redis::RedisError),
-    #[error("rate limited, retry later")]
-    RateLimited,
-    #[error("unauthorized chat {0}")]
-    Unauthorized(i64),
-    #[error("llm: {0}")]
-    Llm(LlmErr),   // 见 §12.7
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("state error")]
+    State(#[from] crate::state::StateError),
 }
 ```
+
+设计目标形态曾包含 `Jmap(#[from] jmap_client::Error)`、`Telegram(#[from] teloxide::errors::RequestError)`、`Storage(#[from] redis::RedisError)`、`RateLimited`、`Unauthorized(i64)`、`Llm(LlmErr)` 六个额外变体；`Telegram` 随 `teloxide` 未采用而废弃，其余至今未落地，完整清单见 `docs/retired.md`。
 
 ### 8.2 错误 → 用户消息 映射
 | 底层错误 | Bot 行为 |
@@ -515,10 +470,10 @@ pub enum BotError {
 | `Llm(*)` | 见 §12.7（熔断/回退/徽标） |
 
 ### 8.3 可观测性
-- `tracing`（直接依赖，非 `teloxide` feature）+ `tracing-subscriber`（fmt + EnvFilter）。
-- 关键事件：Push 回调到达/验证/拒绝、Reconcile 拉取与入队、渠道推送成功/失败/重试、LLM 调用耗时与状态等均落 `tracing` 事件（stdout）；**不记 prompt 明文与密钥**。当前未使用命名 span（无 `#[instrument]` / `span!`），字段级结构化观测待后续补齐。
-- 指标（可选 `metrics` crate）：Push 回调到达数、去重命中率、Redis Streams 积压深度（pending）、DLQ 条数、对账补差条数、JMAP 请求延迟、推送失败率。
-- 优雅退出：信号处理 + `CancellationToken`，退出前 flush Redis Streams 待处理条目（不涉及本地文件）。
+- `tracing`（直接依赖）+ `tracing-subscriber`（fmt + EnvFilter）。
+- `tracing`（直接依赖）+ `tracing-subscriber`（fmt + EnvFilter）。**当前只记录启动期事件**：`src/main.rs` 共 6 处 `info!`/`warn!`（RUN_MODE、加密密钥缺失、Redis URL 缺失、JMAP 连接不可用降级、启动横幅等）。请求级事件（Push 回调、Reconcile 拉取、渠道推送、LLM 耗时）**尚未实现**——`src/` 里除 `main.rs` 外没有任何 tracing 调用，也没有命名 span（无 `#[instrument]` / `span!`）。
+- 指标（可选 `metrics` crate）：Push 回调到达数、去重命中率、Redis Streams 积压深度（pending）、DLQ 条数、对账补差条数、JMAP 请求延迟、推送失败率。**当前未接入任何指标后端**（`metrics` 不在 `Cargo.toml`）。
+- 优雅退出：**当前未实现**——`src/` 里没有信号处理（无 `tokio::signal` / `ctrl_c`），也没有 Streams pending 条目的 flush 逻辑；容器停机即终止进程。Redis 侧 `C-NO-STATEFUL-RECOVERY` 保证重启后从 Redis 重建，不依赖进程内状态。
 - **可靠性目标与策略**（Streams ACK/retry、幂等去重、Push 重试、对账恢复、指标/告警、**≥99.9% 通知可用性及边界**）见 deployment.md §6.4/§6.5（`NFR-NOTIFY-SLA`）。
 
 ---
@@ -526,19 +481,21 @@ pub enum BotError {
 ## 9. 测试策略
 
 ### 9.1 层次
-| 层 | 工具 | 内容 |
+
+| 层 | 位置 | 内容 |
 |---|---|---|
-| 单元 | `cargo test` | `config` 解析、`util::retry` 退避、`formatting` HTML escape |
-| 契约 | mock | `jmap::JmapService` 用 mock Push 回调 + changes 响应 + 预置 JMAP JSON 验证领域动词；`llm` 用 mock OpenAI 端点 |
-| 集成 | teloxide mock Bot + mock JMAP | 命令端到端：发 `/list` → 验证回复来自 mock 数据 |
-| 真实（手动） | Stalwart 实例 | 标 `#[ignore]`，`cargo test -- --ignored` 按需跑 |
+| 单元 | `src/*.rs` 内 `#[cfg(test)] mod tests` | `config` 解析、`worker` 命令路由、`ai` 的 HTTPS 校验、`state` Redis 封装、`channel` 出站、`notify` 校验与去重、`main` 启动分支 |
+| 契约 | `src/domain/jmap.rs` | `JmapBackend` trait + `MockBackend`：用预置数据验证领域动词，不联网 |
+| 集成 | `src/channel.rs` 测试模块 | 用进程内 `tokio::net::TcpListener` 起 mock HTTP 服务，验证出站请求的路径、状态码与重试 |
+| 真实（手动） | `src/domain/jmap/client.rs` | 标 `#[ignore]`，需显式配置 JMAP 测试服务器后 `cargo test -- --ignored` 才跑 |
+
+**没有 `tests/` 集成测试目录**；前端唯一测试是 `web/config.test.mjs`（Node 原生断言）。
 
 ### 9.2 mock 策略
-- `JmapService` 持有 trait `JmapBackend`（`list_emails/read_email/send_email/changes…`），生产实现包装 `jmap_client::Client`，测试用 `MockBackend`（基于 `Vec<EmailSummary>`）。
-- Push 回调 payload 用 `futures::stream::iter` 造假 `StateChange`，验证 worker 的 `Email/changes` 增量逻辑与去重（`mod_dedup` + `mod_streams`）。
-- teloxide 提供 `Requester` mock，验证 `send_message` 被以期望内容调用（仅 `channel::telegram` 测试使用）。
-- 渠道契约：领域流程用 `MockChannel`（实现 `Channel/Notifier` trait）驱动，验证领域输出与渠道渲染解耦、领域层无 teloxide 依赖。
-- `llm::client` 注入 mock OpenAI `/chat/completions` 端点。
+- `JmapService` 持有 trait `JmapBackend`（`list_emails` / `read_email` / `send_email` / `changes` 等），生产实现包装 `jmap_client::Client`（`src/domain/jmap/client.rs`），测试用 `MockBackend`（`src/domain/jmap.rs`）。
+- Telegram 出站不引入任何框架 mock：`src/channel.rs` 起一个进程内 `TcpListener`，用 `AtomicUsize` 记录请求次数，验证 URL、状态码与超时/重试行为。
+- `src/ai.rs` 通过构造 `LlmClient` 的配置断言 HTTPS 强制（`llm_requires_https`）；摘要逻辑在 mock OpenAI 兼容端点上验证。
+- 渠道与领域解耦靠类型约束（`domain.rs` 的公开接口不出现渠道 SDK 类型），不依赖 mock channel。
 
 ### 9.3 关键不变量测试
 - `sinceState` 存外部 Redis：模拟重启后从正确游标续传；模拟 Redis 清空后由对账（`reconcile`，`FLOW-RECONCILE`）从 JMAP 恢复游标。
@@ -553,7 +510,7 @@ pub enum BotError {
   - AI 3 次失败 → 熔断确认 → 回退带"AI 不可用"徽标。
   - **入口鉴权（`SAF-AUTH-*`）**：`/reconcile`、`/webhook/tg`、`/push/jmap` 在**缺少或错误的**凭证下返回 `401`，并断言鉴权失败时**无副作用**（无 Redis 写入、无 JMAP/AI 调用）；正确凭证放行。
   - **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz` 返回 `200` 表示进程存活；`/ready` 以 `200/503` 表示配置与 Redis 是否就绪——就绪返回就绪报告 JSON，不就绪返回标准错误 envelope（`service_unavailable` + `Retry-After: 30`）；响应体不含敏感信息。Uptime Kuma 按状态码（`/ready` 期望 200）监控，不受响应体变化影响。
-  - **渠道解耦**：领域模块（jmap/llm/intent/notify::core）编译不依赖 teloxide（crate 分层 + clippy/评审约束）；`channel::telegram` 是唯一导入 teloxide 的模块。
+  - **渠道解耦**：领域模块（`src/domain.rs` / `src/ai.rs` / `src/worker.rs`）的公开接口不出现任何渠道 SDK 类型；渠道装配集中在 `src/channel.rs`。
   - **JMAP session URL（`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）**：基地址与完整 `…/.well-known/jmap` 两种输入**均接受且归一化结果一致**，传给 `Client::connect` 的 URL **不含重复 `/.well-known/jmap`**；`http://` 被拒绝；**内嵌凭据（`https://user:pass@host`）被拒绝**；危险 query 被拒绝。
   - **JMAP 多 part 原文（`REQ-JMAP-RAW-MULTIPART`）**：`read_email` 对多 part 正文按 `text_body` 顺序拼接"有 `part_id` 且有 `bodyValue`"的部分；构造"无可用部分"用例断言返回**明确错误**（非空串）。
 
@@ -563,24 +520,24 @@ pub enum BotError {
 
 > 前提：先 `rustup` 装工具链（stable）。CI 与发布流见 deployment.md。
 
-### 10.0 阶段 0：脚手架与 HTTPS 入口骨架（已完成，待过 P0 门禁）
+### 10.0 阶段 0：脚手架与 HTTPS 入口骨架（已完成，`GATE-P0` 已过）
 
 > **当前实际边界**：单端口 axum 入口提供 `/webhook/tg`、`/push/jmap`、`/reconcile`、`/healthz`、`/ready`。三条写路径的入口鉴权已 fail-closed 落地（`R1`/`SAF-AUTH-*`）；`/reconcile` 已使用 JMAP `Email/changes` 分页、Redis `state:jmap:since` 和 Redis 单飞锁，只有全部事件入队成功后才推进游标；`/healthz` 为 liveness，`/ready` 仍是轻量探针，不代表 Redis/JMAP 依赖已完成业务验收。
 
 - **实际依赖**（Cargo.toml 现状，`ARCH-DEPS-STAGE0`/`ARCH-DEPS-STAGE1` + `ARCH-DEPS-STAGE4`）：`axum 0.8`（单一 HTTPS 入口）、`async-trait`、`secrecy`、`subtle`（常数时间鉴权比较）、`serde`、`serde_json`、`thiserror`、`tokio`、`tracing`、`tracing-subscriber`、`url`（`JMAP_SESSION_URL` 归一化解析）、`jmap-client =0.4.2`（`default-features = false, features = ["async","rustls"]`）、`redis 0.27`（Redis XPING/PING 活性探测，`ARCH-STATE-REDIS`）、`reqwest 0.13`（JMAP/TG HTTP 客户端）；dev-dependencies：`tower 0.5`（路由测试）。`teloxide` 未引入（`ARCH-DEPS-STAGE4`）：Telegram 渠道在 `src/channel.rs` 用 reqwest 自研实现。
-- **尚未引入**（文档不得声称已用）：`teloxide`（阶段2 渠道曾计划使用，最终未引入；Telegram 出站由 `src/channel.rs` 用 `reqwest` 直发）。**未使用 figment**：配置为手工 `std::env` 解析（`ARCH-CONFIG-ENV`，§7.1）。
+- **尚未引入**（文档不得声称已用）：`teloxide` 等任何 Telegram Bot 框架（Telegram 出站由 `src/channel.rs` 用 `reqwest` 直发，评估记录见 `docs/retired.md`）。**未使用 figment**：配置为手工 `std::env` 解析（`ARCH-CONFIG-ENV`，§7.1）。
 - **阶段1 依赖现况**（`ARCH-DEPS-STAGE1`）：`jmap-client` **已引入**（当前 `=0.4.2`，`default-features = false, features = ["async","rustls"]`，版本与 features **以 `Cargo.toml` 为准**）。⚠️ 其默认 features `["async","websockets","aws_lc_rs"]` **含 WebSocket 栈**，故必须关闭默认 features 且不选 `websockets`；JMAP 仅走 **HTTPS 短请求**（Core/Mail），以遵守 `C-NO-LONG-CONN`（无 WS/SSE/长轮询）。
 - `ACCOUNT_ID` **可选**（`REQ-SINGLE-ACCOUNT`）：**留空 → 取 JMAP session 的默认/主账户**；显式值经校验后使用；多账户 = 多个 bot 实例。
 - axum 采用 **0.8**（`ARCH-AXUM-08`）；如后续审核决定调整版本，以 Cargo.toml 为准并同步本节。
 - 当前不实现 SSE/WebSocket/长轮询/SQLite/本地卷（`C-NO-LONG-CONN`/`NG-SQLITE-PERSIST`/`NG-LOCAL-VOLUME`）；入口鉴权（`R1`/`SAF-AUTH-*`）作为 fail-closed 硬门禁落地，鉴权之后的 Push、Streams worker 和 `/reconcile` 业务路径已实现。
 
-**阶段0 P0 门禁（`GATE-P0`）——进入阶段1前必须全部通过：**
+**阶段0 P0 门禁（`GATE-P0`）——已通过（冻结基线 45 passed / 0 failed / 1 ignored，见 `docs/roadmap.md` 头部）。以下为当时的判据，保留作历史记录：**
 1. `cargo fmt --check` 通过（无格式差异）。
 2. `cargo clippy --all-targets -- -D warnings` 通过（零告警；禁 crate 级 `allow`）。
 3. `cargo test` 通过（含路由/配置最小测试）。
 4. 上述三条**在 Debian `rust:1-slim-bookworm` 容器内**执行通过（`C-DEBIAN-SLIM`）。
 5. 配置读取为 env-only（无 figment/TOML）；`SecretString` 包裹秘密且 `Debug` 不泄密；`JMAP_PASSWORD` 安全访问器保留。
-6. `RUN_MODE` 被实际消费（`webhook`/`reconcile` 至少显式分派，保持无副作用）。
+6. `RUN_MODE` 被实际消费（当前为 `webhook` 入口的单一路由表，无副作用；`reconcile` 作为独立 HTTP 端点 `POST /reconcile` 提供，不通过 `RUN_MODE` 分派，见 `src/main.rs::validate_env_or_exit`）。
 7. `.gitignore` 存在（排除 `target/` 等；**不**擅自初始化 git）。
 8. 所有新增代码有引用稳定 ID 的必要注释；单 `.rs` ≤ 500 行。
 
@@ -613,28 +570,31 @@ pub enum BotError {
 - `#[ignore]` 真实测试（`GATE-G1-JMAP-READONLY`）：经**环境变量**驱动，运行命令 `cargo test -- --ignored jmap::`（`--ignored` 是 libtest 参数，必须置于 `--` 之后）；仅编译不执行用 `cargo test --no-run`（编译含 `#[ignore]` 的测试目标）。**缺环境时清晰跳过且不泄露任何密钥**；CI 默认不跑真机用例，mock 测试继续保留。**真机用例通过与否须以实际 `--ignored` 运行为准——不得在未运行的情况下声称"真机通过"。**
 - 验收：`cargo test`（mock）全绿；`cargo test -- --ignored jmap::`（有真机环境时）能连真实服务器列文件夹/邮件并读原文（未实际运行前不得声称已通过）。
 
-### 10.2 阶段 2：渠道适配骨架（2d）
-- `channel/` 定义 Channel / Notifier / MessageAdapter 抽象 + 领域 Command/Notification 类型。
-- `channel::telegram` 装配 Dispatcher + chat 白名单中间件 + throttle（teloxide 仅存在于该模块）。
-- 命令：`/start /folders /list /read`（只读闭环）。
-- `render.rs`：领域 Notification → TG Markdown/HTML 渲染 + 转义（adapter 内部）。
-- 会话存储（外部 Redis，`C-REDIS-ONLY-STATE`；**不用 SQLite**）记当前 folder/page。
-- 验收：本地 **webhook 形态**（`webhooks-axum` 或纯 axum），测试客户端发命令能读邮件；领域模块不 import teloxide。
+### 10.2 阶段 2：渠道适配（已完成）
+- `src/channel.rs` 定义 Channel / Notifier / MessageAdapter 抽象 + 领域 Command/Notification 类型。
+- Telegram 装配用 `reqwest` 直发 `https://api.telegram.org/bot{token}/sendMessage`（**未引入 teloxide**；评估记录见 `docs/retired.md`）。
+- 入站：`POST /webhook/tg` 校验 secret token → 按 `update_id` 去重（`dedup:tg:{update_id}`）→ 入 Redis Streams → 2xx；出站为 Telegram 唯一用到的 Bot API 端点。
+- 意图路由：`src/worker.rs` 的 `parse_intent` 只解析 5 种意图 —— `Help` / `Consent { ttl, label }` / `Summary(email_id)` / `Query` / `Unknown`，全部走自然语言触发词（AI 授权词见 `docs/reference.md` 的 AI 授权态一节）。
+- 渲染在 adapter 内部：领域 Notification → TG Markdown/HTML + 转义。
+- 会话存储走外部 Redis（`C-REDIS-ONLY-STATE`；**不用 SQLite**）。
+- 验收：本地 webhook 形态，测试客户端发消息能得到回复；领域模块不导入任何渠道 SDK 类型。
 
-### 10.3 阶段 3：发送邮件 + 状态管理（1.5d）
-- `domain::jmap::JmapService::send_email`（draft + submission_set）。
-- `/send` 用 teloxide 对话 FSM 多步收集 to/subject/body。
-- `/flag /unseen`（keywords）。
-- 验收：手机发邮件、标记已读。
+### 10.3 阶段 3：发送邮件 + 状态管理（**未实施**）
+- `send_email`（draft + submission_set）**当前未实现**：`JmapBackend` 只有只读动词。
+- 发信流程原本计划用多步 FSM 收集 to/subject/body，**从未实现**（见 `docs/retired.md` 的对话 FSM 一节）。
+- `/flag /unseen` 关键词标记**未实现**。
+- 缺口与阶段归属见 `docs/roadmap.md`。
 
-### 10.4 阶段 3.5：LLM 门面 + 回退（1.5d）
-见 §12.9。
+### 10.4 阶段 3.5：LLM 门面 + 回退（1.5d，未执行）
+未实施，见 §12.8 与 `docs/retired.md`。
 
 ### 10.5 已实现能力：实时推送（Push 回调 + Streams worker + 外部 Cron 对账）
-- `notify::push_handler`：`POST /api/push/register` 接受显式 HTTPS callback URL 并创建订阅；接收 Stalwart 的 `PushVerification`，通过 JMAP `PushSubscription/set` 回写验证码，随后 `POST /push/jmap` 校验→去重→入 Redis Streams→2xx。
-- `notify::worker`：Redis Streams 消费（`mod_streams`）→ `Email/changes` 增量 → 通知 → 推进 sinceState → XACK。
-- `notify::reconcile`：`/reconcile` + `reconcile` 子命令，外部 HTTPS Cron 触发（`FLOW-RECONCILE`）；兼做 Redis 丢失后的游标重建。
-- `sinceState` 写外部 Redis（`mod_sincestate`，`C-REDIS-ONLY-STATE`；不用 SQLite/文件 `NG-SQLITE-PERSIST`/`NG-LOCAL-VOLUME`）。
+`src/notify.rs` 是**单个近 2000 行的平铺文件**，没有子模块（下表中不存在 `notify::push_handler` / `notify::worker` / `notify::reconcile` / `mod_streams` / `mod_sincestate` 这些模块名，对应实现是文件内的自由函数）：
+- `register_push`（`POST /api/push/register`）：接受显式 HTTPS callback URL 并创建订阅；收到 Stalwart 推送时用 JMAP `PushSubscription/set` 回写 `verificationCode`。
+- `jmap_push`（`POST /push/jmap`）：校验 subscription ID + verificationCode → 去重 → 入 Redis Streams → 2xx。
+- `worker`（`POST /worker`）：Redis Streams 消费 → `Email/changes` 增量 → 通知 → 推进 sinceState → XACK。
+- `reconcile`（`POST /reconcile`）：外部 HTTPS Cron 触发（`FLOW-RECONCILE`）；兼做 Redis 丢失后的游标重建。**没有 CLI 子命令形态**。
+- sinceState 写外部 Redis（`state.rs`，`C-REDIS-ONLY-STATE`；不用 SQLite/文件 `NG-SQLITE-PERSIST`/`NG-LOCAL-VOLUME`）。
 - 目标验收：向 Stalwart 发测试邮件，经 Push 回调 + worker，Telegram 在 ~秒级收到推送；重启不重发；清空 Redis 后由对账补发。当前代码门禁已通过，但仍需在真实 Stalwart、Redis 和 Telegram 环境完成端到端验证，不能将此处目标当作已验证事实。
 
 ### 10.5.1 Redis Streams 事件保障边界（FLOW 运行语义）
@@ -685,7 +645,7 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 
 ## 11. 待确认问题（产品/架构类）
 
-> ⚠️ 部署/平台类决策已确认（单账户 / App Password+Basic / Redis 托管+AOF / 平台 HTTPS URL / 外部 Cron 对账），仅余 `Q-DEP-A`/`Q-DEP-B` 运维待办，见 deployment.md §9。
+> ⚠️ 部署/平台类决策已确认（单账户 / App Password+Basic / Redis 托管+AOF / 平台 HTTPS URL / 外部 Cron 对账），仅余 `Q-DEP-A`/`Q-DEP-B` 两项上线时的运维选择（不阻塞代码），见 `docs/roadmap.md`。
 
 ### 11.1 认证方式（已确认）
 - **已确认**：**App Password + Basic**（`C-AUTH-APP-BASIC`）。不用主密码、不用 OAuth2 Bearer（无 OIDC 需求）。
@@ -693,32 +653,27 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 
 ### 11.2 实时通道（已定，见 deployment.md）
 - 通道 = **JMAP Push HTTPS 回调 + 外部 Cron `/reconcile` 对账**（`C-NO-LONG-CONN`/`C-HTTPS-INBOUND`）；EventSource/SSE/WebSocket 均**非目标**（`NG-POLLING-SSE`）。Push 注册通过受保护的 `POST /api/push/register` 显式触发，外部 Cron 仍是必须的可靠补偿通道。
-- **Q2**：部署前确认 Stalwart JMAP capability 和账号权限；官方 user/admin 角色通常已包含 PushSubscription 的 get/create/update/destroy 权限。若 `POST /api/push/register` 返回 `forbidden`，按 Stalwart 版本和角色配置排查。
-- **Q3**：Stalwart 对 Push 回调的重试策略/次数？当前实现对 callback 注册和对账采用 owner-token 单飞锁，
-  Push 验证码只保存摘要；仍需根据真实部署的重试观测校准 TTL 与对账间隔（见 deployment.md）。
+- 两条尚需在真实 Stalwart 上校准的点——账号角色是否具备 `PushSubscription` 权限、以及 Stalwart 回调重试次数与 TTL/对账间隔的匹配——已作为验收项登记在 `docs/roadmap.md`，不在本文以问题形式留存。
 
 ### 11.3 部署形态（已确认，架构相关）
 - **已确认**：**单账户实现**（`REQ-SINGLE-ACCOUNT`）；多账户暂用**多个 bot 实例**（各自 token/配置），**不做多账户单实例**（因此无需 chat→account 路由与 `JmapService` 池化）。
 - 部署形态 = **webhook-only + 通用 HTTPS-only Docker + 外部 Cron 对账**（deployment.md `C-NO-LONG-CONN`/`NG-LONG-POLLING`/`NFR-RECONCILE-INTERVAL`）。
-- **多实例 LB/HA（已确认，`ARCH-LB-WORKER`）**：可选在多个 serverless 平台部署同镜像、共享同一 Redis，前置免费 Cloudflare Worker 做唯一入口与故障转移；Worker 代码位于子目录 [`cloudflare-worker/`](../cloudflare-worker/)（非本 Rust 二进制），部署见 `docs/deployment.md` §10.8。信任模型为**透传**（后端仍 fail-closed 校验，`SAF-LB-PASSTHRU`），后端间**共享同一组 secret**（`C-LB-SHARED-SECRETS`），`/reconcile` **Redis 锁**单实例（`SAF-RECONCILE-LOCK`），Worker 提供**聚合健康视图**（`MOD-HEALTH-AGG`）。**Redis 单点故障不在本方案范围**（`NFR-HA-MULTI-INSTANCE`，用户外部解决）。双活或主备均可。详见 `docs/deployment.md` §10。
+- **多实例 LB/HA（已确认，`ARCH-LB-WORKER`）**：可选在多个 serverless 平台部署同镜像、共享同一 Redis，前置免费 Cloudflare Worker 做唯一入口与故障转移；Worker 代码位于子目录 [`cloudflare-worker/`](../cloudflare-worker/)（非本 Rust 二进制），部署见 `docs/deployment.md` 的 Worker 部署一节。信任模型为**透传**（后端仍 fail-closed 校验，`SAF-LB-PASSTHRU`），后端间**共享同一组 secret**（`C-LB-SHARED-SECRETS`），`/reconcile` **Redis 锁**单实例（`SAF-RECONCILE-LOCK`），Worker 提供**聚合健康视图**（`MOD-HEALTH-AGG`）。**Redis 单点故障不在本方案范围**（`NFR-HA-MULTI-INSTANCE`，用户外部解决）。双活或主备均可。详见 `docs/deployment.md` 的多实例部署一节。
 
-### 11.4 邮件正文呈现
-- **Q6**：Telegram 消息用 HTML 还是 MarkdownV2？HTML 转义更可控（推荐 HTML），但 MarkdownV2 视觉更好。
-- **Q7**：长邮件策略——已确认"禁止直接发送完整原文，超过阈值(默认 4000)发预览 + `[AI 总结][继续查看原文]` 选项"，AI 摘要目标 ~300 字、代码侧不做字符级硬截断（见 §12.3/§12.2）。阈值默认值是否合适见 Q29。
-- **Q8**：附件是否在 Telegram 直接下载发送？（Telegram 限 50MB 文件；大附件建议只给下载链接 via `download_url`）。
+### 11.4 已由代码回答的早期问题（不再待确认）
+以下问题在设计阶段以 Q6–Q30 形式列出，**代码落地时已各自给出答案**，因此不再是"待确认项"，此处只记结论：
+- **消息格式**（Q6）：`TelegramClient::SendMessage` 只带 `chat_id` + `text` 两个字段，**没有 `parse_mode`**——Telegram 收到后按纯文本渲染，既不用 HTML 也不用 MarkdownV2。
+- **长邮件 / 原文直发**（Q7、Q29）：不存在"正文超过 4000 字符不发全文"的策略。`read_email` 拉全文送 LLM；AI 失败时回退为前 300 字符且**无"已截断"标注**（见 §12.3/§12.5）。
+- **附件**（Q8、Q28）：完全未实现。领域模型只有 `has_attachment: bool`，出站只有 `sendMessage`，没有 `send_document` 也没有 `Blob/get`（见 §12.3）。
+- **推送范围**（Q9）：对账拉全量 `changes`，Bot 侧不做文件夹/发件人/关键词过滤，也没有 Sieve 依赖（Q11 因此无影响）。
+- **摘要聚合 / 定时汇总**（Q10）：未实现，只有 `/reconcile`。
+- **多发件身份**（Q12）：`Identity` 未使用，单账户（`REQ-SINGLE-ACCOUNT`）。
+- **unsafe**（Q13）：`src/` 中没有 `unsafe`，但也没有加 `#![forbid(unsafe_code)]`。
+- **监控**（Q15）：实现为 `/healthz` + `/ready` 两个 HTTP 探针，不引入 Prometheus/Exporter；运行平台配置见 deployment.md。
+- **LLM 提供方 / 网出许可**（Q25、Q26、Q30）：`LLM_BASE_URL` 由部署方指定（只校验 https），`LLM_ALLOW_NET` 默认 `true`；`LLM_ENABLED=false` 时直接走 `LlmClient::noop()`，不探测（见 §12.2）。
+- **熔断冷却 / 阈值**（Q27）：不适用——熔断本身未实现（见 §12.4）。
 
-### 11.5 推送范围与去重
-- **Q9**：推送所有新邮件，还是仅特定文件夹/发件人/关键词？（Stalwart 端可用 Sieve 过滤，Bot 端也可二次过滤。）
-- **Q10**：是否需要"摘要聚合"（如每早 8 点汇总未读）？由**外部 HTTPS Cron 调度器**触发 `/reconcile` 或新增汇总路由实现（**不在容器内自持定时器**，`C-NO-LONG-CONN`；+0.5d）。
-
-### 11.6 Stalwart 版本/能力
-- **Q11**：Stalwart 版本是否启用 Sieve（draft-12）能力？若启用，部分"自动归档/标记"可下沉到服务端 Sieve，Bot 只做通知，减少往返。
-- **Q12**：是否需要 `Identity` 多发件身份切换？（若只有一个身份可忽略。）
-
-### 11.7 工程取向
-- **Q13**：是否要求 `#![forbid(unsafe_code)]`（与 jmap-client 一致）？建议是。
-- **Q15**：运行监控采用 Uptime Kuma HTTP(s) Monitor 检查 `/healthz` 与 `/ready`；不引入 Prometheus、Exporter 或额外指标端口。详细配置见 deployment.md。
-  - （CI 平台为通用容器 CI，`NG-SERVERLESS-BIND`；具体见 deployment.md。）
+仍真正未决的只有两项，且都是上线时的运维选择，已收敛到 `docs/roadmap.md` 的「决策待定」，不在本文重复：`Q-DEP-A`（平台 URL / 域名与证书由谁配置）、`Q-DEP-B`（外部 Cron 用哪个调度器）。
 
 ---
 
@@ -726,7 +681,7 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 
 > **用户已确认的 7 项需求（本节据此设计，后续所有表述以此为准）**：
 > 1. **AI 仅在被明确要求并确认后接触正文**（`REQ-AI-CONFIRM` / `REQ-AI-EXTERNAL-CONSENT`）：只有当用户明确发起"分析/总结/翻译"意图**并再次确认**后，才允许把正文喂给 LLM；**仅当用户明确允许时才向外部 AI 发送邮件正文**（默认不外发）；其余场景（包括查看原文）**一律不经 AI**，由 JMAP 直取。
-> 2. **查看原文始终 JMAP 直取**（`REQ-VIEW-DIRECT`）：`/read` 与任何"看正文"动作走 `JmapService::read_email`，不走 LLM。
+> 2. **查看原文始终 JMAP 直取**（`REQ-VIEW-DIRECT`）：`Intent::Query` 与任何"看正文"动作走 `JmapService::read_email`，不走 LLM。
 > 3. **长邮件禁止直接发送完整原文**（`REQ-LONG-EMAIL`）：正文超过阈值（默认 4000 字符，见 §12.3，可调）时，Bot **不直接发送全文**，而是提示"正文较长，请电脑查看"或"选择 AI 总结"；AI 摘要目标约 **300 字**，**不做代码侧硬性数学截断**（由 LLM 自然生成 ~300 字）。
 > 4. **分析/摘要结果不持久化**（`REQ-ANALYSIS-EPHEMERAL`）：不写缓存、不入 Redis、不留磁盘；每次请求即取即弃（无状态天然友好）。
 > 5. **附件按需拉取（保留）**（`REQ-ATTACH-ONDEMAND`）：不预载；`Blob/get` 仅在用户点击下载时触发，单文件 ≤50MB 发文件，超限给 `download_url` 链接。
@@ -735,117 +690,75 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 >
 > 本节仅做设计，不写业务代码。
 
-### 12.1 模块划分（增量，接 §6）
+### 12.1 模块划分（当前实现）
+LLM 相关代码只有**一个文件**：
 ```
-src/domain/llm/   # 零渠道依赖（领域层，见 §5.2）
-├── mod.rs          # LlmService（门面：summarize / intent / draft；仅确认后调用）
-├── client.rs       # 包装 axum + reqwest::Client，OpenAI /chat/completions
-├── config.rs       # 从环境装载 + 校验
-├── policy.rs       # 熔断/退避/限次（对齐需求 6）
-├── fallback.rs     # 非 AI 回退：规则模板 + 原文直取路径（对齐需求 1/2）
-└── audit.rs        # tracing span：prompt hash / token / latency / status
+src/ai.rs   # LlmClient（唯一实现）：summarize() 打 OpenAI 兼容 /chat/completions
 ```
+配置装载在 `src/config.rs` 的 `LlmConfig`，运行时参数在 `src/state.rs` 的 `RuntimeConfig`。
+**不存在** `src/domain/llm/` 目录，也不存在其中的 `mod.rs` / `client.rs` / `config.rs` / `policy.rs` / `fallback.rs` / `audit.rs`——熔断、规则回退、审计 span 全部未实现（见 §12.4–12.7）。
+调用方只有 `worker.rs` 的 `MetadataWorker`（已授权摘要）和 `notify.rs`（新邮件通知）。
 
-### 12.2 OpenAI-compatible 环境变量（需求 7）
-```bash
-export LLM_API_KEY=...
-export LLM_BASE_URL=https://api.openai.com/v1        # 可指向任何 OpenAI-compatible 端点
-export LLM_MODEL=...                                  # 如 gpt-4o-mini
-# 可选
-export LLM_TEMPERATURE=0.2
-export LLM_MAX_TOKENS=1024
-export LLM_TIMEOUT_SECS=30
-export LLM_MAX_RETRIES=3                               # 对应需求 6 的"约 3 次"
-export LLM_ENABLED=true|false                           # 一键降级开关
-export LLM_ALLOW_NET=true|false                         # 默认 false；开启才允许 LLM 出网
-# 摘要目标长度（写入 prompt 的系统指令，由 LLM 自然控制；代码侧不做字符截断）
-export LLM_SUMMARY_TARGET_CHARS=300
-```
-- 客户端：**axum**（或裸 `reqwest` + `serde`），`POST {LLM_BASE_URL}/chat/completions`，`Authorization: Bearer $LLM_API_KEY`。
-- **仅在用户明确要求分析/总结/翻译并确认后**才调用 LLM；此时把**最小必需上下文**（Subject + 正文 + 用户指令）交给 LLM，prompt 系统指令写明"请生成约 300 字中文摘要"。
-- 摘要结果**不持久化**（需求 4）：不写 Redis、不落盘，处理完即弃；无状态天然友好。
-- 默认关闭网出能力（`LLM_ALLOW_NET=false`）降低数据外泄风险；密钥不入仓库；`config::Config` 启动时强校验，缺失且 `LLM_ENABLED=true` → 启动失败或降级为禁用并告警。
-- 运行期 secret 注入方式见 deployment.md（`C-NO-SECRET-IN-IMAGE`）。
+### 12.2 环境变量（当前实现）
+| 变量 | 类型 | 默认 | 用途 |
+|---|---|---|---|
+| `LLM_ENABLED` | bool | `true` | 总开关 |
+| `LLM_ALLOW_NET` | bool | `true` | 运行时出站许可；`LLM_ENABLED && LLM_ALLOW_NET` 同时为真才构造 `LlmClient`，否则用 `LlmClient::noop()`（`src/main.rs:109`） |
+| `LLM_API_KEY` | string | 必填 | Bearer token；缺失即视为未启用 |
+| `LLM_BASE_URL` | URL | 必填 | 必须 `https`，否则 `AiError::InvalidEndpoint` |
+| `LLM_MODEL` | string | 必填 | 透传给 `/chat/completions` 的 `model` |
+| `LLM_SUMMARY_TARGET_CHARS` | int | `1024` | `LlmClient::max_chars`，对返回摘要文本做字符截断（**代码侧确有截断**） |
+| `max_retries`（运行参数） | int | `3` | 由 `RuntimeConfig` 下发，硬上限 5；LLM 与 Telegram 出站共用 |
+| `llm_timeout_ms`（运行参数） | int | `30000` | 硬下限 100ms |
+
+**不存在** `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` / `LLM_TIMEOUT_SECS` / `LLM_MAX_RETRIES`：请求体只有 `model` / `messages` / `max_tokens`（= `max_chars * 2`），没有 temperature，也没有独立于 `llm_timeout_ms` 的超时开关。API key 只从配置读，不入源码、不打日志（`SAF-LOG-PURITY`），运行期 secret 注入方式见 deployment.md（`C-NO-SECRET-IN-IMAGE`）。
 
 ### 12.3 正文获取策略与长邮件处理（需求 1/2/3/5）
-- **查看原文 = JMAP 直取**：`/read` 与任何"看正文"动作走 `JmapService::read_email`，**不经 LLM**；LLM 不在查看路径上。
+- **查看原文 = JMAP 直取**：`Intent::Query` 与任何"看正文"动作走 `JmapService::read_email`，**不经 LLM**；LLM 不在查看路径上。
 - **AI 接触正文的前置门槛**：只有当用户发起明确的"分析/总结/翻译"意图**并再次确认**（例如点 `[AI 总结]` 按钮 / 执行 `/summarize`）后，才把正文作为 LLM 输入。未经确认 → LLM 看不到正文。
-- **长邮件禁止直接发送完整原文**（需求 3）：
-  - 当正文长度 > 阈值（默认 **4000 字符**，由 §12.2 配置，可调），Bot **不发送全文**，而是回复一段简短预览（如 Preview 120 字符 + 发件人/主题/附件概览）并给出选项：
-    > "邮件正文较长（约 N 字）。在手机上不便完整阅读，建议在电脑端查看。如需在此查看：`[AI 总结]`（约 300 字）`[继续查看原文]`（截断）"
-  - "AI 总结"路径：经用户确认 → 把正文交 LLM → 生成约 300 字摘要（目标由 prompt 控制，**代码侧不做字符级硬截断**）。
-  - "继续查看原文"路径：仍 JMAP 直取，发送截断版（明确标注"已截断，完整请电脑查看"），**绝不直接发送完整原文**。
-- **附件按需**（需求 5 保留）：Telegram 端先给"📎 3 个附件（PDF, 2.1MB）"概览 + 下载按钮；用户点击才触发 `Blob/get` 流式下载 → `Telegram::send_document`，单文件 ≤50MB，超限只给 `download_url` 链接。避免启动期预载全部 blob，减少 JMAP 出站与内存峰值。
-- AI 摘要**永远不**把附件内容喂入 prompt（除非后续单独功能开启且白名单限定），保持隐私默认。
+- **没有"长邮件保护"逻辑**：不存在 4000 字符阈值、不存在 `Preview` 类型、不存在 `[继续查看原文]` 按钮。授权后的摘要路径就是把**全文**交给 LLM，LLM 失败时回退为前 300 字符，全程无截断标注。
+- 回退文本**没有任何标注**：`fallback()` 就是 `body.chars().take(300)` 直接返回，不追加"已截断"或"AI 不可用"字样。
+- **附件功能完全未实现**：`src/domain/jmap.rs` 明确注释"no mutation, attachment, AI, or streaming APIs"，`read_email` 只返回正文文本；领域模型里唯一的附件信息是 `has_attachment: bool`。Telegram 出站只调 `sendMessage`，**不存在** `send_document` / `Blob/get` 流式下载 / 下载按钮。
+- AI 摘要的输入只有邮件正文文本，没有附件通道。
 
 ### 12.3.1 AI 授权期限与 Redis TTL（`REQ-AI-CONSENT`）
 - AI 授权必须由用户明确选择期限；可选 `临时一次`（一次授权窗口，3600 秒）、今天（86400 秒）、7 天（604800 秒）或直到撤销（最长 365 天，即 31536000 秒）。触发词按原文包含匹配（`临时`/`一次`/`今天`/`7天`/`直到我撤销`/`长期`，以及 `/ai on`、`/ai yes`、`/ai off`），不支持英文别名。
 - Redis 的 consent key 仅保存 chat id 对应的到期 Unix 时间，并使用**与所选期限完全相同**的 `SET EX` 秒数；不使用隐式 30 天默认值，也不保存正文或摘要。
 - 到期由 Redis TTL 和读取时的到期校验共同保证，摘要请求回到元数据模式并提示“授权已到期”；用户重新选择期限后才可再次授权。`/ai off` 立即删除 key。
 
-### 12.4 失败检测与熔断（需求 6）
-```
-LlmService.call(kind: LlmKind, input, ctx)
-  ├─ 调用 axum → Result<Response, LlmErr>
-  │   成功 → 正常路径
-  │   失败（4xx/5xx/超时/网络/401） → 记入 policy
-  └─ policy.tick() 计数：
-       失败次数 >= 3（LLM_MAX_RETRIES） 且 在 TTL 窗口内
-       → 触发"熔断 + 需确认回退"（进入半开状态）
-```
-- 触发后向用户发一条**显式确认消息**（`/llm-fallback` 风格的 inline-button）：
-  > "AI 最近 3 次调用失败，我切换到规则模板回复。是否继续？ `[恢复AI(重试)]` `[关闭AI 60s]`"
-- 用户选择后：
-  - "恢复 AI" → 走一次探测请求，成功则重置计数、退出熔断；失败则维持熔断；
-  - "关闭 60s" → 进入冷却期，期间所有 LLM 调用直接走 fallback 路径。
-- 熔断状态**持久化**到 Redis（TTL = 冷却期），无状态化：实例重启/迁移后能从 Redis 恢复；Redis 丢失时退化到进程内短窗口（接受 60s 内的漏判）。Redis 运维与存活窗口见 deployment.md。
+### 12.4 失败检测（当前实现）
+`LlmClient::summarize`（`src/ai.rs`）**只有重试，没有熔断**：
+- 超时 `llm_timeout_ms`（默认 30_000ms，最小 100ms），最多重试 `max_retries` 次（默认 3，硬上限 5，与 Telegram 出站共用同一配置项）。
+- 只对上一次的失败重试：429 与 5xx 会重试；**其他 4xx（含 401/403）立即返回错误，不重试**。
+- 重试耗尽或全部超时 → `Err(AiError::Response)`；URL 解析失败或非 https → `Err(AiError::InvalidEndpoint)`；JSON 反序列化失败或缺 `choices[0].message.content` → `Err(AiError::Response)`。
+- `AiError` 只有三个变体：`InvalidEndpoint` / `Request` / `Response`。**不存在** 429/401/Timeout 的细分类型。
 
-### 12.5 非 AI 回退（需求 6，与"原文直取"一致）
-- `fallback.rs` 提供与 AI 接口相同的签名（`fn summarize(input:&Input) -> Output`），内部走**规则 + 原文直取**：
-  - 摘要回退：截取 `Subject + Preview(120 chars)`，不解析 HTML；
-  - 意图识别回退：用关键字/正则匹配（如"归档"、"删除"、"回复"）走确定性分支；
-  - 草稿/格式化回退：纯模板字符串替换。
-- 所有回退响应均**显式标注**"AI 不可用"徽标，避免用户误以为是 AI 生成。
-- 回退路径**不经过 LLM 客户端**，保证零 LLM 依赖；且**不触发 3 次熔断逻辑**（熔断只统计 LLM 调用）。
+### 12.5 非 AI 回退（当前实现）
+`worker.rs` 的 `fallback()` 就是**取正文前 300 个字符**，仅此而已：
+- AI 授权有效且 LLM 调用失败 → 静默换成这 300 字符，**不提示用户**、不加"AI 不可用"标记。
+- AI 未授权 → 不发摘要，回一条 `发件人 — 主题` + "授权已到期或尚未授权"。
+- 因此不存在熔断半开态、不存在确认回退的 inline-button、不存在 60s 冷却期、不存在写进 Redis 的熔断计数（Redis 上没有任何 LLM 相关状态键）。
 
 ### 12.6 无状态/容器化适配
-- **分析/摘要结果不持久化**（需求 4）：不写 Redis、不落盘、不做结果缓存；每次请求即取即弃。**删除"摘要结果入 Redis 缓存"方案**——多实例/冷启动只影响重复调用成本，不缓存保证数据最少留存。（与 `C-REDIS-ONLY-STATE` / `SAF-LOG-PURITY` 一致：Redis 上 LLM 相关状态仅熔断计数；**不写** prompt/completion 明文。）
-- **熔断计数存 Redis**（`INCR + EXPIRE`），跨实例共享（这是 Redis 上唯一与 LLM 相关的状态）。
-- `LLM_SUMMARY_TARGET_CHARS`、`LLM_MAX_RETRIES`、熔断冷却时间通过 config 下发，不写死。
+- 摘要**不持久化、不缓存**：`worker.rs` 每次即时调用 LLM，结果不写 Redis、不落盘。与 `C-REDIS-ONLY-STATE` 一致。
+- 日志不记 prompt 明文与 API key（`SAF-LOG-PURITY`）——**但当前日志也不记任何 LLM 调用事件**（见 §8.3）。
+- 生效的运行参数只有 `llm_timeout_ms`、`max_retries`、`LLM_SUMMARY_TARGET_CHARS`（对应 `LlmClient::max_chars`，对摘要输出截断）。**不存在** `LLM_MAX_RETRIES` 这个环境变量。
+- 请求体只有 `model` / `messages` / `max_tokens`（`max_tokens = max_chars * 2`）；**没有 temperature、没有 system prompt**——正文直接作为唯一的 user 消息发出。
 
 ### 12.7 错误处理与可观测性（接 §8）
-新增 `BotError::Llm(LlmErr)`；`LlmErr` 细分 `Unauthorized`（401/403）、`RateLimited`（429）、`Timeout`、`BadResponse`、`Transport`。用户消息映射：
-- 熔断中 + 未确认 → 静默走回退，附"AI 不可用"徽标；
-- 恢复失败 → 再次提示用户确认；
-- 审计：`tracing` span `llm.call` 记录 prompt 哈希、response 长度、latency、status，不记录 prompt 明文（合规）。
+**未实现** `BotError::Llm` 变体（`BotError` 只有 `Config`/`Io`/`Json`/`State` 四个），LLM 错误在 `worker.rs` 内被就地吞掉并降级为回退文本，不向上传播。
+**未实现** `llm.call` 的 `tracing` span（无 prompt 哈希、response 长度、latency 记录）。这两项连同 12.4 的熔断/半开设计、12.5 的规则回退与"AI 不可用"徽标，一并记入 `docs/retired.md`。
 
-### 12.8 新增待确认问题
-- **Q25**：LLM 提供方是 OpenAI 官方还是自托管/Ollama/vLLM？`LLM_BASE_URL` 是否需要 TLS 互信？出网白名单是否允许？
-- **Q26**：`LLM_ALLOW_NET` 默认 false 是否可接受？（即 AI 调用本身也视为敏感出网操作，需用户显式开关。）
-- **Q27**：熔断冷却期（60s 还是 5min）与"约 3 次"阈值需确认；"约 3 次"是否含 429 限流？
-- **Q28**：附件"按需"指**下载并作为 Telegram 文件回传**，还是**仅给 Stalwart `download_url` 链接**？后者更省流量与成本，前者体验更顺。
-- **Q29**：长邮件"禁止直接发送完整原文"的阈值（默认 4000 字符）是否合适？"AI 总结"目标 ~300 字是否满足预期（过短/过长可调整，由 prompt 自然控制）？
-- **Q30**：`LLM_ENABLED=false` 时是否**启动即禁用 AI 且不写熔断**（最简降级），还是仍保留探测？推荐前者。
-
-### 12.9 实施计划增量（接 §10）
-在阶段 3 与 4 之间插入 **阶段 3.5：LLM 门面 + 回退（1.5d）**
-- `llm::client` + `axum`/reqwest 调用；
-- `llm::policy` 3 次熔断 + Redis 共享计数（熔断是 Redis 上唯一的 LLM 相关状态；**摘要结果不持久化**）；
-- `llm::fallback` 规则模板 + 原文直取；
-- 长邮件策略：正文 > 4000 字符 → 不发送完整原文，改发预览 + `[AI 总结][继续查看原文]` 选项（对齐 §12.3）；
-- `telegram/formatting` 增加"AI 不可用"徽标；
-- 验收：
-  - `LLM_ENABLED=true` 且用户明确确认分析 → 正常 ~300 字摘要（不做字符级硬截断）；
-  - 长邮件默认**不发送完整原文**（仅预览 + 选项）；
-  - 模拟 3 次 500 → 弹确认；选"关闭 60s" → 60s 内全走回退并带徽标；
-  - `LLM_ENABLED=false` → 直接全走回退；
-  - 查看原文（`/read`）路径**绝不**触发 LLM。
+### 12.8 计划中的「阶段 3.5」未执行
+原计划要在阶段 3 与 4 之间插入「阶段 3.5：LLM 门面 + 回退（1.5d）」，交付 `llm::client` / `llm::policy` / `llm::fallback` 三个模块，外加 4000 字符长邮件阈值、"AI 不可用"徽标和 3 次熔断 + Redis 共享计数。
+**这套计划没有按设计执行**：LLM 能力最终落在单文件 `src/ai.rs`（见 §12.1），没有门面、没有 policy、没有 fallback 模块，也没有徽标和阈值分支。被放弃的部分记入 `docs/retired.md`。
+本节原有一组 Q25–Q30 的设计提问也已作废——代码落地时已各自给出结论，答案见 §11.4。
 
 ---
 
 ## 附：调研依据（可复核）
 - `stalwartlabs/jmap-client` main 分支：`src/lib.rs`（URI/Method/DataType/Error）、`src/client.rs`（认证/连接/event_source）、`src/email/`、`src/email_submission/helpers.rs`、`src/event_source/`、`src/push_subscription/`（create/verify/update_types/destroy）、`src/core/error.rs`、`Cargo.toml`、`README.md`、`examples/`。
-- crates.io：`teloxide` 0.17（features 列表）、`jmap-client` 元数据。
+- crates.io：`jmap-client` 元数据。
 - `stalwartlabs/mail-server` main 分支：`crates/common/src/auth/credential.rs`（Password/AppPassword/ApiKey）、`crates/http/src/auth/authenticate.rs`（AccessScope 权限裁剪）、`crates/jmap/src/push/`、`api/v1/openapi.yml`（`securitySchemes`: basicAuth/bearerAuth/liveToken 60s）。
 - 项目目录 `/home/okabe/Repo/messageweave/`（工具链要求见 §10.0 与 AGENTS.md）。
 - 部署/平台相关调研依据（lambda_runtime/worker/aws-sdk 等）见 deployment.md。

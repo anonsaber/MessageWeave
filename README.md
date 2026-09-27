@@ -91,6 +91,7 @@ credential and the trust root for bootstrap — keep it private and rotate it as
 | [`docs/deployment.md`](docs/deployment.md) | How to deploy: Dockerfile, secrets, Redis hosting, webhook/push/reconcile routing, multi-instance load balancing |
 | [`docs/reference.md`](docs/reference.md) | **Single source of truth for verifiable facts** — Redis keys and TTLs, error codes, routes, environment layers, budgets |
 | [`docs/roadmap.md`](docs/roadmap.md) | Gaps, blockers and the next phase |
+| [`docs/retired.md`](docs/retired.md) | What was tried and dropped — abandoned routes, unreleased designs, and names that never existed |
 | [`AGENTS.md`](AGENTS.md) | Contribution rules, hard boundaries, the stable-ID index for cross-document references |
 
 Facts that matter are traceable. If two documents disagree, `docs/reference.md` wins.

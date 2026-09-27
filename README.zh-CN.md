@@ -83,6 +83,7 @@ Redis ACL 凭据同时是应用连接凭据与 bootstrap 信任根——请单�
 | [`docs/deployment.md`](docs/deployment.md) | 怎么部署：Dockerfile、secrets、Redis 托管、webhook/push/对账路由、多实例负载均衡 |
 | [`docs/reference.md`](docs/reference.md) | **可核对事实的唯一权威来源**——Redis 键与 TTL、错误码、路由、环境变量分层、预算常量 |
 | [`docs/roadmap.md`](docs/roadmap.md) | 缺口、阻塞项与下一阶段目标 |
+| [`docs/retired.md`](docs/retired.md) | 试过但没用的：废弃路线、未落地的设计与从未存在的名字 |
 | [`AGENTS.md`](AGENTS.md) | 贡献规则、硬边界、跨文档引用的稳定 ID 索引 |
 
 重要的事实都可追溯。两份文档不一致时，以 `docs/reference.md` 为准。

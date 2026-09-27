@@ -76,9 +76,11 @@ Consent never auto-renews.
 | `retry:{stream}:{id}` | EX 86_400 | `retry_or_dlq` Lua script (key state.rs:434, `INCR` state.rs:438, `EXPIRE` state.rs:439) | reclaim path |
 | `stalwart:jmap:dlq`, `stalwart:telegram:dlq` | Stream, no EX | Lua `XADD` at state.rs:441; name built at notify.rs:348, `max_attempts` 3 at notify.rs:349 | **nothing in code reads it** |
 
-There is **no `delivery:pending:{stream}` key**. "Pending" refers to the Redis Streams
-pending-entries list of the `stalwart:*` streams, which Redis tracks internally; it is not a
-writable key and nothing in the codebase names one.
+There is no `delivery:pending:{stream}` key — "pending" refers to the Redis Streams
+pending-entries list (PEL), which Redis maintains internally.
+The stream names above are concrete: `stalwart:jmap` and `stalwart:telegram`;
+`{stream}` in the remaining keys is one of these two.
+The mistake is recorded in `docs/retired.md`.
 
 Delivery is at-most-once per event: the `delivery:inflight` key is claimed with a 60 s window
 before the outbound send, and `delivery:committed` extends the guarantee to seven days after
@@ -88,9 +90,6 @@ The DLQ is **append-and-ack**: the same Lua script that appends to `stalwart:jma
 `stalwart:telegram:dlq` also `XACK`s the message out of the source stream, so increment, DLQ
 append and source acknowledgement are atomic (state.rs:438-442). No code path reads the DLQ
 back — replay is an operator action, not a service feature.
-
-`{stream}` in the keys above is one of the two concrete stream names; there are no other
-streams in the service.
 
 ### 1.4 Idempotency and rate limits
 
@@ -216,6 +215,11 @@ Response conventions:
 > (backends.js:9-22), 12 entries. The worker entry point is `src/index.js`
 > (wrangler.toml:20); `src/lb.js` performs forwarding and bounded failover (`SAF-LB-PASSTHRU`,
 > `C-NO-LONG-CONN`).
+
+The gate is **unconditional and fail-closed**. The worker reads no configuration switches at
+all: a path missing from `SAFE_ROUTES` returns **404** (index.js:69-72), a registered path
+with the wrong method returns **405** (index.js:73-76), and a missing or unparseable backend
+pool returns **503** rather than passing the request through (index.js:80-82).
 
 **Forwarded by the worker (12):**
 

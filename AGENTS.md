@@ -105,7 +105,7 @@
 - 禁止引入 SSE/EventSource/WebSocket/长轮询等长连接运行模式（`C-NO-LONG-CONN`/`NG-POLLING-SSE`/`NG-LONG-POLLING`）。
 - 禁止 SQLite/本地卷作持久层；状态与游标仅外部 Redis（`NG-SQLITE-PERSIST`/`NG-LOCAL-VOLUME`/`C-REDIS-ONLY-STATE`），Redis 丢失走 JMAP 对账 `FLOW-RECONCILE` 恢复。
 - 禁止无授权改动 `docs/design.md`、`docs/deployment.md`、`AGENTS.md` 之外的内容；安全边界变更须同步三份文档。
-- 禁止在领域层（`jmap` / `llm` / 意图状态机 / `notify::core`）引入 Telegram/teloxide 类型；`teloxide` 仅允许出现在 `channel/telegram/`。
+- 禁止在领域层（`domain.rs` / `ai.rs` / `worker.rs`）引入具体渠道 SDK 类型；渠道 SDK 只允许出现在渠道层（当前为 `src/channel.rs`，**不引入第三方 Bot 框架**）。
 - 禁止提前实现钉钉/飞书 adapter（仅保留抽象与扩展位，不写具体渠道代码、不建渠道专属配置项）。
 - 禁止在文档/注释中声称已使用**尚未加入 `Cargo.toml`** 的依赖（`teloxide`/`figment` 等）；`jmap-client`/`redis`/`reqwest` 已引入（版本以 `Cargo.toml` 为准，`ARCH-DEPS-STAGE4`），其中 jmap-client **禁止启用其 WebSocket feature**（`C-NO-LONG-CONN`）；配置恒为环境变量手工解析（`ARCH-CONFIG-ENV`），禁止引入 figment/TOML 配置文件。
 - 禁止在未通过 `GATE-P0` 时进入阶段1；禁止把阶段0 容器暴露公网（业务体仍为占位，`BOUND-STAGE1`）。入口鉴权（`SAF-AUTH-*`，R1）**已在阶段0 落地**，禁止移除、放宽或绕过（fail-closed）。
@@ -133,7 +133,7 @@
   - **入口鉴权（`SAF-AUTH-*`）**：`/reconcile`/`/webhook/tg`/`/push/jmap` 在缺失或错误凭证下返回 `401` 且**无副作用**（无 Redis 写入、无 JMAP/AI 调用）；正确凭证放行。
   - **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz` 返回 `200`；`/ready` 已做基础探测（`ARCH-READY-BASELINE`：配置完整性 + Redis 可达性，不就绪返 `503`）——测试**可以**断言 `/ready` 在基础依赖不就绪时返回 `503`，但**不得**断言其已执行 JMAP session / TG getMe 等端到端探测（余下范围 `GATE-READY-DEPS`）；两者响应体均不含敏感信息。
   - **JMAP 只读 adapter（`MOD-JMAP-CLIENT`/`GATE-G1-JMAP-READONLY`）**：mock 测试覆盖 session/account 选择（`ACCOUNT_ID` 空→主账户、显式值校验）、**URL 归一化**（`JMAP_SESSION_URL` 基地址与完整 `…/.well-known/jmap` 两种输入结果一致、无重复路径、`http://` 拒绝、内嵌凭据拒绝，`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）、`list_folders`/`list_emails`（`limit` 边界）/`read_email`（多 part 拼接与"无可用部分"明确错误，`REQ-JMAP-RAW-MULTIPART`）、`received_at` 解析；真机测试用 `#[ignore]` 标记、经环境变量驱动（运行：`cargo test -- --ignored jmap::`；仅编译：`cargo test --no-run`），**缺环境时清晰跳过且不泄密**，CI 默认不跑真机用例。**G1/D-G1-1 代码已实现，待真实 `cargo test -- --ignored jmap::` 验证；未实际运行 `--ignored` 前不得声称"真机通过"。**
-- 领域/渠道解耦测试：`jmap`/`llm`/意图状态机/`notify::core` 不 import teloxide 类型（编译期/脚本检查）；`MockChannel` 可驱动全部领域与通知流程（不依赖 Telegram）。
+- 领域/渠道解耦测试：领域模块（`src/domain.rs` / `src/ai.rs` / `src/worker.rs`）的公开接口不出现任何渠道 SDK 类型（编译期检查）；`JmapBackend` 的 `MockBackend` 可驱动全部 JMAP 领域流程（不联网）。
 - 文件行数抽查：>500 行的 `.rs` 文件在 PR 说明中可见（软性，不自动 fail）。
 - 代码注释一致性：抽查关键领域、渠道、通知、Redis/AI 模块，确认注释引用的稳定语义 ID、状态流转和安全边界与 `design.md`/`deployment.md` 一致。
 - 涉及部署的改动需过 deployment.md 的 CI/验收清单（`C-DOCKER` 镜像扫描、非 root、health 端点等）。
@@ -150,6 +150,7 @@
 | `docs/design.md` | 产品行为、架构、模块接口、状态机、数据流、错误处理、测试、实施阶段、渠道抽象（Channel/Notifier/MessageAdapter）、产品/架构类待确认问题 | 行为/接口变更时 |
 | `docs/deployment.md` | 通用 HTTPS-only Docker、Debian、构建/运行时、Secrets、Redis（状态唯一载体）、Webhook/Push/对账短请求路由、**多实例 LB/HA（Worker 前置，§10）**、健康检查、CI、2 项待确认（`Q-DEP-A` 平台 URL/域名与证书配置 / `Q-DEP-B` 外部调度器选型） | 部署/发布变更时 |
 | `docs/roadmap.md` | **只放缺口、阻塞与阶段目标**（取代 `docs/todo.md`，已删除） | 缺口或阻塞项增减时 |
+| `docs/retired.md` | **已废弃 / 未采用路线与虚构条目**：每条含「类型 / 原因 / 替代或现状」；记录 teloxide 未采用、FSM 未落地、幽灵文件与虚构键、已删文档。**只写结论与原因，不写当前事实** | 新增废弃项或删除文档时 |
 | `AGENTS.md`（本文件） | 目标、硬性安全边界、实现顺序、禁止事项、测试验收、文档引用关系、**跨文档引用索引（§7）** | 安全边界/流程变更时 |
 
 ### 6.1 权威与冲突仲裁
@@ -168,6 +169,7 @@
 - 改动产品规则必须同步三份文档的相关表述，保持一致、不重复堆砌。
 - `design.md` 不写部署细节，`deployment.md` 不写产品行为/接口；交叉处用**稳定 ID**（§7 索引）互相引用，不用章节号。
 - `README.md` 只回答"是什么 / 怎么跑 / 去哪配 / 安全边界 / 去哪读"；**不写缺口、不写 roadmap、不写深水区、不写历史环境变量清单**。缺口一律进 `docs/roadmap.md`。
+- **文档里出现的模块、函数、trait、Redis 键必须是 `src/` 中真实存在的。**要保留一个不存在的名字（例如未采用的框架、未落地的目标模块），必须同时写入 `docs/retired.md` 并在那里说明"从未存在 / 从未落地"，不允许只出现在正文里。
 
 ---
 
