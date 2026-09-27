@@ -55,8 +55,33 @@ pub struct EmailContent {
     pub is_long: bool,
 }
 
+/// A channel-neutral page of JMAP Email/changes. Deleted IDs are retained for
+/// cursor accounting but are not notified because they have no metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailChanges {
+    pub new_state: String,
+    pub created: Vec<String>,
+    pub updated: Vec<String>,
+    pub destroyed: Vec<String>,
+    pub has_more: bool,
+}
+
 #[async_trait]
 pub trait JmapBackend: Send + Sync {
+    async fn create_push_subscription(&self, callback_url: &str) -> Result<String, JmapError>;
+    async fn destroy_push_subscription(&self, subscription_id: &str) -> Result<(), JmapError>;
+    async fn verify_push_subscription(
+        &self,
+        subscription_id: &str,
+        verification_code: &str,
+    ) -> Result<(), JmapError>;
+    async fn current_state(&self) -> Result<String, JmapError>;
+    async fn email_changes(
+        &self,
+        account_id: &str,
+        since_state: &str,
+        max_changes: usize,
+    ) -> Result<EmailChanges, JmapError>;
     async fn list_folders(&self, account_id: &str) -> Result<Vec<Folder>, JmapError>;
     async fn list_emails(
         &self,
@@ -64,6 +89,21 @@ pub trait JmapBackend: Send + Sync {
         folder_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<EmailMetadata>, JmapError>;
+    /// Fetch one bounded page without requiring the caller to materialize the
+    /// entire mailbox. Implementations with a native JMAP position query should
+    /// override this; the fallback preserves test backends' existing contract.
+    async fn list_emails_page(
+        &self,
+        account_id: &str,
+        folder_id: Option<&str>,
+        position: usize,
+        limit: usize,
+    ) -> Result<Vec<EmailMetadata>, JmapError> {
+        let all = self
+            .list_emails(account_id, folder_id, position.saturating_add(limit))
+            .await?;
+        Ok(all.into_iter().skip(position).take(limit).collect())
+    }
     async fn read_email(
         &self,
         account_id: &str,
@@ -109,6 +149,49 @@ impl<B> JmapService<B> {
 }
 
 impl<B: JmapBackend> JmapService<B> {
+    pub async fn create_push_subscription(&self, callback_url: &str) -> Result<String, JmapError> {
+        if !callback_url.starts_with("https://") {
+            return Err(JmapError::InvalidRequest("push callback URL"));
+        }
+        self.backend.create_push_subscription(callback_url).await
+    }
+
+    pub async fn destroy_push_subscription(&self, subscription_id: &str) -> Result<(), JmapError> {
+        if subscription_id.trim().is_empty() {
+            return Err(JmapError::InvalidRequest("push subscription id"));
+        }
+        self.backend
+            .destroy_push_subscription(subscription_id)
+            .await
+    }
+    pub async fn verify_push_subscription(
+        &self,
+        subscription_id: &str,
+        verification_code: &str,
+    ) -> Result<(), JmapError> {
+        if subscription_id.trim().is_empty() || verification_code.trim().is_empty() {
+            return Err(JmapError::InvalidRequest("push verification"));
+        }
+        self.backend
+            .verify_push_subscription(subscription_id, verification_code)
+            .await
+    }
+    pub async fn current_state(&self) -> Result<String, JmapError> {
+        self.backend.current_state().await
+    }
+
+    pub async fn email_changes(
+        &self,
+        since_state: &str,
+        max_changes: usize,
+    ) -> Result<EmailChanges, JmapError> {
+        if since_state.trim().is_empty() || max_changes == 0 {
+            return Err(JmapError::InvalidRequest("changes"));
+        }
+        self.backend
+            .email_changes(&self.account_id, since_state, max_changes)
+            .await
+    }
     pub async fn list_folders(&self) -> Result<Vec<Folder>, JmapError> {
         self.backend.list_folders(&self.account_id).await
     }
@@ -123,6 +206,20 @@ impl<B: JmapBackend> JmapService<B> {
         }
         self.backend
             .list_emails(&self.account_id, folder_id, limit)
+            .await
+    }
+
+    pub async fn list_emails_page(
+        &self,
+        folder_id: Option<&str>,
+        position: usize,
+        limit: usize,
+    ) -> Result<Vec<EmailMetadata>, JmapError> {
+        if limit == 0 {
+            return Err(JmapError::InvalidRequest("limit"));
+        }
+        self.backend
+            .list_emails_page(&self.account_id, folder_id, position, limit)
             .await
     }
 
@@ -147,6 +244,43 @@ mod tests {
 
     #[async_trait]
     impl JmapBackend for MockBackend {
+        async fn destroy_push_subscription(&self, subscription_id: &str) -> Result<(), JmapError> {
+            assert_eq!(subscription_id, "push-1");
+            Ok(())
+        }
+        async fn create_push_subscription(&self, callback_url: &str) -> Result<String, JmapError> {
+            assert_eq!(callback_url, "https://bot.example/push/jmap");
+            Ok("push-1".into())
+        }
+        async fn verify_push_subscription(
+            &self,
+            subscription_id: &str,
+            verification_code: &str,
+        ) -> Result<(), JmapError> {
+            assert_eq!((subscription_id, verification_code), ("push-1", "code"));
+            Ok(())
+        }
+        async fn current_state(&self) -> Result<String, JmapError> {
+            Ok("state-1".into())
+        }
+        async fn email_changes(
+            &self,
+            account_id: &str,
+            since_state: &str,
+            max_changes: usize,
+        ) -> Result<EmailChanges, JmapError> {
+            assert_eq!(
+                (account_id, since_state, max_changes),
+                ("account-1", "old", 10)
+            );
+            Ok(EmailChanges {
+                new_state: "new".into(),
+                created: vec!["email-1".into()],
+                updated: vec![],
+                destroyed: vec![],
+                has_more: false,
+            })
+        }
         async fn list_folders(&self, account_id: &str) -> Result<Vec<Folder>, JmapError> {
             assert_eq!(account_id, "account-1");
             Ok(vec![Folder {

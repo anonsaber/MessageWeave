@@ -49,7 +49,6 @@ pub struct Config {
 pub struct AuthSecrets {
     pub reconcile_token: SecretString,
     pub telegram_webhook_secret: SecretString,
-    pub jmap_push_verification: SecretString,
 }
 
 pub struct TelegramConfig {
@@ -85,7 +84,6 @@ pub struct BusinessConfig {
     pub jmap_session_url: String,
     pub jmap_username: String,
     pub jmap_password: SecretString,
-    pub jmap_push_verification: SecretString,
     pub account_id: Option<String>,
     pub llm_enabled: bool,
     pub llm_allow_net: bool,
@@ -107,7 +105,6 @@ pub(crate) struct BusinessConfigWire {
     pub jmap_session_url: String,
     pub jmap_username: String,
     pub jmap_password: String,
-    pub jmap_push_verification: String,
     pub account_id: Option<String>,
     pub llm_enabled: bool,
     pub llm_allow_net: bool,
@@ -128,7 +125,6 @@ impl From<BusinessConfig> for BusinessConfigWire {
             jmap_session_url: value.jmap_session_url,
             jmap_username: value.jmap_username,
             jmap_password: value.jmap_password.expose_secret().to_owned(),
-            jmap_push_verification: value.jmap_push_verification.expose_secret().to_owned(),
             account_id: value.account_id,
             llm_enabled: value.llm_enabled,
             llm_allow_net: value.llm_allow_net,
@@ -150,7 +146,6 @@ impl TryFrom<BusinessConfigWire> for BusinessConfig {
         validate_nonblank("JMAP_USERNAME", &value.jmap_username)?;
         validate_nonblank("JMAP_PASSWORD", &value.jmap_password)?;
         validate_nonblank("TG_WEBHOOK_SECRET", &value.telegram_webhook_secret)?;
-        validate_nonblank("JMAP_PUSH_VERIFICATION", &value.jmap_push_verification)?;
         validate_nonblank("RECONCILE_TOKEN", &value.reconcile_token)?;
         validate_nonblank("WORKER_TOKEN", &value.worker_token)?;
         if let Some(key) = value.llm_api_key.as_deref() {
@@ -164,7 +159,6 @@ impl TryFrom<BusinessConfigWire> for BusinessConfig {
             jmap_session_url: value.jmap_session_url,
             jmap_username: value.jmap_username,
             jmap_password: SecretString::new(value.jmap_password),
-            jmap_push_verification: SecretString::new(value.jmap_push_verification),
             account_id: value.account_id,
             llm_enabled: value.llm_enabled,
             llm_allow_net: value.llm_allow_net,
@@ -179,6 +173,12 @@ impl TryFrom<BusinessConfigWire> for BusinessConfig {
 
 pub(crate) fn validate_business_wire(wire: BusinessConfigWire) -> Result<(), BotError> {
     let config: BusinessConfig = wire.try_into()?;
+    if config.chat_allowlist.is_empty() {
+        // SAF-CHAT-ALLOWLIST: 必填，处理前先拒绝非白名单；空名单是非法配置而非 fail-open。
+        return Err(BotError::Config(
+            "CHAT_ALLOWLIST must contain at least one chat id".into(),
+        ));
+    }
     let session = url::Url::parse(&config.jmap_session_url)
         .map_err(|_| BotError::Config("JMAP_SESSION_URL must be a valid URL".into()))?;
     if session.scheme() != "https"
@@ -242,7 +242,6 @@ impl Config {
             auth: AuthSecrets {
                 reconcile_token: empty(),
                 telegram_webhook_secret: empty(),
-                jmap_push_verification: empty(),
             },
             worker_token: empty(),
         }
@@ -277,7 +276,6 @@ impl Config {
             auth: AuthSecrets {
                 reconcile_token: value.reconcile_token,
                 telegram_webhook_secret: value.telegram_webhook_secret,
-                jmap_push_verification: value.jmap_push_verification,
             },
             worker_token: value.worker_token,
         }
@@ -299,6 +297,10 @@ impl Config {
         Ok(Self::from_business(redis_url, wire.try_into()?))
     }
 
+    /// 遗留兼容路径：从进程环境变量逐项组装完整配置（阶段0 口径）。
+    /// 当前生产启动仅需 `REDIS_URL` + `CONFIG_ENCRYPTION_KEY`（见 `src/main.rs`），
+    /// 业务字段改由 Redis 业务配置（`config:business`，`PUT /api/business-config` 热加载）托管；
+    /// 本函数仅当相关环境变量实际存在时作为引导路径使用，未声明废弃、未计划删除。
     pub fn from_env() -> Result<Self, BotError> {
         let port = std::env::var("PORT")
             .unwrap_or_else(|_| "8080".into())
@@ -353,7 +355,6 @@ impl Config {
             auth: AuthSecrets {
                 reconcile_token: required_secret("RECONCILE_TOKEN")?,
                 telegram_webhook_secret: required_secret("TG_WEBHOOK_SECRET")?,
-                jmap_push_verification: required_secret("JMAP_PUSH_VERIFICATION")?,
             },
             worker_token: required_secret("WORKER_TOKEN")?,
         })
@@ -412,6 +413,53 @@ mod tests {
     }
 
     #[test]
+    fn empty_chat_allowlist_is_rejected() {
+        // SAF-CHAT-ALLOWLIST: 空名单是非法配置（Web 侧同样强制至少一项），
+        // 不得让绕过 SPA 的直接 PUT 静默写入"拒绝所有 chat"的配置。
+        let wire = BusinessConfigWire {
+            bot_token: "bot".into(),
+            telegram_chat_id: 1,
+            chat_allowlist: Vec::new(),
+            telegram_webhook_secret: "hook".into(),
+            jmap_session_url: "https://example.invalid".into(),
+            jmap_username: "u".into(),
+            jmap_password: "p".into(),
+            account_id: None,
+            llm_enabled: false,
+            llm_allow_net: false,
+            llm_api_key: None,
+            llm_base_url: None,
+            llm_model: None,
+            reconcile_token: "r".into(),
+            worker_token: "w".into(),
+        };
+        let error = validate_business_wire(wire).expect_err("empty allowlist must fail");
+        assert!(error.to_string().contains("CHAT_ALLOWLIST"));
+    }
+
+    #[test]
+    fn nonempty_chat_allowlist_passes() {
+        let wire = BusinessConfigWire {
+            bot_token: "bot".into(),
+            telegram_chat_id: 1,
+            chat_allowlist: vec![1, 2],
+            telegram_webhook_secret: "hook".into(),
+            jmap_session_url: "https://example.invalid".into(),
+            jmap_username: "u".into(),
+            jmap_password: "p".into(),
+            account_id: None,
+            llm_enabled: false,
+            llm_allow_net: false,
+            llm_api_key: None,
+            llm_base_url: None,
+            llm_model: None,
+            reconcile_token: "r".into(),
+            worker_token: "w".into(),
+        };
+        validate_business_wire(wire).expect("non-empty allowlist must pass");
+    }
+
+    #[test]
     fn required_config_values_reject_blank_without_exposing_values() {
         for name in [
             "BOT_TOKEN",
@@ -437,7 +485,6 @@ mod tests {
             ("JMAP_PASSWORD", "password"),
             ("REDIS_URL", "redis://invalid"),
             ("TG_WEBHOOK_SECRET", "telegram"),
-            ("JMAP_PUSH_VERIFICATION", "verification"),
             ("TELEGRAM_CHAT_ID", "123"),
         ] {
             std::env::set_var(name, value);
@@ -459,7 +506,6 @@ mod tests {
             "REDIS_URL",
             "RECONCILE_TOKEN",
             "TG_WEBHOOK_SECRET",
-            "JMAP_PUSH_VERIFICATION",
             "TELEGRAM_CHAT_ID",
         ] {
             std::env::remove_var(name);

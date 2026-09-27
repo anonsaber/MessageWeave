@@ -1,9 +1,9 @@
 //! Concrete read-only adapter (MOD-JMAP-CLIENT, GATE-G1-JMAP-READONLY).
 
-use super::{EmailContent, EmailMetadata, Folder, JmapBackend, JmapError};
+use super::{EmailChanges, EmailContent, EmailMetadata, Folder, JmapBackend, JmapError};
 use crate::state::{runtime_provider, OutboundConfig, RuntimeConfigProvider};
 use async_trait::async_trait;
-use jmap_client::{email, mailbox, Get};
+use jmap_client::{email, mailbox, DataType, Get};
 
 pub struct JmapClientBackend {
     client: jmap_client::client::Client,
@@ -67,6 +67,111 @@ impl JmapClientBackend {
 
 #[async_trait]
 impl JmapBackend for JmapClientBackend {
+    async fn destroy_push_subscription(&self, subscription_id: &str) -> Result<(), JmapError> {
+        if subscription_id.trim().is_empty() {
+            return Err(JmapError::InvalidRequest("push subscription id"));
+        }
+        tokio::time::timeout(
+            self.timeout(),
+            self.client.push_subscription_destroy(subscription_id),
+        )
+        .await
+        .map_err(|_| JmapError::Timeout)??;
+        Ok(())
+    }
+
+    async fn create_push_subscription(&self, callback_url: &str) -> Result<String, JmapError> {
+        let parsed = url::Url::parse(callback_url)
+            .map_err(|_| JmapError::InvalidRequest("push callback URL"))?;
+        if parsed.scheme() != "https" || parsed.username() != "" || parsed.password().is_some() {
+            return Err(JmapError::InvalidRequest("push callback URL"));
+        }
+        let subscription = tokio::time::timeout(
+            self.timeout(),
+            self.client.push_subscription_create(
+                format!("message-weave-{}", self.account_id),
+                callback_url,
+                None,
+            ),
+        )
+        .await
+        .map_err(|_| JmapError::Timeout)??;
+        let subscription_id = subscription
+            .id()
+            .map(ToOwned::to_owned)
+            .ok_or(JmapError::MissingField("push subscription id"))?;
+        // JMAP PushSubscription/set create has no `types` argument in
+        // jmap-client 0.4.2. Restrict the newly-created subscription with the
+        // follow-up update before exposing its id (REQ-PUSH-TYPES).
+        if tokio::time::timeout(
+            self.timeout(),
+            self.client.push_subscription_update_types(
+                &subscription_id,
+                Some([DataType::Email, DataType::EmailDelivery]),
+            ),
+        )
+        .await
+        .map_err(|_| JmapError::Timeout)?
+        .is_err()
+        {
+            let _ = self
+                .client
+                .push_subscription_destroy(&subscription_id)
+                .await;
+            return Err(JmapError::InvalidRequest("push subscription types"));
+        }
+        Ok(subscription_id)
+    }
+
+    async fn verify_push_subscription(
+        &self,
+        subscription_id: &str,
+        verification_code: &str,
+    ) -> Result<(), JmapError> {
+        if subscription_id.trim().is_empty() || verification_code.trim().is_empty() {
+            return Err(JmapError::InvalidRequest("push verification"));
+        }
+        let verified = tokio::time::timeout(
+            self.timeout(),
+            self.client
+                .push_subscription_verify(subscription_id, verification_code),
+        )
+        .await
+        .map_err(|_| JmapError::Timeout)??;
+        if verified.is_some() {
+            Ok(())
+        } else {
+            Err(JmapError::NotFound)
+        }
+    }
+
+    async fn current_state(&self) -> Result<String, JmapError> {
+        Ok(self.client.session().state().to_owned())
+    }
+
+    async fn email_changes(
+        &self,
+        account_id: &str,
+        since_state: &str,
+        max_changes: usize,
+    ) -> Result<EmailChanges, JmapError> {
+        if account_id != self.account_id || since_state.trim().is_empty() || max_changes == 0 {
+            return Err(JmapError::InvalidRequest("email changes"));
+        }
+        let mut request = self.client.build();
+        request.changes_email(since_state).max_changes(max_changes);
+        let response = tokio::time::timeout(self.timeout(), request.send_changes_email())
+            .await
+            .map_err(|_| JmapError::Timeout)??;
+        Ok(EmailChanges {
+            new_state: response.new_state().to_owned(),
+            created: response.created().to_owned(),
+            updated: response.updated().to_owned(),
+            destroyed: response.destroyed().to_owned(),
+            has_more: response.has_more_changes(),
+        })
+    }
+
     async fn list_folders(&self, account_id: &str) -> Result<Vec<Folder>, JmapError> {
         if account_id != self.account_id {
             return Err(JmapError::InvalidRequest("account_id"));
@@ -114,17 +219,32 @@ impl JmapBackend for JmapClientBackend {
         if account_id != self.account_id || limit == 0 {
             return Err(JmapError::InvalidRequest("email query"));
         }
-        let filter: Option<email::query::Filter> = folder_id.map(email::query::Filter::in_mailbox);
-        let ids = tokio::time::timeout(
-            self.timeout(),
-            self.client.email_query(
-                filter,
-                None::<Vec<jmap_client::core::query::Comparator<email::query::Comparator>>>,
-            ),
-        )
-        .await
-        .map_err(|_| JmapError::Timeout)??
-        .take_ids();
+        // Query in bounded pages. A large limit (used for the cold-start
+        // baseline) therefore cannot silently stop at the server default page.
+        let page_size = limit.clamp(1, 100);
+        let mut position = 0_i32;
+        let mut ids = Vec::new();
+        while ids.len() < limit {
+            let mut request = self.client.build();
+            let query = request.query_email();
+            if let Some(folder_id) = folder_id {
+                query.filter(email::query::Filter::in_mailbox(folder_id));
+            }
+            query.position(position).limit(page_size);
+            let mut response = tokio::time::timeout(self.timeout(), request.send_query_email())
+                .await
+                .map_err(|_| JmapError::Timeout)??;
+            let page = response.take_ids();
+            if page.is_empty() {
+                break;
+            }
+            position = position.saturating_add(page.len() as i32);
+            ids.extend(page);
+            if ids.len() >= limit || position <= 0 {
+                break;
+            }
+        }
+        ids.truncate(limit);
         let mut out = Vec::new();
         for id in ids.into_iter().take(limit) {
             if let Some(email) = tokio::time::timeout(
@@ -138,6 +258,17 @@ impl JmapBackend for JmapClientBackend {
             }
         }
         Ok(out)
+    }
+
+    async fn list_emails_page(
+        &self,
+        account_id: &str,
+        folder_id: Option<&str>,
+        position: usize,
+        limit: usize,
+    ) -> Result<Vec<EmailMetadata>, JmapError> {
+        self.fetch_email_page(account_id, folder_id, position, limit)
+            .await
     }
 
     async fn read_email(
@@ -182,6 +313,41 @@ impl JmapBackend for JmapClientBackend {
 }
 
 impl JmapClientBackend {
+    async fn fetch_email_page(
+        &self,
+        account_id: &str,
+        folder_id: Option<&str>,
+        position: usize,
+        limit: usize,
+    ) -> Result<Vec<EmailMetadata>, JmapError> {
+        if account_id != self.account_id || limit == 0 {
+            return Err(JmapError::InvalidRequest("email query"));
+        }
+        let mut request = self.client.build();
+        let query = request.query_email();
+        if let Some(folder_id) = folder_id {
+            query.filter(email::query::Filter::in_mailbox(folder_id));
+        }
+        query.position(position as i32).limit(limit.min(100));
+        let mut response = tokio::time::timeout(self.timeout(), request.send_query_email())
+            .await
+            .map_err(|_| JmapError::Timeout)??;
+        let ids = response.take_ids();
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(email) = tokio::time::timeout(
+                self.timeout(),
+                self.client.email_get(&id, None::<Vec<email::Property>>),
+            )
+            .await
+            .map_err(|_| JmapError::Timeout)??
+            {
+                out.push(metadata(&email));
+            }
+        }
+        Ok(out)
+    }
+
     fn timeout(&self) -> std::time::Duration {
         std::time::Duration::from_millis(
             self.runtime

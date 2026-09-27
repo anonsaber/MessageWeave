@@ -15,6 +15,32 @@ use std::{
 #[async_trait]
 pub trait WorkerHandler: Send + Sync {
     async fn process(&self, stream: &str, payload: &str) -> Result<(), ()>;
+
+    async fn create_push_subscription(&self, _callback_url: &str) -> Result<String, ()> {
+        Err(())
+    }
+
+    async fn destroy_push_subscription(&self, _subscription_id: &str) -> Result<(), ()> {
+        Err(())
+    }
+
+    async fn verify_push_subscription(
+        &self,
+        _subscription_id: &str,
+        _verification_code: &str,
+    ) -> Result<(), ()> {
+        Err(())
+    }
+
+    /// Performs one bounded JMAP reconciliation pass. Implementations must not
+    /// persist the cursor; the HTTP coordinator commits it after enqueueing.
+    async fn reconcile(
+        &self,
+        _since_state: Option<&str>,
+        _max_changes: usize,
+    ) -> Result<String, ()> {
+        Err(())
+    }
 }
 
 /// Atomically replaceable worker handle. In-flight requests keep their old worker;
@@ -81,9 +107,35 @@ impl ReloadCoordinator {
 
 #[async_trait]
 impl WorkerHandler for WorkerHandle {
+    async fn destroy_push_subscription(&self, subscription_id: &str) -> Result<(), ()> {
+        let worker = self.current.read().map_err(|_| ())?.clone();
+        worker.destroy_push_subscription(subscription_id).await
+    }
+
+    async fn create_push_subscription(&self, callback_url: &str) -> Result<String, ()> {
+        let worker = self.current.read().map_err(|_| ())?.clone();
+        worker.create_push_subscription(callback_url).await
+    }
+
+    async fn verify_push_subscription(
+        &self,
+        subscription_id: &str,
+        verification_code: &str,
+    ) -> Result<(), ()> {
+        let worker = self.current.read().map_err(|_| ())?.clone();
+        worker
+            .verify_push_subscription(subscription_id, verification_code)
+            .await
+    }
+
     async fn process(&self, stream: &str, payload: &str) -> Result<(), ()> {
         let worker = self.current.read().map_err(|_| ())?.clone();
         worker.process(stream, payload).await
+    }
+
+    async fn reconcile(&self, since_state: Option<&str>, max_changes: usize) -> Result<String, ()> {
+        let worker = self.current.read().map_err(|_| ())?.clone();
+        worker.reconcile(since_state, max_changes).await
     }
 }
 
@@ -124,12 +176,41 @@ impl<B: JmapBackend> MetadataWorker<B> {
 
 #[async_trait]
 impl<B: JmapBackend> WorkerHandler for MetadataWorker<B> {
+    async fn destroy_push_subscription(&self, subscription_id: &str) -> Result<(), ()> {
+        self.jmap
+            .destroy_push_subscription(subscription_id)
+            .await
+            .map_err(|_| ())
+    }
+
+    async fn create_push_subscription(&self, callback_url: &str) -> Result<String, ()> {
+        self.jmap
+            .create_push_subscription(callback_url)
+            .await
+            .map_err(|_| ())
+    }
+
+    async fn verify_push_subscription(
+        &self,
+        subscription_id: &str,
+        verification_code: &str,
+    ) -> Result<(), ()> {
+        self.jmap
+            .verify_push_subscription(subscription_id, verification_code)
+            .await
+            .map_err(|_| ())
+    }
+
     async fn process(&self, stream: &str, payload: &str) -> Result<(), ()> {
         if stream == "stalwart:telegram" {
             return self.process_telegram(payload).await;
         }
         if stream != "stalwart:jmap" {
-            return Ok(());
+            // Unknown stream: fail closed. Returning Ok would let the coordinator
+            // write `delivery:committed` + XACK and silently drop an event we do
+            // not understand. Falling through to Err routes it to retry/DLQ so it
+            // stays observable instead of vanishing.
+            return Err(());
         }
         let event: WorkerEvent = serde_json::from_str(payload).map_err(|_| ())?;
         let (Some(account), Some(email)) = (event.account_id.as_deref(), event.email_id.as_deref())
@@ -161,9 +242,140 @@ impl<B: JmapBackend> WorkerHandler for MetadataWorker<B> {
             .await
             .map_err(|_| ())
     }
+
+    async fn reconcile(&self, since_state: Option<&str>, max_changes: usize) -> Result<String, ()> {
+        let max_changes = max_changes.max(1);
+        const MAX_BASELINE_PAGES: usize = 100;
+        const MAX_BASELINE_EMAILS: usize = 10_000;
+        const RECONCILE_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+        let started = tokio::time::Instant::now();
+        let (mut cursor, mut baseline_position) = if let Some(state) = since_state {
+            if let Some((baseline, position)) = decode_baseline_cursor(state) {
+                (baseline, position)
+            } else {
+                (state.to_owned(), usize::MAX)
+            }
+        } else {
+            // Capture a stable baseline before paging. Changes occurring while
+            // the listing is in flight are consumed below before committing.
+            (self.jmap.current_state().await.map_err(|_| ())?, 0)
+        };
+
+        if baseline_position != usize::MAX {
+            let mut pages = 0_usize;
+            let mut emails = 0_usize;
+            loop {
+                if pages >= MAX_BASELINE_PAGES
+                    || emails >= MAX_BASELINE_EMAILS
+                    || started.elapsed() >= RECONCILE_BUDGET
+                {
+                    return if pages == 0 {
+                        Err(())
+                    } else {
+                        Ok(encode_baseline_cursor(&cursor, baseline_position))
+                    };
+                }
+                let page = self
+                    .jmap
+                    .list_emails_page(None, baseline_position, 100)
+                    .await
+                    .map_err(|_| ())?;
+                if page.is_empty() {
+                    break;
+                }
+                pages += 1;
+                emails = emails.saturating_add(page.len());
+                baseline_position = baseline_position.saturating_add(page.len());
+                for email in page {
+                    self.enqueue_reconcile_event(&email.id).await?;
+                }
+            }
+        }
+
+        // RFC 8620 lets a server answer `/changes` with `hasMoreChanges=true`
+        // when more events remain than `maxChanges` allowed. The spec-blessed
+        // continuation is `sinceState = newState`; but a server that resolves
+        // `newState` to "after *all* pending changes" would then hand us a
+        // cursor that silently skips the unreturned batch. We cannot pass
+        // `upToId` here (jmap-client 0.4.2 does not expose it), so while more
+        // changes remain we keep the *same* sinceState and widen the window
+        // instead. The 24h dedup key makes re-reading the superset idempotent,
+        // so this is at-most-duplicate, never-loss. Only when the window stops
+        // growing (server-side cap) do we fall back to advancing to `new_state`
+        // to guarantee forward progress.
+        const CHANGE_WINDOW_CAP: usize = 4_096;
+        let mut window = max_changes;
+        let mut pages = 0_usize;
+        loop {
+            if pages >= 100 || started.elapsed() >= RECONCILE_BUDGET {
+                // Every event from the last completed page is already enqueued.
+                // Returning that cursor lets the next invocation continue from
+                // it instead of retrying the same bounded window forever.
+                return if pages == 0 { Err(()) } else { Ok(cursor) };
+            }
+            pages += 1;
+            let changes = self
+                .jmap
+                .email_changes(&cursor, window)
+                .await
+                .map_err(|_| ())?;
+            for email_id in changes.created.iter().chain(changes.updated.iter()) {
+                self.enqueue_reconcile_event(email_id).await?;
+            }
+            if !changes.has_more {
+                return Ok(changes.new_state);
+            }
+            if window < CHANGE_WINDOW_CAP {
+                window = window.saturating_mul(2).min(CHANGE_WINDOW_CAP);
+                continue;
+            }
+            // Window is already at the cap and the server still reports more:
+            // advancing is the only way to make progress.
+            cursor = changes.new_state;
+        }
+    }
+}
+
+fn encode_baseline_cursor(state: &str, position: usize) -> String {
+    let encoded = state
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("baseline:{encoded}:{position}")
+}
+
+fn decode_baseline_cursor(value: &str) -> Option<(String, usize)> {
+    let rest = value.strip_prefix("baseline:")?;
+    let (encoded, position) = rest.rsplit_once(':')?;
+    let bytes = (0..encoded.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(encoded.get(index..index + 2)?, 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    Some((String::from_utf8(bytes).ok()?, position.parse().ok()?))
 }
 
 impl<B: JmapBackend> MetadataWorker<B> {
+    async fn enqueue_reconcile_event(&self, email_id: &str) -> Result<(), ()> {
+        let key = format!("dedup:jmap:{}:{}", self.jmap.account_id(), email_id);
+        let payload = serde_json::json!({
+            "accountId": self.jmap.account_id(),
+            "emailId": email_id,
+        })
+        .to_string();
+        // Claim the dedup key and XADD in a single atomic step: a Redis hiccup
+        // mid-way must not leave the dedup key claimed while the payload is
+        // absent from the stream (which would drop the event for the whole
+        // 24h dedup window). Returning false means another worker owns it.
+        // `false` means another worker already owns the dedup entry for this
+        // email in the current window; either way the event is handled here.
+        self.state
+            .claim_dedup_and_enqueue(&key, 86_400, "stalwart:jmap", &payload)
+            .await
+            .map_err(|_| ())?;
+        Ok(())
+    }
+
     async fn process_telegram(&self, payload: &str) -> Result<(), ()> {
         let update: TelegramUpdate = serde_json::from_str(payload).map_err(|_| ())?;
         let Some(message) = update.message else {
@@ -354,7 +566,7 @@ fn parse_intent(input: &str) -> Intent {
 }
 
 fn help_message() -> &'static str {
-    "使用说明：\n邮件到达后会先发送发件人、主题和时间等元数据通知。\n\n授权示例：/ai on（1小时）、临时一次、1小时、今天、7天、直到我撤销。\n/ai off：立即撤销 AI 正文授权。\n/summary <email_id>：请求指定邮件摘要；未授权或授权到期时只返回元数据并提示重新授权。\n/help（或 help）：显示本说明。\n\n隐私：AI 默认关闭，只有你明确开启后才会发送正文；授权有期限且不会自动续期；正文和 AI 结果不会持久化，也不会写入日志。\n如果未配置 AI 或 AI 调用失败，将回退为本地截取摘要。"
+    "使用说明：\n邮件到达后会先发送发件人、主题和时间等元数据通知。\n\n授权示例（请按原文中文输入，不支持英文别名）：\n1小时：/ai on、临时一次、临时、一次\n今天：今天\n7天：7天\n直到我撤销（最长365天）：直到我撤销、长期\n撤销授权：/ai off、关闭 ai、撤销授权、停止摘要\n/summary <email_id>：请求指定邮件摘要；未授权或授权到期时只返回元数据并提示重新授权。\n/help（或 help）：显示本说明。\n\n隐私：AI 默认关闭，只有你明确开启后才会发送正文；授权有期限且不会自动续期；正文和 AI 结果不会持久化，也不会写入日志。\n如果未配置 AI 或 AI 调用失败，将回退为本地截取摘要。"
 }
 
 #[derive(serde::Deserialize)]
@@ -444,7 +656,6 @@ mod reload_tests {
             jmap_session_url: "https://mail.example.test".into(),
             jmap_username: "user".into(),
             jmap_password: SecretString::new("pass".into()),
-            jmap_push_verification: SecretString::new("verify".into()),
             account_id: None,
             llm_enabled: false,
             llm_allow_net: false,
@@ -480,6 +691,16 @@ mod reload_tests {
             .await
             .unwrap();
         assert!(handle.process("x", "y").await.is_ok());
+    }
+
+    #[test]
+    fn baseline_cursor_roundtrips_state_and_position() {
+        let encoded = encode_baseline_cursor("state:with:punctuation", 1234);
+        assert_eq!(
+            decode_baseline_cursor(&encoded),
+            Some(("state:with:punctuation".to_owned(), 1234))
+        );
+        assert!(decode_baseline_cursor("baseline:odd:hex").is_none());
     }
 
     struct OkWorker;

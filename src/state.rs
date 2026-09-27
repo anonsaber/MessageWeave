@@ -70,14 +70,39 @@ pub trait ReliableState: Send + Sync {
     async fn release_dedup(&self, key: &str) -> Result<(), StateError>;
     /// XADD enqueue; consumers perform XREADGROUP in a later worker phase.
     async fn enqueue(&self, stream: &str, payload: &str) -> Result<String, StateError>;
+    /// Atomically claim `dedup_key` and XADD `payload` to `stream`.
+    ///
+    /// The dedup key must only be written when the append succeeds: claiming
+    /// first and rolling back best-effort leaves a claimed-but-not-enqueued key
+    /// behind on a Redis hiccup, which silently drops the event for the whole
+    /// dedup TTL (REQ-RECONCILE-IDEMPOTENCY). Returns false when already claimed.
+    async fn claim_dedup_and_enqueue(
+        &self,
+        dedup_key: &str,
+        ttl_seconds: u64,
+        stream: &str,
+        payload: &str,
+    ) -> Result<bool, StateError>;
     /// XACK after successful processing.
     async fn ack(&self, stream: &str, group: &str, message_id: &str) -> Result<(), StateError>;
     /// XADD to a dead-letter stream after bounded retry policy decides to stop retrying.
     async fn dead_letter(&self, stream: &str, payload: &str) -> Result<String, StateError>;
     /// SET NX EX lock for reconcile single-flight.
-    async fn acquire_lock(&self, key: &str, ttl_seconds: u64) -> Result<bool, StateError>;
+    async fn acquire_lock(
+        &self,
+        key: &str,
+        owner_token: &str,
+        ttl_seconds: u64,
+    ) -> Result<bool, StateError>;
     /// Release a lock after the bounded reconcile attempt has completed.
-    async fn release_lock(&self, key: &str) -> Result<(), StateError>;
+    async fn release_lock(&self, key: &str, owner_token: &str) -> Result<(), StateError>;
+    /// Extend a lock only while the caller still owns it.
+    async fn renew_lock(
+        &self,
+        key: &str,
+        owner_token: &str,
+        ttl_seconds: u64,
+    ) -> Result<bool, StateError>;
     async fn read_batch(
         &self,
         stream: &str,
@@ -117,6 +142,58 @@ pub trait ReliableState: Send + Sync {
     /// Global durable enable gate; missing/read failures are interpreted by callers as disabled.
     async fn is_enabled(&self) -> Result<bool, StateError>;
     async fn set_enabled(&self, enabled: bool) -> Result<(), StateError>;
+    /// Durable JMAP Email/changes cursor. It is advanced only after all page
+    /// events have been enqueued successfully (REQ-RECONCILE-IDEMPOTENCY).
+    async fn get_reconcile_state(&self) -> Result<Option<String>, StateError>;
+    async fn set_reconcile_state(&self, state: &str) -> Result<(), StateError>;
+    /// Short-lived PushSubscription verification state; values are stored as
+    /// digests and never retained as plaintext credentials.
+    async fn remember_push_subscription(
+        &self,
+        subscription_id: &str,
+        verification_code: &str,
+        ttl_seconds: u64,
+    ) -> Result<(), StateError>;
+    async fn push_subscription_verified(
+        &self,
+        subscription_id: &str,
+        verification_code: &str,
+    ) -> Result<bool, StateError>;
+    async fn remember_push_subscription_id(&self, subscription_id: &str) -> Result<(), StateError>;
+    async fn set_push_subscription_status(
+        &self,
+        subscription_id: &str,
+        status: &str,
+        ttl_seconds: u64,
+    ) -> Result<(), StateError>;
+    // NOTE: `push:subscription:{id}:status` is currently write-only
+    // ("pending"/"verified"/"disabled"). Authorization uses the verification
+    // digest instead; the status key stays as a lightweight ops/observability
+    // trail (inspectable via redis-cli), not a gate (建议-5a).
+    /// Drop the verification-code digest for `subscription_id`.
+    ///
+    /// Callers must invoke this when disabling a subscription: otherwise a push
+    /// arriving within the residual TTL of the last verify call can still pass
+    /// `push_subscription_verified` and be enqueued (SAF-AUTH-JMAP-PUSH).
+    async fn forget_push_subscription(&self, subscription_id: &str) -> Result<(), StateError>;
+    async fn record_push_orphan(
+        &self,
+        subscription_id: &str,
+        request_id: &str,
+    ) -> Result<(), StateError>;
+    async fn get_push_subscription_for_callback(
+        &self,
+        callback_url: &str,
+    ) -> Result<Option<String>, StateError>;
+    async fn remember_push_subscription_for_callback(
+        &self,
+        callback_url: &str,
+        subscription_id: &str,
+    ) -> Result<(), StateError>;
+    async fn remove_push_subscription_for_callback(
+        &self,
+        callback_url: &str,
+    ) -> Result<(), StateError>;
 }
 
 pub struct RedisState {
@@ -165,14 +242,39 @@ impl ReliableState for RedisState {
         let mut connection = self.connection.clone();
         Ok(redis::cmd("XADD")
             .arg(stream)
-            .arg("MAXLEN")
-            .arg("~")
-            .arg(10_000)
             .arg("*")
             .arg("payload")
             .arg(payload)
             .query_async(&mut connection)
             .await?)
+    }
+
+    async fn claim_dedup_and_enqueue(
+        &self,
+        dedup_key: &str,
+        ttl_seconds: u64,
+        stream: &str,
+        payload: &str,
+    ) -> Result<bool, StateError> {
+        let mut connection = self.connection.clone();
+        // KEYS[1] = dedup key, KEYS[2] = stream; ARGV[1] = ttl, ARGV[2] = payload.
+        // `SET NX` returning false means another worker owns the event; skip the
+        // append so the XADD is only attempted once per dedup window.
+        let claimed: i64 = redis::Script::new(
+            "if redis.call('set', KEYS[1], '1', 'NX', 'EX', ARGV[1]) then \
+                 redis.call('xadd', KEYS[2], '*', 'payload', ARGV[2]) \
+                 return 1 \
+             else \
+                 return 0 \
+             end",
+        )
+        .key(dedup_key)
+        .key(stream)
+        .arg(ttl_seconds.max(1))
+        .arg(payload)
+        .invoke_async(&mut connection)
+        .await?;
+        Ok(claimed != 0)
     }
 
     async fn ack(&self, stream: &str, group: &str, message_id: &str) -> Result<(), StateError> {
@@ -190,12 +292,52 @@ impl ReliableState for RedisState {
         self.enqueue(stream, payload).await
     }
 
-    async fn acquire_lock(&self, key: &str, ttl_seconds: u64) -> Result<bool, StateError> {
-        set_nx_ex(self.connection.clone(), key, ttl_seconds).await
+    async fn acquire_lock(
+        &self,
+        key: &str,
+        owner_token: &str,
+        ttl_seconds: u64,
+    ) -> Result<bool, StateError> {
+        let mut connection = self.connection.clone();
+        let result: Option<String> = redis::cmd("SET")
+            .arg(key)
+            .arg(owner_token)
+            .arg("NX")
+            .arg("EX")
+            .arg(ttl_seconds.max(1))
+            .query_async(&mut connection)
+            .await?;
+        Ok(result.is_some())
     }
 
-    async fn release_lock(&self, key: &str) -> Result<(), StateError> {
-        delete_key(self.connection.clone(), key).await
+    async fn release_lock(&self, key: &str, owner_token: &str) -> Result<(), StateError> {
+        let mut connection = self.connection.clone();
+        redis::Script::new(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+        )
+        .key(key)
+        .arg(owner_token)
+        .invoke_async::<i64>(&mut connection)
+        .await?;
+        Ok(())
+    }
+
+    async fn renew_lock(
+        &self,
+        key: &str,
+        owner_token: &str,
+        ttl_seconds: u64,
+    ) -> Result<bool, StateError> {
+        let mut connection = self.connection.clone();
+        let renewed: i64 = redis::Script::new(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('expire', KEYS[1], ARGV[2]) else return 0 end",
+        )
+        .key(key)
+        .arg(owner_token)
+        .arg(ttl_seconds.max(1))
+        .invoke_async(&mut connection)
+        .await?;
+        Ok(renewed != 0)
     }
 
     async fn read_batch(
@@ -217,25 +359,38 @@ impl ReliableState for RedisState {
             .query_async(&mut connection)
             .await;
         // Recover messages left in the consumer group's PEL after a crash or
-        // restart before reading new entries. A bounded idle window prevents
-        // two short-lived workers from stealing active work.
+        // restart before reading new entries. The idle window has to clear the
+        // worst-case *batch* duration (a worker processes up to `count` events
+        // sequentially, each bounded by the ~300s single-event ceiling), else a
+        // second instance reclaims events that are still being processed and
+        // delivers them twice (建议-6). Single-instance deployments are
+        // unaffected; only duplicate-on-multi-instance is at stake, never loss.
+        const SINGLE_EVENT_CEILING_MS: u64 = 300_000;
+        let idle_threshold_ms = count.max(1) as u64 * SINGLE_EVENT_CEILING_MS;
         let reclaimed: redis::streams::StreamAutoClaimReply = redis::cmd("XAUTOCLAIM")
             .arg(stream)
             .arg(group)
             .arg(consumer)
-            // A worker handles at most ten events per request; keep this
-            // above the worst bounded JMAP/Telegram batch duration.
-            .arg(300_000)
+            .arg(idle_threshold_ms)
             .arg("0-0")
             .arg("COUNT")
             .arg(count.max(1))
             .query_async(&mut connection)
             .await?;
-        let reclaimed_messages = reclaimed
-            .claimed
-            .into_iter()
-            .filter_map(stream_id_to_message)
-            .collect::<Vec<_>>();
+        let mut reclaimed_messages = Vec::new();
+        let mut malformed_ids = Vec::new();
+        for item in reclaimed.claimed {
+            let id = item.id.clone();
+            match stream_id_to_message(item) {
+                Some(message) => reclaimed_messages.push(message),
+                None => malformed_ids.push(id),
+            }
+        }
+        // A record without a `payload` field can never be processed. ACK it so
+        // it stops being re-claimed every cycle and squatting in the PEL
+        // (建议-7); a payload that is present but not valid JSON still routes
+        // through the normal Err -> DLQ path.
+        ack_malformed(&mut connection, stream, group, &malformed_ids).await;
         if !reclaimed_messages.is_empty() {
             return Ok(reclaimed_messages);
         }
@@ -250,11 +405,21 @@ impl ReliableState for RedisState {
             .arg(">")
             .query_async(&mut connection)
             .await?;
-        Ok(reply
-            .keys
-            .into_iter()
-            .flat_map(|key| key.ids.into_iter().filter_map(stream_id_to_message))
-            .collect())
+        let mut messages = Vec::new();
+        let mut malformed_ids = Vec::new();
+        for key in reply.keys {
+            for item in key.ids {
+                let id = item.id.clone();
+                match stream_id_to_message(item) {
+                    Some(message) => messages.push(message),
+                    None => malformed_ids.push(id),
+                }
+            }
+        }
+        // Same handling as the XAUTOCLAIM path: drop unprocessable records from
+        // the PEL instead of letting them spin forever (建议-7).
+        ack_malformed(&mut connection, stream, group, &malformed_ids).await;
+        Ok(messages)
     }
 
     async fn retry_or_dlq(
@@ -273,7 +438,7 @@ impl ReliableState for RedisState {
             r#"local n = redis.call('INCR', KEYS[1])
                redis.call('EXPIRE', KEYS[1], 86400)
                if n < tonumber(ARGV[1]) then return 0 end
-               redis.call('XADD', ARGV[2], 'MAXLEN', '~', 10000, '*', 'payload', ARGV[3])
+               redis.call('XADD', ARGV[2], '*', 'payload', ARGV[3])
                redis.call('XACK', ARGV[4], ARGV[5], ARGV[6])
                return 1"#,
         );
@@ -452,6 +617,152 @@ impl ReliableState for RedisState {
             .await?;
         Ok(())
     }
+
+    async fn get_reconcile_state(&self) -> Result<Option<String>, StateError> {
+        let mut connection = self.connection.clone();
+        Ok(redis::cmd("GET")
+            .arg("state:jmap:since")
+            .query_async(&mut connection)
+            .await?)
+    }
+
+    async fn set_reconcile_state(&self, state: &str) -> Result<(), StateError> {
+        let mut connection = self.connection.clone();
+        redis::cmd("SET")
+            .arg("state:jmap:since")
+            .arg(state)
+            .query_async::<()>(&mut connection)
+            .await?;
+        Ok(())
+    }
+
+    async fn remember_push_subscription(
+        &self,
+        subscription_id: &str,
+        verification_code: &str,
+        ttl_seconds: u64,
+    ) -> Result<(), StateError> {
+        let mut connection = self.connection.clone();
+        redis::cmd("SET")
+            .arg(format!("push:subscription:{subscription_id}"))
+            .arg(crate::config::session_digest(verification_code))
+            .arg("EX")
+            .arg(ttl_seconds.max(1))
+            .query_async::<()>(&mut connection)
+            .await?;
+        Ok(())
+    }
+
+    async fn push_subscription_verified(
+        &self,
+        subscription_id: &str,
+        verification_code: &str,
+    ) -> Result<bool, StateError> {
+        let mut connection = self.connection.clone();
+        let current: Option<String> = redis::cmd("GET")
+            .arg(format!("push:subscription:{subscription_id}"))
+            .query_async(&mut connection)
+            .await?;
+        Ok(current.as_deref() == Some(crate::config::session_digest(verification_code).as_str()))
+    }
+
+    async fn remember_push_subscription_id(&self, subscription_id: &str) -> Result<(), StateError> {
+        let mut connection = self.connection.clone();
+        redis::cmd("SET")
+            .arg("push:subscription:id")
+            .arg(subscription_id)
+            .query_async::<()>(&mut connection)
+            .await?;
+        Ok(())
+    }
+
+    async fn set_push_subscription_status(
+        &self,
+        subscription_id: &str,
+        status: &str,
+        ttl_seconds: u64,
+    ) -> Result<(), StateError> {
+        let mut connection = self.connection.clone();
+        redis::cmd("SET")
+            .arg(format!("push:subscription:{subscription_id}:status"))
+            .arg(status)
+            .arg("EX")
+            .arg(ttl_seconds.max(1))
+            .query_async::<()>(&mut connection)
+            .await?;
+        Ok(())
+    }
+
+    async fn forget_push_subscription(&self, subscription_id: &str) -> Result<(), StateError> {
+        let mut connection = self.connection.clone();
+        redis::cmd("DEL")
+            .arg(format!("push:subscription:{subscription_id}"))
+            .query_async::<()>(&mut connection)
+            .await?;
+        Ok(())
+    }
+
+    async fn record_push_orphan(
+        &self,
+        subscription_id: &str,
+        request_id: &str,
+    ) -> Result<(), StateError> {
+        let mut connection = self.connection.clone();
+        redis::cmd("SET")
+            .arg(format!("push:orphan:{subscription_id}"))
+            .arg(request_id)
+            .arg("EX")
+            .arg(604_800_u64)
+            .query_async::<()>(&mut connection)
+            .await?;
+        Ok(())
+    }
+
+    async fn get_push_subscription_for_callback(
+        &self,
+        callback_url: &str,
+    ) -> Result<Option<String>, StateError> {
+        let mut connection = self.connection.clone();
+        Ok(redis::cmd("GET")
+            .arg(push_registration_key(callback_url))
+            .query_async(&mut connection)
+            .await?)
+    }
+
+    async fn remember_push_subscription_for_callback(
+        &self,
+        callback_url: &str,
+        subscription_id: &str,
+    ) -> Result<(), StateError> {
+        let mut connection = self.connection.clone();
+        redis::cmd("SET")
+            .arg(push_registration_key(callback_url))
+            .arg(subscription_id)
+            .arg("EX")
+            .arg(604_800_u64)
+            .query_async::<()>(&mut connection)
+            .await?;
+        Ok(())
+    }
+
+    async fn remove_push_subscription_for_callback(
+        &self,
+        callback_url: &str,
+    ) -> Result<(), StateError> {
+        let mut connection = self.connection.clone();
+        redis::cmd("DEL")
+            .arg(push_registration_key(callback_url))
+            .query_async::<()>(&mut connection)
+            .await?;
+        Ok(())
+    }
+}
+
+fn push_registration_key(callback_url: &str) -> String {
+    format!(
+        "push:registration:{}",
+        crate::config::session_digest(callback_url)
+    )
 }
 
 fn stream_id_to_message(item: redis::streams::StreamId) -> Option<StreamMessage> {
@@ -465,6 +776,36 @@ fn stream_id_to_message(item: redis::streams::StreamId) -> Option<StreamMessage>
     })
 }
 
+/// XACK stream records that arrived without a parseable `payload` field. These
+/// can never be processed, so acknowledging them keeps the consumer group's PEL
+/// from filling up with unclaimable junk; the failure is logged for operators.
+async fn ack_malformed(
+    connection: &mut redis::aio::MultiplexedConnection,
+    stream: &str,
+    group: &str,
+    ids: &[String],
+) {
+    if ids.is_empty() {
+        return;
+    }
+    let ack = redis::cmd("XACK")
+        .arg(stream)
+        .arg(group)
+        .arg(ids)
+        .query_async::<i64>(connection)
+        .await;
+    if ack
+        .as_ref()
+        .map(|acked| *acked != ids.len() as i64)
+        .unwrap_or(true)
+    {
+        eprintln!(
+            "WARN malformed stream records ack incomplete (stream={stream}, group={group}, expected={}, result={ack:?})",
+            ids.len()
+        );
+    }
+}
+
 async fn set_nx_ex(
     mut connection: redis::aio::MultiplexedConnection,
     key: &str,
@@ -475,7 +816,9 @@ async fn set_nx_ex(
         .arg("1")
         .arg("NX")
         .arg("EX")
-        .arg(ttl_seconds)
+        // Guard against a ttl of 0, which Redis rejects with "invalid expire
+        // time" (same normalization as acquire_lock).
+        .arg(ttl_seconds.max(1))
         .query_async(&mut connection)
         .await?;
     Ok(result.is_some())
@@ -498,7 +841,8 @@ impl MemoryState {
 #[derive(Default)]
 struct MemoryInner {
     dedup: HashSet<String>,
-    locks: HashSet<String>,
+    locks: HashMap<String, String>,
+    push_registrations: HashMap<String, String>,
     streams: HashMap<String, Vec<(String, String)>>,
     retries: HashMap<(String, String), u32>,
     consent: HashMap<i64, i64>,
@@ -508,6 +852,11 @@ struct MemoryInner {
     admin_session: Option<(String, i64)>,
     business_revision: u64,
     enabled: bool,
+    reconcile_state: Option<String>,
+    push_subscriptions: HashMap<String, (String, i64)>,
+    push_subscription_id: Option<String>,
+    push_status: HashMap<String, (String, i64)>,
+    push_orphans: HashMap<String, String>,
 }
 
 #[async_trait]
@@ -534,13 +883,29 @@ impl ReliableState for MemoryState {
             .entry(stream.to_owned())
             .or_default()
             .push((id.clone(), payload.to_owned()));
-        if let Some(messages) = inner.streams.get_mut(stream) {
-            let excess = messages.len().saturating_sub(10_000);
-            if excess > 0 {
-                messages.drain(..excess);
-            }
-        }
         Ok(id)
+    }
+    async fn claim_dedup_and_enqueue(
+        &self,
+        dedup_key: &str,
+        _ttl_seconds: u64,
+        stream: &str,
+        payload: &str,
+    ) -> Result<bool, StateError> {
+        // Hold the lock across claim + append so MemoryState honors the same
+        // atomicity contract as the Lua-backed RedisState implementation.
+        let mut inner = self.inner.lock().map_err(|_| StateError::Poisoned)?;
+        if !inner.dedup.insert(dedup_key.to_owned()) {
+            return Ok(false);
+        }
+        inner.next_id += 1;
+        let id = format!("{}-0", inner.next_id);
+        inner
+            .streams
+            .entry(stream.to_owned())
+            .or_default()
+            .push((id, payload.to_owned()));
+        Ok(true)
     }
     async fn ack(&self, stream: &str, _group: &str, message_id: &str) -> Result<(), StateError> {
         let mut inner = self.inner.lock().map_err(|_| StateError::Poisoned)?;
@@ -552,14 +917,42 @@ impl ReliableState for MemoryState {
     async fn dead_letter(&self, stream: &str, payload: &str) -> Result<String, StateError> {
         self.enqueue(stream, payload).await
     }
-    async fn acquire_lock(&self, key: &str, _ttl_seconds: u64) -> Result<bool, StateError> {
+    async fn acquire_lock(
+        &self,
+        key: &str,
+        owner_token: &str,
+        _ttl_seconds: u64,
+    ) -> Result<bool, StateError> {
         let mut inner = self.inner.lock().map_err(|_| StateError::Poisoned)?;
-        Ok(inner.locks.insert(key.to_owned()))
+        if inner.locks.contains_key(key) {
+            return Ok(false);
+        }
+        inner.locks.insert(key.to_owned(), owner_token.to_owned());
+        Ok(true)
     }
-    async fn release_lock(&self, key: &str) -> Result<(), StateError> {
+    async fn release_lock(&self, key: &str, owner_token: &str) -> Result<(), StateError> {
         let mut inner = self.inner.lock().map_err(|_| StateError::Poisoned)?;
-        inner.locks.remove(key);
+        if inner
+            .locks
+            .get(key)
+            .is_some_and(|owner| owner == owner_token)
+        {
+            inner.locks.remove(key);
+        }
         Ok(())
+    }
+
+    async fn renew_lock(
+        &self,
+        key: &str,
+        owner_token: &str,
+        _ttl_seconds: u64,
+    ) -> Result<bool, StateError> {
+        let inner = self.inner.lock().map_err(|_| StateError::Poisoned)?;
+        Ok(inner
+            .locks
+            .get(key)
+            .is_some_and(|owner| owner == owner_token))
     }
     async fn read_batch(
         &self,
@@ -714,6 +1107,147 @@ impl ReliableState for MemoryState {
         self.inner.lock().map_err(|_| StateError::Poisoned)?.enabled = enabled;
         Ok(())
     }
+
+    async fn get_reconcile_state(&self) -> Result<Option<String>, StateError> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| StateError::Poisoned)?
+            .reconcile_state
+            .clone())
+    }
+
+    async fn set_reconcile_state(&self, state: &str) -> Result<(), StateError> {
+        self.inner
+            .lock()
+            .map_err(|_| StateError::Poisoned)?
+            .reconcile_state = Some(state.to_owned());
+        Ok(())
+    }
+
+    async fn remember_push_subscription(
+        &self,
+        subscription_id: &str,
+        verification_code: &str,
+        ttl_seconds: u64,
+    ) -> Result<(), StateError> {
+        self.inner
+            .lock()
+            .map_err(|_| StateError::Poisoned)?
+            .push_subscriptions
+            .insert(
+                subscription_id.to_owned(),
+                (
+                    crate::config::session_digest(verification_code),
+                    unix_now().saturating_add(ttl_seconds as i64),
+                ),
+            );
+        Ok(())
+    }
+
+    async fn push_subscription_verified(
+        &self,
+        subscription_id: &str,
+        verification_code: &str,
+    ) -> Result<bool, StateError> {
+        let mut inner = self.inner.lock().map_err(|_| StateError::Poisoned)?;
+        let Some((digest, expiry)) = inner.push_subscriptions.get(subscription_id) else {
+            return Ok(false);
+        };
+        if *expiry <= unix_now() {
+            inner.push_subscriptions.remove(subscription_id);
+            return Ok(false);
+        }
+        Ok(digest == &crate::config::session_digest(verification_code))
+    }
+
+    async fn remember_push_subscription_id(&self, subscription_id: &str) -> Result<(), StateError> {
+        self.inner
+            .lock()
+            .map_err(|_| StateError::Poisoned)?
+            .push_subscription_id = Some(subscription_id.to_owned());
+        Ok(())
+    }
+
+    async fn get_push_subscription_for_callback(
+        &self,
+        callback_url: &str,
+    ) -> Result<Option<String>, StateError> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| StateError::Poisoned)?
+            .push_registrations
+            .get(&push_registration_key(callback_url))
+            .cloned())
+    }
+
+    async fn remember_push_subscription_for_callback(
+        &self,
+        callback_url: &str,
+        subscription_id: &str,
+    ) -> Result<(), StateError> {
+        self.inner
+            .lock()
+            .map_err(|_| StateError::Poisoned)?
+            .push_registrations
+            .insert(
+                push_registration_key(callback_url),
+                subscription_id.to_owned(),
+            );
+        Ok(())
+    }
+
+    async fn remove_push_subscription_for_callback(
+        &self,
+        callback_url: &str,
+    ) -> Result<(), StateError> {
+        self.inner
+            .lock()
+            .map_err(|_| StateError::Poisoned)?
+            .push_registrations
+            .remove(&push_registration_key(callback_url));
+        Ok(())
+    }
+
+    async fn set_push_subscription_status(
+        &self,
+        subscription_id: &str,
+        status: &str,
+        ttl_seconds: u64,
+    ) -> Result<(), StateError> {
+        self.inner
+            .lock()
+            .map_err(|_| StateError::Poisoned)?
+            .push_status
+            .insert(
+                subscription_id.to_owned(),
+                (
+                    status.to_owned(),
+                    unix_now().saturating_add(ttl_seconds as i64),
+                ),
+            );
+        Ok(())
+    }
+
+    async fn forget_push_subscription(&self, subscription_id: &str) -> Result<(), StateError> {
+        let mut inner = self.inner.lock().map_err(|_| StateError::Poisoned)?;
+        inner.push_subscriptions.remove(subscription_id);
+        Ok(())
+    }
+
+    async fn record_push_orphan(
+        &self,
+        subscription_id: &str,
+        request_id: &str,
+    ) -> Result<(), StateError> {
+        self.inner
+            .lock()
+            .map_err(|_| StateError::Poisoned)?
+            .push_orphans
+            .insert(subscription_id.to_owned(), request_id.to_owned());
+        Ok(())
+    }
 }
 
 fn unix_now() -> i64 {
@@ -830,6 +1364,17 @@ mod tests {
     #[tokio::test]
     async fn memory_state_is_atomic_and_supports_stream_lifecycle() {
         let state = MemoryState::default();
+        assert!(!state.is_enabled().await.unwrap());
+        state.set_enabled(true).await.unwrap();
+        assert!(state.is_enabled().await.unwrap());
+        state.set_enabled(false).await.unwrap();
+        assert!(!state.is_enabled().await.unwrap());
+        assert!(state.get_reconcile_state().await.unwrap().is_none());
+        state.set_reconcile_state("jmap-state-1").await.unwrap();
+        assert_eq!(
+            state.get_reconcile_state().await.unwrap().as_deref(),
+            Some("jmap-state-1")
+        );
         assert!(state.claim_dedup("tg:42", 60).await.unwrap());
         assert!(!state.claim_dedup("tg:42", 60).await.unwrap());
         assert!(state.dedup_exists("tg:42").await.unwrap());
@@ -857,8 +1402,56 @@ mod tests {
             .dedup_exists("delivery:committed:events:1-0")
             .await
             .unwrap());
-        assert!(state.acquire_lock("reconcile", 30).await.unwrap());
-        assert!(!state.acquire_lock("reconcile", 30).await.unwrap());
+        assert!(state
+            .acquire_lock("reconcile", "owner-a", 30)
+            .await
+            .unwrap());
+        assert!(!state
+            .acquire_lock("reconcile", "owner-b", 30)
+            .await
+            .unwrap());
+        state.release_lock("reconcile", "owner-b").await.unwrap();
+        assert!(!state
+            .acquire_lock("reconcile", "owner-b", 30)
+            .await
+            .unwrap());
+        assert!(!state.renew_lock("reconcile", "owner-b", 90).await.unwrap());
+        assert!(state.renew_lock("reconcile", "owner-a", 90).await.unwrap());
+        state.release_lock("reconcile", "owner-a").await.unwrap();
+        assert!(state
+            .acquire_lock("reconcile", "owner-b", 30)
+            .await
+            .unwrap());
+        state
+            .remember_push_subscription_for_callback(
+                "https://example.test/push/jmap",
+                "subscription-1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            state
+                .get_push_subscription_for_callback("https://example.test/push/jmap")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("subscription-1")
+        );
+        state
+            .set_push_subscription_status("subscription-1", "disabled", 60)
+            .await
+            .unwrap();
+        // `pending/verified/disabled` 状态键是只写的运维轨迹（建议-5a）：
+        // 授权语义由验证码摘要承担，故这里不对其做读取断言。
+        state
+            .remove_push_subscription_for_callback("https://example.test/push/jmap")
+            .await
+            .unwrap();
+        assert!(state
+            .get_push_subscription_for_callback("https://example.test/push/jmap")
+            .await
+            .unwrap()
+            .is_none());
         assert!(state.ai_consent_until(7).await.unwrap().is_none());
         state.set_ai_consent(7, 3600).await.unwrap();
         assert!(state.ai_consent_until(7).await.unwrap().is_some());
