@@ -1,8 +1,11 @@
 /target/
 /Cargo.lock
+# 注意：Cargo.lock 实际已被跟踪（对二进制应用应提交以保证 --locked 可复现）；此行为历史遗留，勿据它移除跟踪
 .env
 .env.*
 !.env.example
 *.pem
 *.key
 *.p12
+# 构建验证缓存（cargo registry + rustup 组件，1.5G，绝不能提交）
+.gate-cache/

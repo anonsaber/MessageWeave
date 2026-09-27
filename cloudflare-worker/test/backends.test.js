@@ -4,7 +4,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseBackendOrigin, parseBackendOrigins, SAFE_ROUTES, PROXIED_ROUTES } from "../src/backends.js";
+import { parseBackendOrigin, parseBackendOrigins, SAFE_ROUTES, LB_ROUTES } from "../src/backends.js";
 
 test("http origin is rejected (https-only, fail-closed)", () => {
   assert.throws(() => parseBackendOrigin("http://bot.example"), /https/);
@@ -47,10 +47,10 @@ test("route safelist excludes /healthz and unknown paths (C-LB-SINGLE-REG-URL)",
     "/", "/assets/config.js", "/assets/styles.css", "/api/status", "/ready", "/webhook/tg", "/push/jmap", "/reconcile",
     "/api/config", "/api/business-config", "/api/admin/session", "/api/admin/session/revoke",
   ]) {
-    assert.ok(PROXIED_ROUTES.includes(r), `proxied: ${r}`);
+    assert.ok(LB_ROUTES.includes(r), `forwarded: ${r}`);
   }
   for (const r of ["/healthz", "/admin", "/debug", "/jmap/session", "/ready/extra"]) {
-    assert.ok(!PROXIED_ROUTES.includes(r), `must be blocked: ${r}`);
+    assert.ok(!LB_ROUTES.includes(r), `must be blocked: ${r}`);
     assert.ok(!SAFE_ROUTES.includes(r), `must not be a safe route: ${r}`);
   }
 });

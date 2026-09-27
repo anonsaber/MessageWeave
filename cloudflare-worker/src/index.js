@@ -22,8 +22,8 @@
  * 日志红线：仅打「方法 / 路径 / origin / 失败类别」，绝不打印 header/body/secret。
  */
 
-import { parseBackendOrigins, PROXIED_ROUTES } from "./backends.js";
-import { proxyWithFailover } from "./proxy.js";
+import { parseBackendOrigins, LB_ROUTES } from "./backends.js";
+import { forwardWithFailover } from "./lb.js";
 import { aggregateHealth, healthResponse, DEFAULT_HEALTH_TTL_MS } from "./health.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -67,8 +67,8 @@ export async function handleFetch(request, env) {
   }
 
   // safelist 路由校验：未知路径 404，不透传至后端（C-LB-SINGLE-REG-URL）。
-  if (!PROXIED_ROUTES.includes(path)) {
-    return text(`route not proxied: ${path}`, 404);
+  if (!LB_ROUTES.includes(path)) {
+    return text(`route not forwarded: ${path}`, 404);
   }
   const allowed = ROUTE_METHODS[path];
   if (!allowed || !allowed.includes(request.method)) {
@@ -89,7 +89,7 @@ export async function handleFetch(request, env) {
   const maxAttempts = intFromEnv(env.LB_MAX_ATTEMPTS, DEFAULT_MAX_ATTEMPTS);
 
   // 透传转发 + 有界故障转移（仅超时/5xx）。
-  return proxyWithFailover(origins, request, {
+  return forwardWithFailover(origins, request, {
     maxAttempts,
     timeoutMs,
     fetch: lazyFetch(),

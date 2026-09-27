@@ -4,7 +4,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { proxyWithFailover, joinUrl, isRetryableError } from "../src/proxy.js";
+import { forwardWithFailover, joinUrl, isRetryableError } from "../src/lb.js";
 
 /**
  * 可控 fetch mock：steps[i] 每次调用消费一个；
@@ -50,9 +50,9 @@ test("isRetryableError: only 5xx (status) and timeout/network (err) are retryabl
   assert.equal(isRetryableError(null, 200), false, "2xx not retryable");
 });
 
-test("transparent proxy forwards headers + body + method (SAF-LB-PASSTHRU)", async () => {
+test("transparent passthrough forwards headers + body + method (SAF-LB-PASSTHRU)", async () => {
   const { fetch, calls } = mockFetch([{ status: 202, body: "accepted" }]);
-  const res = await proxyWithFailover(["https://a.example"], req("/webhook/tg"), {
+  const res = await forwardWithFailover(["https://a.example"], req("/webhook/tg"), {
     ...noOpTimers,
     fetch,
     maxAttempts: 2,
@@ -73,7 +73,7 @@ test("transparent proxy forwards headers + body + method (SAF-LB-PASSTHRU)", asy
 test("GET/HEAD do not forward a body", async () => {
   const { fetch, calls } = mockFetch([{ status: 200 }]);
   const get = new Request("https://lb.example/ready", { method: "GET", headers: { authorization: "Bearer x" } });
-  await proxyWithFailover(["https://a.example"], get, {
+  await forwardWithFailover(["https://a.example"], get, {
     ...noOpTimers,
     fetch,
     maxAttempts: 1,
@@ -85,7 +85,7 @@ test("GET/HEAD do not forward a body", async () => {
 
 test("4xx is returned as-is WITHOUT retry and without failing over", async () => {
   const { fetch, calls } = mockFetch([{ status: 401, body: "unauthorized" }, { status: 200 }]);
-  const res = await proxyWithFailover(["https://a.example", "https://b.example"], req("/push/jmap"), {
+  const res = await forwardWithFailover(["https://a.example", "https://b.example"], req("/push/jmap"), {
     ...noOpTimers,
     fetch,
     maxAttempts: 2,
@@ -99,7 +99,7 @@ test("4xx is returned as-is WITHOUT retry and without failing over", async () =>
 
 test("5xx triggers failover to next origin, then returns success", async () => {
   const { fetch, calls } = mockFetch([{ status: 503, body: "busy" }, { status: 200, body: "ok" }]);
-  const res = await proxyWithFailover(["https://a.example", "https://b.example"], req("/push/jmap"), {
+  const res = await forwardWithFailover(["https://a.example", "https://b.example"], req("/push/jmap"), {
     ...noOpTimers,
     fetch,
     maxAttempts: 2,
@@ -115,7 +115,7 @@ test("5xx triggers failover to next origin, then returns success", async () => {
 
 test("timeout(AbortError) triggers failover and recovery", async () => {
   const { fetch, calls } = mockFetch([{ error: abortError() }, { status: 200, body: "recovered" }]);
-  const res = await proxyWithFailover(["https://a.example", "https://b.example"], req("/reconcile"), {
+  const res = await forwardWithFailover(["https://a.example", "https://b.example"], req("/reconcile"), {
     ...noOpTimers,
     fetch,
     maxAttempts: 2,
@@ -128,7 +128,7 @@ test("timeout(AbortError) triggers failover and recovery", async () => {
 
 test("all backends 5xx/timeout => aggregated 503 (Telegram redelivery fallback)", async () => {
   const { fetch, calls } = mockFetch([{ error: abortError() }, { status: 503, body: "x" }]);
-  const res = await proxyWithFailover(["https://a.example", "https://b.example"], req("/push/jmap"), {
+  const res = await forwardWithFailover(["https://a.example", "https://b.example"], req("/push/jmap"), {
     ...noOpTimers,
     fetch,
     maxAttempts: 2,
@@ -142,7 +142,7 @@ test("all backends 5xx/timeout => aggregated 503 (Telegram redelivery fallback)"
 
 test("bounded attempts: maxAttempts caps the number of origin tries", async () => {
   const { fetch, calls } = mockFetch([{ error: abortError() }]); // 每次都超时（可故障转移）
-  const res = await proxyWithFailover(["https://a", "https://b", "https://c"], req("/reconcile"), {
+  const res = await forwardWithFailover(["https://a", "https://b", "https://c"], req("/reconcile"), {
     ...noOpTimers,
     fetch,
     maxAttempts: 2,
@@ -155,7 +155,7 @@ test("bounded attempts: maxAttempts caps the number of origin tries", async () =
 
 test("non-retryable (non-network) error fails fast without burning other origins", async () => {
   const { fetch, calls } = mockFetch([{ error: new Error("invalid inner state") }, { status: 200 }]);
-  const res = await proxyWithFailover(["https://a.example", "https://b.example"], req("/push/jmap"), {
+  const res = await forwardWithFailover(["https://a.example", "https://b.example"], req("/push/jmap"), {
     ...noOpTimers,
     fetch,
     maxAttempts: 2,

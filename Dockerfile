@@ -1,7 +1,7 @@
 # C-DEBIAN-SLIM: Debian builder and runtime; no Alpine/musl dependencies.
 FROM rust:1-slim-bookworm AS builder
 WORKDIR /build
-ENV CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://rsproxy.cn/index/
+ENV CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://mirrors.ustc.edu.cn/crates.io-index/
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY web ./web

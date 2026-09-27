@@ -75,7 +75,7 @@ function isRetryableNetworkError(err) {
  * @param {{headers: Headers, body: Uint8Array | undefined}} snapshot 由 snapshotBody 产出
  * @returns {Promise<Res>}
  */
-export async function proxyRequest(origin, request, io, snapshot) {
+export async function forwardRequest(origin, request, io, snapshot) {
   const { fetch, setTimeout: st, clearTimeout: ct, timeoutMs } = io;
   const url = joinUrl(origin, request);
   const controller = new AbortController();
@@ -102,7 +102,7 @@ export async function proxyRequest(origin, request, io, snapshot) {
  * @param {object} opts { maxAttempts, timeoutMs, fetch, setTimeout, clearTimeout, rng?, log? }
  * @returns {Promise<Res>}
  */
-export async function proxyWithFailover(origins, request, opts) {
+export async function forwardWithFailover(origins, request, opts) {
   const { maxAttempts, timeoutMs, fetch, setTimeout, clearTimeout, rng, log } = opts;
   const start = origins.length > 1 && rng ? Math.floor(rng() * origins.length) : 0;
   const queue = origins.slice(start).concat(origins.slice(0, start));
@@ -115,7 +115,7 @@ export async function proxyWithFailover(origins, request, opts) {
     const origin = queue[i];
     const io = { fetch, setTimeout, clearTimeout, timeoutMs };
     try {
-      const resp = await proxyRequest(origin, request, io, snapshot);
+      const resp = await forwardRequest(origin, request, io, snapshot);
       // 非 5xx / 非网络错误：直接返回（4xx、2xx、3xx 均原样透传，不故障转移）。
       if (!isRetryableError(null, resp.status)) {
         return mark(resp, origin);

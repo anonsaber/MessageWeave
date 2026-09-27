@@ -1,6 +1,6 @@
 /**
  * origin 配置解析 + 校验（稳定 ID：C-HTTPS-INBOUND / SAF-LB-PASSTHRU / C-NO-DB）。
- * 后端 origin 仅允许 https（C-HTTPS-INBOUND）；不代理 Redis/JMAP（C-NO-DB）。
+ * 后端 origin 仅允许 https（C-HTTPS-INBOUND）；不转发 Redis/JMAP 流量（C-NO-DB）。
  * 仅 ES2022，零依赖，可 node 直接执行。
  */
 
@@ -22,7 +22,7 @@ export const SAFE_ROUTES = Object.freeze([
 ]);
 
 /** 需要透传到后端 origin 的路由（不含 Worker 聚合端点）。 */
-export const PROXIED_ROUTES = Object.freeze([...SAFE_ROUTES]);
+export const LB_ROUTES = Object.freeze([...SAFE_ROUTES]);
 
 export class BackendConfigError extends Error {
   constructor(message) {

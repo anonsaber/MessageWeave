@@ -3,6 +3,10 @@
 统一 HTTPS 入口 + 多后端 origin 故障转移（HA/LB 子项目）。
 **透传模型**：Worker 不感知业务，原样转发请求到多个 https 后端 origin；仅「超时 / 5xx」做有界故障转移。
 
+> 本组件是 **safelist 受限的边缘负载均衡器（edge load balancer）**：路由固定 12 条白名单、
+> 后端 origin 在部署期固定且仅允许 https、未知路径一律 404。它只对固定后端做请求转发与
+> 故障转移，不接受任意目标主机，也不提供任何形式的流量中转或访问隐藏能力。
+
 > 设计依据：`docs/design.md §10 / NFR-HA-MULTI-INSTANCE`、`docs/deployment.md §10`。
 > 安全基线：`AGENTS.md §2/§4`。
 
@@ -11,7 +15,7 @@
 - `wrangler.toml` — Wrangler 示例配置（name/main/compat/vars；后端 secret 走 `wrangler secret`）
 - `src/index.js` — Worker 入口（路由分发、/healthz 聚合、safelist 校验）
 - `src/backends.js` — origin 解析 + https/凭据/query 校验（C-HTTPS-INBOUND）
-- `src/proxy.js` — 透传转发 + 有界故障转移（SAF-LB-PASSTHRU）
+- `src/lb.js` — 透传转发 + 有界故障转移（SAF-LB-PASSTHRU）
 - `src/health.js` — 健康聚合探针（MOD-HEALTH-AGG / C-NO-DB）
 - `test/*.test.js` — 单元/集成测试（零依赖，`node --test`）
 - `package.json` — npm 元数据（`dev`/`deploy` 调 wrangler；`test` 纯 node）

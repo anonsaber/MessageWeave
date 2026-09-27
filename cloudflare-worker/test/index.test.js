@@ -25,7 +25,7 @@ function stubFetch(impl) {
   };
 }
 
-test("Worker GET /healthz aggregates backend probes without touching proxied routes", async () => {
+test("Worker GET /healthz aggregates backend probes without touching forwarded routes", async () => {
   const restore = stubFetch(async (url) => new Response("ok", { status: 200 }));
   try {
     const res = await handleFetch(new Request("https://lb.example/healthz", { method: "GET" }), makeEnv());
@@ -46,7 +46,7 @@ test("Worker: unknown route => 404 (C-LB-SINGLE-REG-URL)", async () => {
     makeEnv(),
   );
   assert.equal(res.status, 404);
-  assert.match(await res.text(), /route not proxied/);
+  assert.match(await res.text(), /route not forwarded/);
 });
 
 test("Worker: wrong method on safelist route => 405", async () => {
@@ -57,7 +57,7 @@ test("Worker: wrong method on safelist route => 405", async () => {
   assert.equal(res.status, 405);
 });
 
-test("Worker: business config PUT is proxied with the session bearer and empty 204 response", async () => {
+test("Worker: business config PUT is forwarded with the session bearer and empty 204 response", async () => {
   const restore = stubFetch(async (url, init) => {
     assert.match(url, /^https:\/\/(a|b)\.example\/api\/business-config$/);
     assert.equal(init.method, "PUT");
@@ -80,7 +80,7 @@ test("Worker: business config PUT is proxied with the session bearer and empty 2
   }
 });
 
-test("Worker: public setup status is proxied without an authorization header", async () => {
+test("Worker: public setup status is forwarded without an authorization header", async () => {
   const restore = stubFetch(async (url, init) => {
     assert.match(url, /^https:\/\/(a|b)\.example\/api\/status$/);
     assert.equal(init.method, "GET");
@@ -113,7 +113,7 @@ test("Worker: misconfigured origins => 503 fail-closed (no env leak)", async () 
   assert.equal(await res.text(), "misconfigured backends");
 });
 
-test("Worker: valid env, GET /ready proxied to backend with auth header intact", async () => {
+test("Worker: valid env, GET /ready forwarded to backend with auth header intact", async () => {
   const restore = stubFetch(async (url, init) => {
     assert.match(url, /^https:\/\/(a|b)\.example\/ready$/);
     return new Response("ready", { status: 200, headers: { "content-type": "text/plain" } });
