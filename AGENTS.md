@@ -50,6 +50,7 @@
     - **日志与 Redis 写入内容约束**（`SAF-LOG-PURITY`）：仅限结构化事件、计数、时间戳、脱敏后的请求摘要；**禁止**写入密钥原文、JMAP 邮件正文、AI 请求/响应内容、附件内容。
     - **禁止依赖进程内状态做生产恢复**（`C-NO-STATEFUL-RECOVERY`）：任何"重启续跑"（去重、sinceState、Streams 断点、熔断计数、会话）必须由外部 Redis + JMAP 对账（`C-REDIS-ONLY-STATE` / `FLOW-RECONCILE`）实现；进程内缓存仅为性能优化，**丢失必须安全可重入**。
 18. **无数据库/无本地写入/标准输出日志 = 发布门禁**：发布前必做 deployment.md §8.2 的 6 项红线自检（镜像无 DB 引擎、无本地可写挂载、日志仅 stdout/stderr、日志/Redis 无敏感数据、重启恢复不依赖进程内状态、Redis 由外部提供）；任一失败禁止发布。
+19. **远程 debug 双因子门禁（`MOD-DEBUG`/`SAF-DEBUG-GATE`/`SAF-DEBUG-AUTH`/`REQ-DEBUG-ENDPOINTS`）**：`/debug/*` 只在**两个条件同时满足**时才挂载——启动命令带 `--debug` 且 Secret 环境变量 `DEBUG_TOKEN` 非空；缺任一即完全不挂载该组路由，请求落到通用 `404`（**正常情况下绝对关闭**，禁止任何"未配置即放行"降级）。已挂载后每个 `/debug/*` 仍须 `Authorization: Bearer DEBUG_TOKEN` 并与 secret 做**常数时间**比较（`SAF-DEBUG-AUTH`），失败 `401` 且**在鉴权通过前不得产生任何副作用**。Worker 白名单（`ARCH-LB-WORKER`）不含 `/debug/*`，故公网唯一入口**永远不可达**该组路由；debug 仅供直连后端 origin 的远程联调。所有 `/debug/*` 响应体**不含任何 secret 原文**（`SAF-NO-SECRET-ECHO`），只回显"是否已设置"与探针结论；`DEBUG_TOKEN` 不回显、不入日志（`SAF-LOG-PURITY`）。
 
 ### 2.1 代码规模（软性指导，非硬限制）
 - 单个 `.rs` 文件原则上不超过 **500 行**；这是**软性指导**而非硬性门禁。
@@ -132,6 +133,7 @@
   - 正文转义、sinceState 存 Redis + 模拟 Redis 删除后由对账 `FLOW-RECONCILE` 恢复、通知去重。
   - **入口鉴权（`SAF-AUTH-*`）**：`/reconcile`/`/webhook/tg`/`/push/jmap` 在缺失或错误凭证下返回 `401` 且**无副作用**（无 Redis 写入、无 JMAP/AI 调用）；正确凭证放行。
   - **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz` 返回 `200`；`/ready` 做端到端探测（`ARCH-READY-BASELINE`：配置完整性 + Redis 可达性 + 出站只读探测 JMAP session `GET` / TG `getMe`，各 3000ms，任一失败返 `503`）——测试**可以**断言 `/ready` 在配置 / Redis / 上游探针失败时返回 `503`；两个探针（`probe_jmap_session` / `probe_telegram_get_me`）是可复用纯函数，④ 远程 debug 直接调用，**不要另写一套**；两者响应体均不含敏感信息。
+  - **远程 debug（`MOD-DEBUG`/`SAF-DEBUG-GATE`/`SAF-DEBUG-AUTH`/`REQ-DEBUG-ENDPOINTS`）**：缺 `--debug` 或 `DEBUG_TOKEN` 缺失/为空时，`/debug/*` **一律 `404`**（路由根本没挂载）；双因子齐备时挂载，缺 `Bearer` 或 token 不符返回 `401`，正确 token 放行；`GET /debug/config` 响应体**不得出现任何 secret 原文**（`SAF-NO-SECRET-ECHO`，测试可断言只含布尔/计数/结论字段）；出站只读探针直接复用 `probe_jmap_session` / `probe_telegram_get_me`（`ARCH-READY-BASELINE`），不另写实现；`POST /debug/notify` 复用真实出站路径（`TelegramChannel::send_message`），不得另建第二套 Telegram 客户端。
   - **JMAP 只读 adapter（`MOD-JMAP-CLIENT`/`GATE-G1-JMAP-READONLY`）**：mock 测试覆盖 session/account 选择（`ACCOUNT_ID` 空→主账户、显式值校验）、**URL 归一化**（`JMAP_SESSION_URL` 基地址与完整 `…/.well-known/jmap` 两种输入结果一致、无重复路径、`http://` 拒绝、内嵌凭据拒绝，`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）、`list_folders`/`list_emails`（`limit` 边界）/`read_email`（多 part 拼接与"无可用部分"明确错误，`REQ-JMAP-RAW-MULTIPART`）、`received_at` 解析；真机测试用 `#[ignore]` 标记、经环境变量驱动（运行：`cargo test -- --ignored jmap::`；仅编译：`cargo test --no-run`），**缺环境时清晰跳过且不泄密**，CI 默认不跑真机用例。**G1/D-G1-1 代码已实现，待真实 `cargo test -- --ignored jmap::` 验证；未实际运行 `--ignored` 前不得声称"真机通过"。**
 - 领域/渠道解耦测试：领域模块（`src/domain.rs` / `src/ai.rs` / `src/worker.rs`）的公开接口不出现任何渠道 SDK 类型（编译期检查）；`JmapBackend` 的 `MockBackend` 可驱动全部 JMAP 领域流程（不联网）。
 - 文件行数抽查：>500 行的 `.rs` 文件在 PR 说明中可见（软性，不自动 fail）。
@@ -247,6 +249,10 @@
 | `SAF-RECONCILE-LOCK` | docs/deployment.md §10.5 | `/reconcile` 不扇出，Redis 锁保证单实例执行，避免重复对账 | 安全 |
 | `MOD-STREAMS-GROUP` | docs/deployment.md §10.5 | 多实例用同一 Streams 消费组名，Redis 自动分摊（at-least-once 不重复处理） | 组件 |
 | `MOD-HEALTH-AGG` | docs/deployment.md §10.6 | Worker 聚合健康视图，报告各后端存活供外部监控 | 组件 |
+| `MOD-DEBUG` | src/debug.rs / AGENTS.md §2 | 远程联调只读表面：`--debug` + `DEBUG_TOKEN` 双因子开启后挂载 `/debug/*`，否则不挂载 | 组件 |
+| `SAF-DEBUG-GATE` | src/main.rs / src/debug.rs | 双因子门禁：启动带 `--debug` **且** `DEBUG_TOKEN` 非空才挂载路由；缺任一完全不挂载（请求落通用 `404`），默认绝对关闭 | 安全 |
+| `SAF-DEBUG-AUTH` | src/debug.rs | 挂载后 `/debug/*` 须 `Authorization: Bearer DEBUG_TOKEN` 常数时间比较，失败 `401` 且无副作用 | 安全 |
+| `REQ-DEBUG-ENDPOINTS` | src/debug.rs / AGENTS.md §2 | 端点契约：`GET /debug/ping`、`/config`、`/redis`、`/jmap`、`/telegram`、`/worker` 均只读；`POST /debug/notify` 走真实出站链路发一条测试消息；响应体不含 secret 原文 | 需求 |
 | `NFR-HA-MULTI-INSTANCE` | docs/deployment.md §10.7 / §9.1 | 多实例高可用语义；双活或主备均可；Redis 单点故障不在方案范围（用户外部解决） | 非功能 |
 | `C-NO-DB` | docs/deployment.md §0 / §9.1 / AGENTS.md §2 | 生产不使用任何数据库（无 SQLite/Postgres/MySQL/嵌入式），Redis 为唯一状态存储；应用不连接第二个数据库 | 约束 |
 | `C-NO-LOCAL-WRITE` | docs/deployment.md §0 / §9.1 / AGENTS.md §2 | 禁止本地文件/目录写入（日志/数据/临时缓存/本地卷） | 约束 |

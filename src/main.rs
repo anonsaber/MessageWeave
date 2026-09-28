@@ -1,6 +1,7 @@
 mod ai;
 mod channel;
 mod config;
+pub(crate) mod debug;
 pub mod domain;
 mod error;
 mod notify;
@@ -92,6 +93,21 @@ async fn main() -> Result<(), error::BotError> {
     // password only gates the database connection, and passwordless managed
     // Redis would leave the admin UI permanently locked out.
     let admin_token = secrecy::SecretString::new(encryption_key_raw);
+    // SAF-DEBUG-GATE: dual factor — /debug/* is mounted only when the process is launched with
+    // --debug AND a non-empty DEBUG_TOKEN Secret exists. Missing either factor keeps the
+    // surface absolutely closed (no route registered, so requests get a generic 404).
+    let debug_token = if std::env::args().any(|arg| arg == "--debug") {
+        std::env::var("DEBUG_TOKEN")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(secrecy::SecretString::new)
+    } else {
+        None
+    };
+    if debug_token.is_some() {
+        // SAF-LOG-PURITY: record that the surface is on, never the token value.
+        tracing::warn!("debug endpoints enabled for remote 联调 (SAF-DEBUG-GATE)");
+    }
     let worker_state: std::sync::Arc<dyn state::ReliableState> = std::sync::Arc::new(
         RedisState::connect_with_encryption(redis_url.expose_secret(), Some(encryption_key))
             .await?,
@@ -176,6 +192,7 @@ async fn main() -> Result<(), error::BotError> {
         Arc::new(WorkerHandle::new(worker)),
         runtime,
         admin_token,
+        debug_token,
     )
     .merge(web::router());
     axum::serve(listener, app).await?;

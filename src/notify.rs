@@ -36,19 +36,23 @@ struct AuthState {
 }
 
 #[derive(Clone)]
-struct AppState {
+pub(crate) struct AppState {
     auth: AuthState,
     worker_token: SecretString,
-    state: Arc<dyn ReliableState>,
-    allowlist: Arc<HashSet<i64>>,
+    pub(crate) state: Arc<dyn ReliableState>,
+    pub(crate) allowlist: Arc<HashSet<i64>>,
     worker: Arc<dyn WorkerHandler>,
     runtime: RuntimeConfigProvider,
     admin_token: SecretString,
-    business_config: Arc<RwLock<Option<serde_json::Value>>>,
-    business_runtime: Arc<RwLock<Option<BusinessConfig>>>,
-    business_revision: Arc<RwLock<u64>>,
-    setup_missing: Arc<Vec<String>>,
+    pub(crate) business_config: Arc<RwLock<Option<serde_json::Value>>>,
+    pub(crate) business_runtime: Arc<RwLock<Option<BusinessConfig>>>,
+    pub(crate) business_revision: Arc<RwLock<u64>>,
+    pub(crate) setup_missing: Arc<Vec<String>>,
     reload: Arc<ReloadCoordinator>,
+    /// Dual-factor debug gate (`SAF-DEBUG-GATE`): `Some` only when the process was launched with
+    /// `--debug` AND `DEBUG_TOKEN` was set. `debug_router` is mounted iff this is `Some`, so the
+    /// `/debug/*` surface is absent by default. `SAF-DEBUG-AUTH`: compared in constant time.
+    pub(crate) debug_token: Option<SecretString>,
 }
 
 impl From<AuthSecrets> for AuthState {
@@ -93,7 +97,7 @@ fn cached_bot_token(app: &AppState) -> Option<secrecy::SecretString> {
 /// auth): probing the raw URL unauthenticated would report not-ready forever and make ingress
 /// stop routing. Reusable by the remote debug surface so readiness and debugging share one
 /// implementation.
-async fn probe_jmap_session(app: &AppState) -> Result<(), &'static str> {
+pub(crate) async fn probe_jmap_session(app: &AppState) -> Result<(), &'static str> {
     let Some((session_url, username, password)) = cached_jmap_session(app) else {
         return Err("jmap session url not configured");
     };
@@ -115,7 +119,7 @@ async fn probe_jmap_session(app: &AppState) -> Result<(), &'static str> {
 
 /// End-to-end Telegram probe: `getMe` must answer with a 2xx. The bot token is used to build the
 /// request URL only; it is never logged, echoed, or returned (SAF-NO-SECRET-ECHO).
-async fn probe_telegram_get_me(app: &AppState) -> Result<(), &'static str> {
+pub(crate) async fn probe_telegram_get_me(app: &AppState) -> Result<(), &'static str> {
     let Some(token) = cached_bot_token(app) else {
         return Err("telegram bot token not configured");
     };
@@ -313,7 +317,7 @@ fn reconcile_lock_owner() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn error_response(status: StatusCode, code: &'static str, retry: bool) -> Response {
+pub(crate) fn error_response(status: StatusCode, code: &'static str, retry: bool) -> Response {
     let request_id = reconcile_lock_owner();
     let body = axum::Json(serde_json::json!({"error": code, "request_id": request_id}));
     if retry {
@@ -438,7 +442,7 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
     }
 }
 
-fn worker_authorized(headers: &HeaderMap, token: &str) -> bool {
+pub(crate) fn worker_authorized(headers: &HeaderMap, token: &str) -> bool {
     headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -699,7 +703,18 @@ async fn build_worker(
 
 /// Request-boundary refresh for multi-instance deployments. A failed remote rebuild advances the
 /// observed revision to avoid a hot retry loop while retaining the active worker/config.
-async fn refresh_business_config(app: &AppState) {
+/// `REQ-DEBUG-ENDPOINTS`: the single place a business-configured Telegram client is built from the
+/// live `business_runtime` snapshot. `refresh_business_config` and `/debug/notify` both go through
+/// it, so there is never a second Telegram client implementation to drift apart.
+pub(crate) fn business_client(app: &AppState) -> Option<TelegramClient> {
+    app.business_runtime
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .map(|config| TelegramClient::with_runtime(config.bot_token, app.runtime.clone()))
+}
+
+pub(crate) async fn refresh_business_config(app: &AppState) {
     let Ok(remote_revision) = app.state.business_config_revision().await else {
         return;
     };
@@ -1117,8 +1132,14 @@ fn header_value_matches(headers: &HeaderMap, name: &str, expected: &str) -> bool
         .unwrap_or(false)
 }
 
-fn constant_time_eq(actual: &[u8], expected: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(actual: &[u8], expected: &[u8]) -> bool {
     !expected.is_empty() && actual.len() == expected.len() && actual.ct_eq(expected).into()
+}
+
+/// Effective chat allowlist (runtime business config if present, else the static startup
+/// value). Exposed to `MOD-DEBUG` without leaking `AuthState` itself.
+pub(crate) fn chat_allowlist_snapshot(app: &AppState) -> HashSet<i64> {
+    auth_snapshot(app).2
 }
 
 fn auth_snapshot(app: &AppState) -> (AuthState, SecretString, HashSet<i64>) {
@@ -1178,6 +1199,7 @@ pub fn router_configuration_setup(missing: Vec<String>) -> Router {
         Arc::new(NoopWorker),
         runtime_provider(OutboundConfig::default()),
         SecretString::new(String::new()),
+        None,
         missing,
     )
 }
@@ -1215,9 +1237,14 @@ pub fn router_with_worker_state_and_runtime<S: ReliableState + 'static>(
         worker_handler,
         runtime,
         SecretString::new(String::new()),
+        None,
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "router wiring keeps state dependencies explicit"
+)]
 pub fn router_with_worker_state_runtime_bootstrap<S: ReliableState + 'static>(
     secrets: AuthSecrets,
     worker_token: SecretString,
@@ -1226,6 +1253,7 @@ pub fn router_with_worker_state_runtime_bootstrap<S: ReliableState + 'static>(
     worker_handler: Arc<dyn WorkerHandler>,
     runtime: RuntimeConfigProvider,
     admin_token: SecretString,
+    debug_token: Option<SecretString>,
 ) -> Router {
     router_with_worker_state_runtime_bootstrap_config(
         secrets,
@@ -1235,6 +1263,7 @@ pub fn router_with_worker_state_runtime_bootstrap<S: ReliableState + 'static>(
         worker_handler,
         runtime,
         admin_token,
+        debug_token,
         Vec::new(),
     )
 }
@@ -1251,11 +1280,27 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
     worker_handler: Arc<dyn WorkerHandler>,
     runtime: RuntimeConfigProvider,
     admin_token: SecretString,
+    debug_token: Option<SecretString>,
     setup_missing: Vec<String>,
 ) -> Router {
     let worker_handle = Arc::new(WorkerHandle::new(worker_handler));
     let reload = Arc::new(ReloadCoordinator::new(worker_handle.clone(), None));
-    Router::new()
+    let app_state = AppState {
+        auth: AuthState::from(secrets),
+        worker_token,
+        state: Arc::new(state),
+        allowlist: Arc::new(allowlist),
+        worker: worker_handle,
+        runtime,
+        admin_token,
+        debug_token,
+        business_config: Arc::new(RwLock::new(None)),
+        business_runtime: Arc::new(RwLock::new(None)),
+        business_revision: Arc::new(RwLock::new(0)),
+        setup_missing: Arc::new(setup_missing),
+        reload,
+    };
+    let mut router = Router::new()
         .route("/webhook/tg", post(telegram_webhook))
         .route("/push/jmap", post(jmap_push))
         .route("/api/push/register", post(register_push))
@@ -1270,21 +1315,12 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
         .route("/api/admin/session", post(create_admin_session))
         .route("/healthz", get(healthz))
         .route("/ready", get(ready))
-        .route("/api/status", get(setup_status))
-        .with_state(AppState {
-            auth: AuthState::from(secrets),
-            worker_token,
-            state: Arc::new(state),
-            allowlist: Arc::new(allowlist),
-            worker: worker_handle,
-            runtime,
-            admin_token,
-            business_config: Arc::new(RwLock::new(None)),
-            business_runtime: Arc::new(RwLock::new(None)),
-            business_revision: Arc::new(RwLock::new(0)),
-            setup_missing: Arc::new(setup_missing),
-            reload,
-        })
+        .route("/api/status", get(setup_status));
+    // SAF-DEBUG-GATE: /debug/* only exists when main.rs passed a real DEBUG_TOKEN under --debug.
+    if app_state.debug_token.is_some() {
+        router = router.merge(crate::debug::debug_router());
+    }
+    router.with_state(app_state)
 }
 
 #[cfg(test)]
@@ -1434,6 +1470,7 @@ mod tests {
             Arc::new(NoopWorker),
             runtime_provider(OutboundConfig::default()),
             SecretString::new("acl-root".into()),
+            None,
         );
         // 本用例验证的是"失败的 bootstrap 不消耗一次性初始化槽位"，失败原因应是
         // JMAP 不可达（127.0.0.1:1 → 503），因此 allowlist 必须合法，避免被
