@@ -384,7 +384,7 @@ fn role_name(role: mailbox::Role) -> Option<String> {
     }
 }
 
-fn normalize_session_url(value: &str) -> Result<String, JmapError> {
+pub(crate) fn normalize_session_url(value: &str) -> Result<String, JmapError> {
     let parsed =
         url::Url::parse(value).map_err(|_| JmapError::InvalidRequest("JMAP_SESSION_URL"))?;
     if parsed.scheme() != "https" {

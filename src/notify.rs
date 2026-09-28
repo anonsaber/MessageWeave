@@ -70,12 +70,14 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(3_00
 
 /// Read the cached runtime configuration without holding the lock guard across an await.
 /// Callers refresh the cache first so this never reports a stale view.
-fn cached_jmap_session_url(app: &AppState) -> Option<String> {
-    app.business_runtime
-        .read()
-        .ok()?
-        .as_ref()
-        .map(|config| config.jmap_session_url.clone())
+fn cached_jmap_session(app: &AppState) -> Option<(String, String, SecretString)> {
+    app.business_runtime.read().ok()?.as_ref().map(|config| {
+        (
+            config.jmap_session_url.clone(),
+            config.jmap_username.clone(),
+            config.jmap_password.clone(),
+        )
+    })
 }
 
 fn cached_bot_token(app: &AppState) -> Option<secrecy::SecretString> {
@@ -86,13 +88,21 @@ fn cached_bot_token(app: &AppState) -> Option<secrecy::SecretString> {
         .map(|config| config.bot_token.clone())
 }
 
-/// End-to-end JMAP session probe: the configured session URL must answer with a 2xx.
-/// Reusable by the remote debug surface so readiness and debugging share one implementation.
+/// End-to-end JMAP session probe: fetch `/.well-known/jmap` with the configured credentials and
+/// require a 2xx. Mirrors `JmapClientBackend::connect_with_runtime` (normalized origin + Basic
+/// auth): probing the raw URL unauthenticated would report not-ready forever and make ingress
+/// stop routing. Reusable by the remote debug surface so readiness and debugging share one
+/// implementation.
 async fn probe_jmap_session(app: &AppState) -> Result<(), &'static str> {
-    let Some(session_url) = cached_jmap_session_url(app) else {
+    let Some((session_url, username, password)) = cached_jmap_session(app) else {
         return Err("jmap session url not configured");
     };
-    let request = reqwest::Client::new().get(session_url).send();
+    let origin = crate::domain::jmap::client::normalize_session_url(&session_url)
+        .map_err(|_| "jmap session url invalid")?;
+    let request = reqwest::Client::new()
+        .get(format!("{origin}/.well-known/jmap"))
+        .basic_auth(&username, Some(password.expose_secret()))
+        .send();
     match tokio::time::timeout(PROBE_TIMEOUT, request).await {
         Ok(Ok(response)) => response
             .error_for_status()
@@ -129,8 +139,10 @@ async fn ready(State(app): State<AppState>) -> Response {
     let configured = app.setup_missing.is_empty();
     let redis = app.state.is_enabled().await.is_ok();
     refresh_business_config(&app).await;
-    let jmap = probe_jmap_session(&app).await.is_ok();
-    let telegram = probe_telegram_get_me(&app).await.is_ok();
+    // Probes run in parallel: worst case one PROBE_TIMEOUT instead of two.
+    let (jmap, telegram) = tokio::join!(probe_jmap_session(&app), probe_telegram_get_me(&app));
+    let jmap = jmap.is_ok();
+    let telegram = telegram.is_ok();
     if configured && redis && jmap && telegram {
         axum::Json(serde_json::json!({
             "status": "ready",
