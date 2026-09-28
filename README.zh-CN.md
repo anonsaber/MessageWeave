@@ -74,7 +74,9 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 `/debug/*` 是一套可选的远程联调面：JMAP 与 Telegram 实时探针、当前业务配置，以及单条
 Telegram 发送。它由双因子开关控制——进程必须带 `--debug` **且** 已设置 `DEBUG_TOKEN`；
 任一缺失则这些路由完全不存在（请求落到通用 404）。`/debug/*` 不在网关白名单内，因此只能
-直连后端 origin 访问。见 `docs/deployment.md` §2.1。
+直连后端 origin 访问。运行它唯一的规则就是不要打开：启动命令里不加 `--debug`，环境变量里不
+设 `DEBUG_TOKEN`。若确实要为一次排障临时开启，请先配好 chat 白名单——白名单为空时，测试
+发送不会受限到任何 chat。见 `docs/deployment.md` §2.1。
 
 ## 4. 安全边界，一句话
 

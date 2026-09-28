@@ -81,7 +81,10 @@ that must stay cheap should watch the gateway's aggregated `/healthz`.
 business config, and a single Telegram send. It sits behind a two-factor gate — the process
 must be started with `--debug` **and** `DEBUG_TOKEN` must be set; miss either and the routes
 do not exist at all (requests fall through to a generic 404). Nothing under `/debug/*` is on
-the gateway allowlist, so it is reachable only on the backend origin itself. See
+the gateway allowlist, so it is reachable only on the backend origin itself. The only rule for
+running it is to keep it off: leave `--debug` out of the start command and leave `DEBUG_TOKEN`
+unset. If you do turn it on for a one-off diagnosis, configure the chat allowlist first — with
+an empty allowlist the test send is not restricted to any chat. See
 `docs/deployment.md` §2.1.
 
 ## 4. Security boundary, in one sentence
