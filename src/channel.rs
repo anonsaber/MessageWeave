@@ -1,25 +1,5 @@
-use async_trait::async_trait;
-
-use crate::domain::{Notification, UserCommand};
-
-#[expect(dead_code, reason = "稳定ID+阶段0占位：渠道抽象供后续 adapter 使用")]
-#[async_trait]
-pub trait Channel: Send + Sync {
-    async fn receive(&self, command: UserCommand);
-}
-
-#[expect(dead_code, reason = "稳定ID+阶段0占位：通知抽象供后续 adapter 使用")]
-#[async_trait]
-pub trait Notifier: Send + Sync {
-    async fn notify(&self, notification: Notification);
-}
-
-#[expect(dead_code, reason = "稳定ID+阶段0占位：渠道消息适配抽象")]
-pub trait MessageAdapter: Send + Sync {
-    fn render_notification(&self, notification: &Notification) -> String;
-}
-
-/// Telegram is intentionally only an adapter boundary in stage 0 (no bot commands yet).
+/// Telegram adapter: messages are rendered here and sent via reqwest, with no bot
+/// framework on the classpath. Command parsing lives in `worker.rs::parse_intent`.
 pub mod telegram {
     use crate::domain::Notification;
     use crate::state::RuntimeConfigProvider;

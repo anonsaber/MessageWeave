@@ -3,12 +3,6 @@
 pub mod jmap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UserCommand {
-    pub text: String,
-    pub chat_id: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notification {
     pub sender: String,
     pub subject: String,

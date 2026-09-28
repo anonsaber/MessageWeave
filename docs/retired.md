@@ -126,6 +126,7 @@
 | `Config.port` / `Config.redis_url` 字段 | 已删除字段 | `port` 在两个构造器里硬编码 `8080`，而监听绑定直接从环境变量取值——字段值可与真实监听端口静默不一致，且全仓零读取方；`redis_url` 同样零读取 | `Config` 收窄为 6 字段：`telegram` / `jmap` / `account_id` / `llm` / `auth` / `worker_token`，与 `BusinessConfig` 同构 |
 | 两个构造器的 `redis_url` 参数 | 已删除参数 | 唯一读者（原 main.rs 第 72 行）在上一轮改造中被移除 | `redis_only()` 与 `from_business(value)`；包装器 `from_business_json` / `from_business_value` 同步去掉首参 |
 | 19 个遗留环境变量名 | 已删除读取 | 见上；这些名字在代码中已无任何读取方 | 名单见 `docs/reference.md` §5.3；语义见 `docs/design.md` §7.1 |
+| `Channel` / `Notifier` / `MessageAdapter`（`src/channel.rs`）+ `UserCommand`（`src/domain.rs`） | 已删除占位 trait 与类型 | 三者**无实现、无调用方、无 dyn 绑定**，`#[expect(dead_code)]` 属性是仅有的引用来源；实际 Telegram 出站走 `channel::telegram::TelegramClient`，由 `worker.rs` 的 `MetadataWorker` 与 `notify.rs` 直接持有，从未经过它们。`UserCommand` 的唯一使用者是被删的 `Channel` | `channel.rs` 只留 `pub mod telegram`（`TelegramClient`，`reqwest` 自研）；`domain.rs` 只留领域 `Notification`（worker.rs:234 在用）。这是 src/ 里最后 3 个 `#[expect(dead_code)]` |
 
 > 注意 `LLM_MAX_RETRIES` 与 `LLM_SUMMARY_TARGET_CHARS` 的区别：前者从来不是环境变量
 > （Redis 运行参数 `max_retries`，回落默认见 `docs/reference.md` §6.1），后者是常量

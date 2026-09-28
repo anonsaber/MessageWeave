@@ -213,20 +213,17 @@ Telegram 渠道用 `src/channel.rs` 的 `reqwest` 自研实现（`ARCH-DEPS-STAG
 ### 5.2 渠道抽象与多通道扩展策略
 - **现状**：首个（也是当前唯一）渠道是 Telegram。目标是保留平行扩展钉钉/飞书的能力，**但不提前实现**。
 - **原则**：领域层与渠道层解耦——邮件/JMAP/AI/意图状态机**不得依赖 Telegram 类型**。
-- **抽象（不过度设计）**：
-
-  | 抽象 | 职责 | 当前状态 |
-  |---|---|---|
-  | `Channel` | 渠道生命周期：接收输入、分发命令、配置端点 | **无实现**（阶段0占位）；命令解析实际在 `parse_intent`（`src/worker.rs`） |
-  | `Notifier` | 主动推送：把领域 `Notification` 发送到用户 | **无实现**（阶段0占位）；出站实际走 `TelegramClient::send`（`src/channel.rs`） |
-  | `MessageAdapter` | 领域数据 ↔ 渠道消息渲染（文本/按钮/转义） | **无实现**（阶段0占位）；渲染逻辑散在 `src/worker.rs` / `src/notify.rs` |
-
-  - `src/channel.rs` 里三个 trait（`Channel` / `Notifier` / `MessageAdapter`）目前**没有任何实现**，都标着 `#[expect(dead_code)]`（注释：阶段0占位，供后续 adapter 使用）。实际 Telegram 出站走 `channel::telegram::TelegramClient`（`reqwest` 自研），由 `worker.rs` 的 `MetadataWorker` 和 `notify.rs` 持有，**不经过这三个 trait**。
-  - 领域与渠道之间用**领域 `UserCommand` / `Notification`** 数据结构传递，渠道只在边缘做适配（解析→领域命令；领域 `Notification`→渲染）。
+- **抽象（不过度设计）**：不预留空 trait。`src/channel.rs` 曾有三个零实现的
+  `#[expect(dead_code)]` 占位 trait（`Channel` / `Notifier` / `MessageAdapter`，注释自述
+  「稳定ID+阶段0占位」），**已删除**（登记见 `docs/retired.md`）——实际 Telegram 出站走
+  `channel::telegram::TelegramClient::send_text`（`reqwest` 自研），由 `worker.rs` 的
+  `MetadataWorker` 与 `notify.rs` 直接持有，**从未经过这三个 trait**。命令解析在
+  `parse_intent`（`src/worker.rs`），渲染逻辑散在 `src/worker.rs` / `src/notify.rs`。
+  领域与渠道之间传递的是领域 `Notification`（`src/domain.rs`），渠道只在边缘做适配。
 - **约束**：
   - `jmap` / `llm` / 意图状态机 / `notify::core` 的公开接口只接受/返回领域类型；
   - 领域层不得出现具体渠道 SDK 类型（渠道层当前不引入第三方 Bot 框架，见 §4）；
-  - 新增渠道 = 新 adapter + 装配，不改领域层。
+  - 新增渠道 = 新 adapter + 装配，不改领域层。真需要抽象时**带实现一起加**，不留空 trait。
 - **不做什么**：不定义多态配置注册表、不预先抽象"渠道能力矩阵"、不建 plugins 机制；按需再演进（YAGNI）。
 
 ### 5.3 运行模型（短请求，无长连接）
@@ -255,7 +252,7 @@ Stalwart JMAP Push → POST /push/jmap (StateChange{Email/EmailDelivery: new_sta
   → worker: XREADGROUP → 用 sinceState(存 Redis, MOD-SINCESTATE) 调 Email/changes → 取 created[] 的 id
   → email_get([From, Subject, Preview, ReceivedAt, HasAttachment])
   → notify::core 组装领域 Notification（仅元数据 + 行内按钮意图，绝不含正文）
-  → channel::Notifier.send(chat, notification)（Telegram adapter 渲染并发送）
+  → channel::telegram::TelegramClient::send_notification(chat, notification)（内部渲染文本后经 send_text 发出）
   → 更新 sinceState（写外部 Redis）→ XACK
   → 若 Redis 丢失：由外部 Cron 对账(FLOW-RECONCILE) 重建游标并补发
 ```
@@ -317,7 +314,7 @@ message-weave/
 │   ├── domain/jmap.rs            # JmapBackend trait + MockBackend（契约测试不联网）
 │   ├── domain/jmap/client.rs     # 包装 jmap_client::Client（真实只读 adapter，MOD-JMAP-CLIENT）
 │   ├── state.rs                  # Redis 读写封装：配置/开关/会话/TTL 键（C-REDIS-ONLY-STATE）
-│   ├── channel.rs                # 渠道层：Channel/Notifier/MessageAdapter，Telegram 用 reqwest 自研
+│   ├── channel.rs                # 渠道层：TelegramClient（reqwest 自研出站）；领域类型在 src/domain.rs
 │   ├── notify.rs                 # /push/jmap 校验入队 + Redis Streams worker + /reconcile 对账
 │   ├── worker.rs                 # parse_intent → Intent，命令路由与 AI 授权判定
 │   ├── ai.rs                     # LlmClient / summarize：LLM 摘要调用
@@ -342,7 +339,7 @@ message-weave/
 | `error` | — | `BotError`（§8.1，4 个变体） | 单测 | 已实现 |
 | `domain` + `domain::jmap::client` | **jmap-client 0.4.2** | JMAP 只读语义；`client` = 真实只读 adapter（`MOD-JMAP-CLIENT`） | mock JMAP 响应 + `#[ignore]` 真机测试 | 代码已实现，待真实 Stalwart 端到端验证（`cargo test -- --ignored jmap::`） |
 | `state` | redis 0.27 | Redis 读写：配置/开关/会话/TTL 键（`C-REDIS-ONLY-STATE`） | Redis mock | 已实现 |
-| `channel` | reqwest 0.13；jmap-client | `Channel` / `Notifier` / `MessageAdapter`，邮件与 TG 双渠道（事件→领域 Command；领域 Notification→渲染） | mock HTTP | 已实现（`src/channel.rs`，Telegram 为 `reqwest` 自研） |
+| `channel` | reqwest 0.13；jmap-client | `TelegramClient`（`send_text` / `send_notification`），邮件与 TG 双渠道（事件→领域 `Notification`→渲染） | mock HTTP | 已实现（`src/channel.rs`，`reqwest` 自研，无第三方 Bot 框架） |
 | `worker` | — | `parse_intent` → `Intent`（6 种，含 `Search(query)`：`/search` + `SearchSnippet/get` 高亮渲染），命令路由与 AI 授权判定 | 表驱动纯单测 | 已实现 |
 | `ai` | reqwest 0.13 | `LlmClient` / `summarize` | mock OpenAI 兼容端点 | 已实现 |
 | `notify` | axum；redis | HTTP 鉴权、全局开关、`/push/jmap` 入队、`Email/changes` 对账和游标提交 | webhook 校验失败路径覆盖 403 | 已覆盖真实对账路径；仍需真实 Stalwart 环境做端到端验收 |
@@ -605,7 +602,7 @@ pub enum BotError {
 - 验收：`cargo test`（mock）全绿；`cargo test -- --ignored jmap::`（有真机环境时）能连真实服务器列文件夹/邮件并读原文（未实际运行前不得声称已通过）。
 
 ### 10.2 阶段 2：渠道适配（已完成）
-- `src/channel.rs` 定义 Channel / Notifier / MessageAdapter 抽象 + 领域 Command/Notification 类型。
+- `src/channel.rs` 实现 `TelegramClient`（`send_text` / `send_notification`，`reqwest` 自研）；领域类型 `Notification` 在 `src/domain.rs`。
 - Telegram 装配用 `reqwest` 直发 `https://api.telegram.org/bot{token}/sendMessage`（**未引入 teloxide**；评估记录见 `docs/retired.md`）。
 - 入站：`POST /webhook/tg` 校验 secret token → 按 `update_id` 去重（`dedup:tg:{update_id}`）→ 入 Redis Streams → 2xx；出站为 Telegram 唯一用到的 Bot API 端点。
 - 意图路由：`src/worker.rs` 的 `parse_intent` 解析 6 种意图 —— `Help` / `Consent { ttl, label }` / `Summary(email_id)` / `Search(query)` / `Query` / `Unknown`，全部走自然语言触发词（AI 授权词见 `docs/reference.md` 的 AI 授权态一节）。`/search` 详见 §2.3、§5.7；中文搜索词只做**前缀匹配**（`搜索/查找/检索` + `/search`），避免覆盖授权与摘要意图。
