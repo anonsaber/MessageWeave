@@ -17,6 +17,8 @@ export const SAFE_ROUTES = Object.freeze([
   "/api/admin/session/revoke",
   "/webhook/tg",
   "/push/jmap",
+  "/api/push/register",
+  "/api/push/disable",
   "/reconcile",
   "/ready",
 ]);

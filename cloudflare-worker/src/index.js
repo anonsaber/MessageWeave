@@ -16,7 +16,7 @@
  * - GET|PUT /api/config、PUT /api/business-config、POST /api/admin/session[/revoke]
  *   → 透传至后端；后端校验 bootstrap 凭据或短期 admin session
  * - GET  /healthz            → LB 聚合健康（MOD-HEALTH-AGG）
- * - POST /webhook/tg|/push/jmap|/reconcile、GET /ready → 透传 + 有界故障转移
+ * - POST /webhook/tg|/push/jmap|/api/push/register|/api/push/disable|/reconcile、GET /ready → 透传 + 有界故障转移
  * - 其它 → 404 / 405
  *
  * 日志红线：仅打「方法 / 路径 / origin / 失败类别」，绝不打印 header/body/secret。
@@ -48,6 +48,8 @@ const ROUTE_METHODS = Object.freeze({
   "/api/admin/session/revoke": ["POST"],
   "/webhook/tg": ["POST"],
   "/push/jmap": ["POST"],
+  "/api/push/register": ["POST"],
+  "/api/push/disable": ["POST"],
   "/reconcile": ["POST"],
   "/ready": ["GET"],
 });

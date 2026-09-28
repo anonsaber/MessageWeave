@@ -131,3 +131,28 @@ test("Worker: valid env, GET /ready forwarded to backend with auth header intact
     restore();
   }
 });
+
+test("Worker: POST /api/push/register and /api/push/disable are forwarded", async () => {
+  const seen = [];
+  const restore = stubFetch(async (url, init) => {
+    seen.push([url, init.method]);
+    return new Response("{\"error\":\"invalid_request\",\"request_id\":\"x\"}", {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  });
+  try {
+    for (const path of ["/api/push/register", "/api/push/disable"]) {
+      const res = await handleFetch(
+        new Request(`https://lb.example${path}`, { method: "POST", body: "{}" }),
+        makeEnv(),
+      );
+      assert.equal(res.status, 400);
+      assert.deepEqual(await res.json(), { error: "invalid_request", request_id: "x" });
+    }
+    assert.equal(seen.length, 2);
+    assert.ok(seen.every(([url, method]) => method === "POST"));
+  } finally {
+    restore();
+  }
+});
