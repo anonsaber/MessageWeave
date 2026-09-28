@@ -43,6 +43,9 @@ async fn main() -> Result<(), error::BotError> {
             String::new()
         }
     };
+    // The SPA admin credential is this same Secret (see below): capture it once so the
+    // validated value and the admin token can never diverge.
+    let encryption_key_raw = std::env::var("CONFIG_ENCRYPTION_KEY").unwrap_or_default();
     let encryption_key = match encryption_key_from_env() {
         Ok(key) => key,
         Err(_) => {
@@ -84,11 +87,11 @@ async fn main() -> Result<(), error::BotError> {
     let redis =
         RedisState::connect_with_encryption(redis_url.expose_secret(), Some(encryption_key))
             .await?;
-    let bootstrap_token = url::Url::parse(redis_url.expose_secret())
-        .ok()
-        .and_then(|value| value.password().map(ToOwned::to_owned))
-        .map(secrecy::SecretString::new)
-        .unwrap_or_else(|| secrecy::SecretString::new(String::new()));
+    // SPA admin credential == CONFIG_ENCRYPTION_KEY (validated as a required
+    // startup Secret above). It must not be derived from REDIS_URL: a Redis ACL
+    // password only gates the database connection, and passwordless managed
+    // Redis would leave the admin UI permanently locked out.
+    let admin_token = secrecy::SecretString::new(encryption_key_raw);
     let worker_state: std::sync::Arc<dyn state::ReliableState> = std::sync::Arc::new(
         RedisState::connect_with_encryption(redis_url.expose_secret(), Some(encryption_key))
             .await?,
@@ -172,7 +175,7 @@ async fn main() -> Result<(), error::BotError> {
         allowlist,
         Arc::new(WorkerHandle::new(worker)),
         runtime,
-        bootstrap_token,
+        admin_token,
     )
     .merge(web::router());
     axum::serve(listener, app).await?;

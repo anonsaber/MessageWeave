@@ -43,7 +43,7 @@ struct AppState {
     allowlist: Arc<HashSet<i64>>,
     worker: Arc<dyn WorkerHandler>,
     runtime: RuntimeConfigProvider,
-    bootstrap_token: SecretString,
+    admin_token: SecretString,
     business_config: Arc<RwLock<Option<serde_json::Value>>>,
     business_runtime: Arc<RwLock<Option<BusinessConfig>>>,
     business_revision: Arc<RwLock<u64>>,
@@ -595,12 +595,10 @@ async fn put_business_config(
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// One-shot Redis ACL bootstrap. The ACL password is only compared in constant time and is
-/// never included in the response; SET-NX in ReliableState closes the initialization race.
+/// One-shot business-config bootstrap. The admin credential is only compared in constant time
+/// and is never included in the response; SET-NX in ReliableState closes the init race.
 async fn bootstrap(State(app): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    if app.bootstrap_token.expose_secret().is_empty()
-        || !worker_authorized(&headers, app.bootstrap_token.expose_secret())
-    {
+    if !worker_authorized(&headers, app.admin_token.expose_secret()) {
         return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
     }
     let Ok(config) = serde_json::from_slice::<serde_json::Value>(&body) else {
@@ -759,9 +757,7 @@ async fn revoke_admin_session(State(app): State<AppState>, headers: HeaderMap) -
 }
 
 async fn create_admin_session(State(app): State<AppState>, headers: HeaderMap) -> Response {
-    if app.bootstrap_token.expose_secret().is_empty()
-        || !worker_authorized(&headers, app.bootstrap_token.expose_secret())
-    {
+    if !worker_authorized(&headers, app.admin_token.expose_secret()) {
         return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
     }
     let mut bytes = [0_u8; 32];
@@ -1229,7 +1225,7 @@ pub fn router_with_worker_state_runtime_bootstrap<S: ReliableState + 'static>(
     allowlist: HashSet<i64>,
     worker_handler: Arc<dyn WorkerHandler>,
     runtime: RuntimeConfigProvider,
-    bootstrap_token: SecretString,
+    admin_token: SecretString,
 ) -> Router {
     router_with_worker_state_runtime_bootstrap_config(
         secrets,
@@ -1238,7 +1234,7 @@ pub fn router_with_worker_state_runtime_bootstrap<S: ReliableState + 'static>(
         allowlist,
         worker_handler,
         runtime,
-        bootstrap_token,
+        admin_token,
         Vec::new(),
     )
 }
@@ -1254,7 +1250,7 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
     allowlist: HashSet<i64>,
     worker_handler: Arc<dyn WorkerHandler>,
     runtime: RuntimeConfigProvider,
-    bootstrap_token: SecretString,
+    admin_token: SecretString,
     setup_missing: Vec<String>,
 ) -> Router {
     let worker_handle = Arc::new(WorkerHandle::new(worker_handler));
@@ -1282,7 +1278,7 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
             allowlist: Arc::new(allowlist),
             worker: worker_handle,
             runtime,
-            bootstrap_token,
+            admin_token,
             business_config: Arc::new(RwLock::new(None)),
             business_runtime: Arc::new(RwLock::new(None)),
             business_revision: Arc::new(RwLock::new(0)),
@@ -1366,7 +1362,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_rejects_without_acl_bootstrap_credential() {
+    async fn bootstrap_rejects_missing_admin_credential() {
         assert_eq!(
             request(
                 Request::builder()
