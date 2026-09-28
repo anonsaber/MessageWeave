@@ -8,7 +8,7 @@
 >
 > **跨文档引用一律用稳定 ID**（`C-` / `NG-` / `MOD-` / `FLOW-` / `REQ-` 等），**不用章节号（§x.y）**；定义点位置与一句话说明见 [§7 跨文档引用索引](#7-跨文档引用索引表)。
 >
-> **版本基线 v3（2026-09-26，本轮 ④+⑤）：代码 `afa6cec`，文档 `399b269`（⑤ 收口）。**
+> **版本基线 v3（2026-09-26，本轮 ④+⑤，代码随 ⑥ 推进）：代码 `bfe0fd8`，文档 `399b269`（⑤ 收口）。**
 > 本轮新增 `src/debug.rs` 远程联调面与 6 个 `*DEBUG*` ID（§2 第 19 条、§5 测试清单、§7 六行），文档侧同步落位
 > `docs/deployment.md` §2.1、`docs/reference.md` §3/§4、`README` 中英双版；各文档的行号锚点以该基线为准，代码变动后须同步重锚。
 
@@ -86,9 +86,9 @@
           + `read_email` 多 part 原文拼接（`REQ-JMAP-RAW-MULTIPART`）
 阶段 2  渠道适配骨架（Channel/Notifier/MessageAdapter + 首个渠道 Telegram；CHAT_ALLOWLIST 强制 + throttle；/start /folders /list /read）
 阶段 3  发送 + 状态（send_email draft+submission；/send FSM；/flag）
-阶段 3.5 LLM 门面 + 回退（见 design.md §12.9）
+阶段 3.5 LLM 门面 + 回退（见 design.md §12.8）
 阶段 4  实时推送（Push 回调 + Redis Streams worker + 外部 Cron 对账 + sinceState→Redis）
-阶段 5  搜索 + 搜索片段 + 打磨
+阶段 5  搜索 + 搜索片段 + 打磨（搜索 + 搜索片段已完成，`bfe0fd8`，见 design.md §5.7）
 ```
 
 > **阶段门禁**：`GATE-P0`（阶段0 P0 门禁，8 项）与 `BOUND-STAGE1`（阶段1 推进边界）定义见 design.md §10.0。**未过 `GATE-P0` 不得进入阶段1**；阶段0 业务体为无副作用占位，**不应暴露公网**。**注意**：三条写路径的**入口鉴权 `R1` 已在阶段0 落地**（`SAF-AUTH-*`，fail-closed），阶段1 不再重复实现，也**禁止放宽/绕过**。

@@ -95,7 +95,7 @@ client_ws/        WebSocket 客户端（feature = "websockets"）
 | 读附件 | `Blob/get`（blobId）或 `email_parse` | 大附件需分片/流式下载 |
 | 发邮件（2 步） | ① `email_set`/`email_import` 建 draft ② `email_submission_set` 发送 | submission 关联 identityId |
 | 删除/归档 | `email_set`（keywords `$seen`/`$flagged`）、`mailbox_destroy` | JMAP 无真"删除"，靠 keyword/搬家 |
-| 搜索（未实现） | `email_query` Filter + `SearchSnippet/get` 高亮 | |
+| 搜索 | `email_query`（`Filter::text`）+ `SearchSnippet/get` 高亮 | `Filter` 是 serde 单标签枚举，**无 comparator 语法**；`SearchSnippet/get` 只返回 `emailId`/`subject`/`preview`，**无 `bodyProperties`/`parts`**，正文级高亮在锁定版本 `0.4.2` 做不到（降级为纯 ID 列表） |
 | 实时通知（Push + 对账兜底） | Push HTTPS 回调 → `StateChange`；外部 Cron 调用 `/reconcile` 使用 `Email/changes` 补差 | 需公网 HTTPS 入口（deployment.md `C-HTTPS-INBOUND`/`FLOW-NEW-MAIL`）；Push 不是唯一可靠来源 |
 | SSE / WebSocket（非目标） | `event_source` / `client_ws` | 本部署**不使用**（deployment.md `NG-POLLING-SSE`/`NG-LONG-POLLING`/`C-NO-LONG-CONN`）；仅列 crate 能力供调研 |
 
@@ -154,7 +154,7 @@ WebSocket(...)              ws 错误（feature 开启时）
 | `read_email(id, want_body)` | → `EmailBody { text, html, attachments }` | `email_get`([BodyStructure, BodyValues, BlobIds])；**多 part 原文**（`REQ-JMAP-RAW-MULTIPART`）：按 `text_body` 顺序筛选"有 `part_id` 且 `bodyValue`"的 part 后**拼接**为 `text`；若无可用部分 → 返回**明确错误**（不静默返回空串）。附件用 `Blob/get` |
 | `send_email(to, subject, body, attachments)` | → `EmailId` | ① `email_import`/`email_set` 建 draft ② `email_submission_set`(onSend) |
 | `set_flag(id, keyword)` | → () | `email_set` keywords |
-| `search(query)`（未实现） | → `Vec<EmailSummary>` | `email_query`(Filter::and[…]) + `SearchSnippet/get` |
+| `search_emails(account_id, query, limit)` | → `Result<Vec<SearchResult>, JmapError>` | `email_query`（`Filter::text`，`limit` 封顶 100）取 ID + `SearchSnippet/get` 取高亮；后者不支持（`unknownMethod`/超时）时**降级**返回空 snippets 而非报错，由调用方渲染纯 ID 列表 |
 
 > 设计要点：`email_query` 的 `anchor`+`position` 分页是 JMAP 标准做法，比传统 offset 更稳；`sinceState` + `changes` 用于增量同步，避免重复拉全量。
 
@@ -283,6 +283,19 @@ TG /read 3 → handler 取会话里的 folder+page 游标
 
 曾设计过的 5 态 FSM（`Idle` / `AwaitClarify` / `AwaitConfirm` / `Analyzing` / `AwaitFallback`）连同状态转移表与渠道中立说明，见 `docs/retired.md`。
 
+### 5.7 邮件搜索（`/search`，`bfe0fd8` 落地）
+
+`/search <关键词>` 与中文前缀 `搜索`/`查找`/`检索`（**仅前缀匹配**，避免"帮我搜一下…"被劫持成搜索）触发 `Intent::Search`，经 `JmapService::search_emails(account_id, query, limit)` 走 `email_query`(`Filter::text`) 取 ID + `SearchSnippet/get` 取 `subject`/`preview` 高亮。
+
+关键边界：
+- **高亮降级**：`SearchSnippet/get` 不支持（`unknownMethod`）或超时时返回空 snippets 而非报错；渲染降级为纯 ID 列表（`高亮片段暂不可用，以下为匹配的邮件 ID`），不发明片段。
+- **纯文本出站**：`<mark>` 高亮标记经 `strip_mark_tags`（大小写不敏感、未闭合标记丢弃）剥离后，再 `unescape_html_entities` 单趟解码；先剥标签再解码实体，防止邮箱正文里字面 `<mark>`（经服务器转义为 `&lt;mark&gt;`）被还原成真标签而误删。`subject`/`preview` 分别有 120/160 字符截断上限（`truncate_chars`，与正文截断同工具）。
+- **失败映射**：JMAP 侧失败 → `SearchReply::Retry` → `process_telegram` 返回 `Err(())` → 协调器 503 + `Retry-After` 重试（与 `/reconcile`、其他 JMAP 路径一致），**不 panic、不向用户回错误栈**。
+- **空查询**：`/search`（无关键词）→ 引导提示"请提供搜索关键词，例如：/search 发票"，不发请求。无匹配 → `没有找到匹配「…」的邮件。`。
+- **每条命中带 `email_id`**，可直接接 `/summary <email_id>` 进入 AI 摘要流程。
+- **正文级高亮在锁定版本做不到**：jmap-client `0.4.2` 的 `SearchSnippet` 只建模 `emailId`/`subject`/`preview`，无 `bodyProperties`/`parts`，按 RFC 8621 §5 的正文级 `body: String[Id]` 不被该 crate 建模且（无 `deny_unknown_fields`）被 serde 静默丢弃。每部分正文高亮需绕过 crate 直发原始 JMAP，当前不实现。
+- **无新环境变量**；缺配置时 `/search` 给友好报错。
+
 ---
 
 ## 6. 模块划分
@@ -329,12 +342,12 @@ message-weave/
 | `domain` + `domain::jmap::client` | **jmap-client 0.4.2** | JMAP 只读语义；`client` = 真实只读 adapter（`MOD-JMAP-CLIENT`） | mock JMAP 响应 + `#[ignore]` 真机测试 | 代码已实现，待真实 Stalwart 端到端验证（`cargo test -- --ignored jmap::`） |
 | `state` | redis 0.27 | Redis 读写：配置/开关/会话/TTL 键（`C-REDIS-ONLY-STATE`） | Redis mock | 已实现 |
 | `channel` | reqwest 0.13；jmap-client | `Channel` / `Notifier` / `MessageAdapter`，邮件与 TG 双渠道（事件→领域 Command；领域 Notification→渲染） | mock HTTP | 已实现（`src/channel.rs`，Telegram 为 `reqwest` 自研） |
-| `worker` | — | `parse_intent` → `Intent`，命令路由与 AI 授权判定 | 表驱动纯单测 | 已实现 |
+| `worker` | — | `parse_intent` → `Intent`（6 种，含 `Search(query)`：`/search` + `SearchSnippet/get` 高亮渲染），命令路由与 AI 授权判定 | 表驱动纯单测 | 已实现 |
 | `ai` | reqwest 0.13 | `LlmClient` / `summarize` | mock OpenAI 兼容端点 | 已实现 |
 | `notify` | axum；redis | HTTP 鉴权、全局开关、`/push/jmap` 入队、`Email/changes` 对账和游标提交 | webhook 校验失败路径覆盖 403 | 已覆盖真实对账路径；仍需真实 Stalwart 环境做端到端验收 |
 | `web` | axum | `/config` 静态页 + `include_str!` 嵌入 + CSP | 前端由 `web/config.test.mjs` 覆盖 | 已实现 |
 
-> 注：「现状」列是**模块级**口径（模块已落地），不代表行为完备。行为级缺口不在本表内：见 `docs/roadmap.md`「代码缺口」（3 条）与本文件 §10 的未排期待办。
+> 注：「现状」列是**模块级**口径（模块已落地），不代表行为完备。行为级缺口不在本表内：见 `docs/roadmap.md`「代码缺口」（2 条：多实例重复投递残余窗口、`SAF-DEBUG-ALLOWLIST`）。`worker` 模块的 `/search` 路径已随 `bfe0fd8` 落地。
 
 ---
 
@@ -397,7 +410,7 @@ message-weave/
   - `/ready` 做端到端探测：配置完整性 + Redis 可达性 + 出站只读探测（`GET {jmap_origin}/.well-known/jmap`，带配置的 Basic 认证；`GET https://api.telegram.org/bot<token>/getMe`；各 `PROBE_TIMEOUT` = 3000ms、**并行**（`tokio::join!`），最坏约 3s）；四者全过 `200` 与就绪报告（`{"status":"ready","configured":...,"jmap":...,"telegram":...}`，其中 `jmap`/`telegram` 是真实探针结果），任一失败 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`）。探针只读、只读配置状态，**不**触发邮件同步等业务副作用，也**不**回显 token 或第三方响应内容；`refresh_business_config` 仅读 Redis，无状态写入。因此 `/ready` 要求到 JMAP host 与 `api.telegram.org:443` 的出站 egress 可达（若该 egress 需要代理则 `/ready` 不可用，见 deployment.md）。
 - **chat 白名单（硬约束 `SAF-CHAT-ALLOWLIST`）**：`CHAT_ALLOWLIST` 是**必填**配置；任何入站事件（TG 命令 / 回调触发的动作）在**做任何 JMAP 调用、AI 调用或状态变更之前**，必须先校验 `chat.id ∈ CHAT_ALLOWLIST`，不在白名单则**直接拒绝并终止**（防止 token 泄露后被任意人调用）。阶段0 已完成 `CHAT_ALLOWLIST` 解析骨架；强制拒绝逻辑已随 Telegram 渠道接入落地（`src/notify.rs` 的 `telegram_webhook` 在任何 JMAP/AI/状态操作之前先校验白名单，拒绝即终止）。
 - **命令最小化**：只暴露必要命令；发邮件等写操作必须二次确认（当前未实现发信，见 §10.3）。
-- **速率**：出站侧未建本地令牌桶；Telegram 出站发送按 Redis 运行参数 `max_retries`（默认 3、上限 5）重试；当前仅对 Push 验证码写入做 Redis 限流（`ratelimit:push-verify:*`）。Telegram 服务端 30 msg/s 限制下的 429 不做专门的自动退避处理。
+- **速率**：出站侧未建本地令牌桶；Telegram 出站发送按 Redis 运行参数 `max_retries`（默认 3、上限 5）重试；当前仅对 Push 验证码写入做 Redis 限流（`ratelimit:push-verify:*`）。Telegram 服务端 30 msg/s 限制下的 429 **按 `parameters.retry_after` 秒自动退避**（`channel.rs`，`f4cae00`）：`retry_after_ms` 解析后截断到 60s 预算上限，缺该字段或非数字时回退指数退避 `backoff_delay_ms`（250ms 起、封顶 4s），整体重试预算 60s。仍不做本地令牌桶限流——超出预算直接返回失败，交由上游重试。
 
 ### 7.3.1 配置管理 API
 - `GET /` 提供嵌入 Rust 二进制的 SPA；`/assets/config.js` 与 `/assets/styles.css` 提供页面资源。服务不在运行时读取或写入本地文件（`C-NO-LOCAL-WRITE`）。
@@ -581,7 +594,7 @@ pub enum BotError {
 - `src/channel.rs` 定义 Channel / Notifier / MessageAdapter 抽象 + 领域 Command/Notification 类型。
 - Telegram 装配用 `reqwest` 直发 `https://api.telegram.org/bot{token}/sendMessage`（**未引入 teloxide**；评估记录见 `docs/retired.md`）。
 - 入站：`POST /webhook/tg` 校验 secret token → 按 `update_id` 去重（`dedup:tg:{update_id}`）→ 入 Redis Streams → 2xx；出站为 Telegram 唯一用到的 Bot API 端点。
-- 意图路由：`src/worker.rs` 的 `parse_intent` 只解析 5 种意图 —— `Help` / `Consent { ttl, label }` / `Summary(email_id)` / `Query` / `Unknown`，全部走自然语言触发词（AI 授权词见 `docs/reference.md` 的 AI 授权态一节）。
+- 意图路由：`src/worker.rs` 的 `parse_intent` 解析 6 种意图 —— `Help` / `Consent { ttl, label }` / `Summary(email_id)` / `Search(query)` / `Query` / `Unknown`，全部走自然语言触发词（AI 授权词见 `docs/reference.md` 的 AI 授权态一节）。`/search` 详见 §2.3、§5.7；中文搜索词只做**前缀匹配**（`搜索/查找/检索` + `/search`），避免覆盖授权与摘要意图。
 - 渲染在 adapter 内部：领域 Notification → TG Markdown/HTML + 转义。
 - 会话存储走外部 Redis（`C-REDIS-ONLY-STATE`；**不用 SQLite**）。
 - 验收：本地 webhook 形态，测试客户端发消息能得到回复；领域模块不导入任何渠道 SDK 类型。
@@ -624,7 +637,7 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 
 1. 读批 → 逐条 `process` → XACK。
 2. 处理中写入 `delivery:inflight`（60s）作租约；成功后写 `delivery:committed`（7d）。
-3. 崩溃于 `inflight` 租约窗口内的条目，由另一实例经 XAUTOCLAIM 回收重试（空闲阈值 = 批大小 × 单条上限 300s，**不是**固定 300s）—— 至多重复、不丢。
+3. 崩溃于 `inflight` 租约窗口内的条目，由另一实例经 XAUTOCLAIM 回收重试（空闲阈值由运行超时配置推导，公式与上下限见 `docs/reference.md` §6.3）—— 至多重复、不丢。
 4. `retry_or_dlq`（`state.rs`）：重试计数（`max_attempts.max(1)`）未到上限留在源流重试；达到上限则以**单个 Lua 脚本**原子地 `INCR`+`XADD`（入 DLQ）+`XACK`（源流确认），保证不会出现"源已 ACK 但既不在源也不在 DLQ"的缝隙。
 
 **告警边界（当前实现，见 §8.3 监控约定）**
@@ -635,14 +648,14 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 
 **已知边界（当前实现仍存在，见 `docs/roadmap.md`）**
 
-- 多实例重复投递窗口：XAUTOCLAIM 空闲阈值已由固定 300s 改为「批大小 × 单条上限 300s」；单实例不受影响，仅当单条事件处理耗时接近 300s 上限时，多实例部署下另一实例仍可能提前认领，导致**重复投递（仅重复，不丢）**。
+- 多实例重复投递窗口（**已收口，`6c99ce5`**）：XAUTOCLAIM 空闲阈值不再按固定值缩放，改由运行超时配置推导——`(max_retries + 1) × (jmap + telegram + llm 超时) × 2` 为单条上限，再乘批大小，下限 300s、上限 6h（见 `docs/reference.md` §6.3）。提前认领窗口在单实例与多实例部署下均关闭；单实例不受影响，多实例最多重复、不丢。
 
 **审计意见 → 收口（2026-09-26）**
 
 - 【应修-2】入队失败时 dedup 释放 best-effort 曾可能造成 24h 静默丢事件 → 已修复为 `claim_dedup_and_enqueue`（Lua 原子：`SET NX EX` 成功才 `XADD`），claim 与入队之间无中间失败窗口。
 - 【应修-1】`Email/changes` 依赖 `newState` 续传，`jmap-client 0.4.2` 无 `upToId` → 已改为「同 `sinceState` 下逐次翻倍 `maxChanges` 扩窗（上限 4096），仅在无法扩窗时才推进 `new_state`」，避免按页推进时漏批；`newState` 语义本身仍需真实 Stalwart 复验（见 `docs/roadmap.md`）。
 - 其余低风险项均已收口：未知 stream 的空值改为 `Err`（fail-closed，进重试/DLQ）；`push:disable` 经 `forget_push_subscription` 清理验证码摘要键；`SET NX EX` TTL 下限收紧为 `.max(1)`；XAUTOCLAIM 空闲阈值按批大小缩放；无 payload 的畸形流条目由 `ack_malformed` 经 `XACK` 移出 PEL；CSPRNG 兜底 owner-token 改为「时间 + PID + 计数器」，不再使用常量。
-- 未排期待办（阶段 5「搜索 + 搜索片段」）见 `docs/roadmap.md`「代码缺口」。
+- 未排期待办（阶段 5「搜索 + 搜索片段」）**已收口（`bfe0fd8`）**：`/search` 走 `email_query`(`Filter::text`) + `SearchSnippet/get`，高亮降级与截断上限见 §2.3、§5.7；正文级高亮在锁定版本做不到（见 §2.3 备注）。阶段 5 待办已清零。
 
 ### 10.6 总估时
 ~10.5 人日（不含等待用户确认与真实联调排障）。

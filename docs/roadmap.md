@@ -2,7 +2,7 @@
 
 > 只放**缺口**、**阻塞**与**阶段目标**。已实现能力见 `README.md`、`docs/design.md`、`docs/deployment.md`；
 > 可核对的事实（Redis 键、TTL、错误码、路由）见 `docs/reference.md`。
-> 验证基线：`afa6cec`。门禁命令见 `docs/deployment.md` 的 Gate 一节。
+> 验证基线：`bfe0fd8`。门禁命令见 `docs/deployment.md` 的 Gate 一节；当前 `GATE-P0` 全绿（62 passed / 0 failed / 1 ignored）。
 
 ## 阶段目标
 
@@ -17,11 +17,13 @@
 - **`Email/changes` 的 `newState` 语义** — 客户端已用「同 `sinceState` 翻倍 `maxChanges` 扩窗」消除按页漏批，但 `newState` 是否表示"全部待报变更之后"仍需真实 Stalwart 复验，否则停机积压边界无法判定。**阻塞原因**：无可用 Stalwart 账号/凭据。
 - **Push callback 公网映射** — 单飞锁 `lock:push-register:{sha256(callback_url)}`（360s）与映射 `push:registration:{sha256(callback_url)}`（7d）的 TTL 需真实回调时序验证。**阻塞原因**：无真实推送回调可观察。
 
-## 代码缺口（已定位，待实现）
+## 代码缺口（已定位）
 
-- **`/search` + `SearchSnippet/get` 高亮** — 未实现。`src/` 中 `SearchSnippet` / `search_snippet` 零命中，worker 的 `Intent` 枚举也无 `Search` 变体，因此该路径无法进入。设计文档中的接口表已标注「（未实现）」。
-- **Telegram 429 退避实测** — `src/channel.rs` 的 `max_retries`（默认 3，硬上限 5）不针对 Telegram 服务端 30 msg/s 限流做专门退避；429 行为无实测数据。需真实 Bot 压测后再决定是否引入指数退避。
-- **多实例重复投递窗口（残余）** — XAUTOCLAIM 空闲阈值已按批大小缩放（批大小 × 单条上限 300s）；仅当单条事件处理耗时接近 300s 上限时，多实例部署下另一实例仍可能提前认领（仅重复不丢）。单实例不受影响。
+前 3 条已实现（见各自 commit），仅 `SAF-DEBUG-ALLOWLIST` 按产品决策保留不改。真正的阻塞是真实环境依赖，见下文「阻塞」区。
+
+- **`/search` + `SearchSnippet/get` 高亮（已完成，`bfe0fd8`）** — `Intent::Search` 变体 + `JmapService::search_emails`（`email_query`(`Filter::text`) 取 ID + `SearchSnippet/get` 取高亮）；高亮经 `strip_mark_tags`/`unescape_html_entities` 渲染成 Telegram 纯文本；snippet 不支持时降级为纯 ID 列表；`subject`/`preview` 有 120/160 字符截断上限；每条命中带 `email_id` 可直接接 `/summary`。设计见 `docs/design.md` §2.3、§3.2、§5.7。
+- **Telegram 429 退避（已完成，`f4cae00`）** — `src/channel.rs` 的 `max_retries`（默认 3，硬上限 5）现在按 429 的 `Retry-After` 退避，缺该头时指数退避。
+- **多实例重复投递窗口（已完成，`6c99ce5`）** — XAUTOCLAIM 空闲阈值不再按固定 300s 单条上限缩放，改为按运行配置推导（超时预算 × 安全系数 × 批大小），单实例与多实例部署下的提前认领窗口关闭。
 - **`/debug/notify` 空白名单不拦截**（`SAF-DEBUG-ALLOWLIST`）— 白名单校验只在白名单**非空**时才生效（`src/debug.rs:232-235`），因此业务白名单未配置时 `chat_id` 可为任意值。**已定位、已文档化、本轮不改代码**：该面默认关闭且需 Bearer，且业务白名单为空时主产品本身即接受任意 chat，沿用同一语义不构成额外泄露面。若日后要收紧，需把语义改为「空白名单则拒绝」，并补单元测试、跑 `GATE-P0`。
 
 ## 验收待办

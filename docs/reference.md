@@ -3,7 +3,7 @@
 > **This file is the single source of truth for verifiable facts.**
 > When any other document disagrees with this one, this one wins.
 >
-> **Verified against commit `afa6cec`.** Line numbers in this file were read from that
+> **Verified against commit `bfe0fd8`.** Line numbers in this file were read from that
 > commit with the working tree clean.
 >
 > **Maintenance responsibility.** Any change to the public API of `src/config.rs`,
@@ -26,11 +26,11 @@ Conventions used throughout:
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `config:business` | No EX | `set_business_config` (state.rs:530, key at state.rs:534); first-time write via `SET NX` in `initialize_business_config` (state.rs:545) | `get_business_config` (state.rs:519) |
-| `config:business:revision` | No EX | atomic `INCR` on every config write (state.rs:538); `SET 1 NX` on first-time init (state.rs:558) | `business_config_revision` (state.rs:593) |
-| `config:outbound` | No EX | `set_outbound_config` (state.rs:506) | `get_outbound_config` (state.rs:490) |
-| `config:enabled` | No EX | `set_enabled` (state.rs:611) | `is_enabled` (state.rs:602) |
-| `config:admin_session` | EX 900 | `put_admin_session` (state.rs:568, key at state.rs:571) | `admin_session_valid` (state.rs:580); cleared by `revoke_admin_session` (state.rs:589) |
+| `config:business` | No EX | `set_business_config` (state.rs:576, key at state.rs:580); first-time write via `SET NX` in `initialize_business_config` (state.rs:591) | `get_business_config` (state.rs:565) |
+| `config:business:revision` | No EX | atomic `INCR` on every config write (state.rs:584); `SET 1 NX` on first-time init (state.rs:604) | `business_config_revision` (state.rs:639) |
+| `config:outbound` | No EX | `set_outbound_config` (state.rs:552) | `get_outbound_config` (state.rs:536) |
+| `config:enabled` | No EX | `set_enabled` (state.rs:657) | `is_enabled` (state.rs:648) |
+| `config:admin_session` | EX 900 | `put_admin_session` (state.rs:614, key at state.rs:617) | `admin_session_valid` (state.rs:626); cleared by `revoke_admin_session` (state.rs:635) |
 
 Notes:
 
@@ -48,13 +48,13 @@ Notes:
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `consent:ai:{chat_id}` | EX 3600 / 86_400 / 604_800 / 31_536_000 | `set_ai_consent` (state.rs:458; key at state.rs:460, `EX` at state.rs:466) | `ai_consent_until` (state.rs:472); cleared by `clear_ai_consent` (state.rs:481) |
+| `consent:ai:{chat_id}` | EX 3600 / 86_400 / 604_800 / 31_536_000 | `set_ai_consent` (state.rs:504; key at state.rs:506, `EX` at state.rs:512) | `ai_consent_until` (state.rs:518); cleared by `clear_ai_consent` (state.rs:527) |
 
 The stored value is an **absolute Unix expiry timestamp**, not a duration; the key's `EX`
-carries the same duration, so the key removes itself (state.rs:461-466).
+carries the same duration, so the key removes itself (state.rs:508-513).
 
 Trigger words are exact Chinese literals with **no English aliases** — the in-app help text
-enforces this itself (`worker.rs:569`):
+enforces this itself (`worker.rs:613`):
 
 | Input | TTL | Label |
 |---|---|---|
@@ -67,15 +67,19 @@ enforces this itself (`worker.rs:569`):
 `1小时` is a **category label, not a trigger word**: typing `1小时` alone grants nothing.
 Consent never auto-renews.
 
+The same `parse_intent` (worker.rs:522, `Intent` at worker.rs:504) routes `/search <关键词>`
+and the Chinese prefixes `搜索`, `查找`, `检索` (prefix-matched only, never a substring) to
+`Intent::Search`. Search grants no consent and writes no Redis key.
+
 ### 1.3 Delivery pipeline
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `stalwart:jmap`, `stalwart:telegram` | Stream, no EX | `State::enqueue` (state.rs:241, `XADD` at state.rs:243); call sites notify.rs:203 (TG webhook) and notify.rs:859 (JMAP push); reconcile path via `claim_dedup_and_enqueue` (worker.rs:373) | `read_batch` over consumer group `stalwart-workers`, consumer `http-worker` (notify.rs:360, :428) |
+| `stalwart:jmap`, `stalwart:telegram` | Stream, no EX | `State::enqueue` (state.rs:282, `XADD` at state.rs:284); call sites notify.rs:203 (TG webhook) and notify.rs:859 (JMAP push); reconcile path via `claim_dedup_and_enqueue` (worker.rs:373) | `read_batch` over consumer group `stalwart-workers`, consumer `http-worker` (notify.rs:360, :428) |
 | `delivery:inflight:{stream}:{id}` | EX 60 | key built at notify.rs:395, `claim_dedup` at notify.rs:396 | `release_dedup` on completion (notify.rs:409, 416, 425) |
 | `delivery:committed:{stream}:{id}` | EX 604_800 | key built at notify.rs:374, `claim_dedup` at notify.rs:408 | `dedup_exists` before send (notify.rs:375) |
-| `retry:{stream}:{id}` | EX 86_400 | `retry_or_dlq` Lua script (key state.rs:434, `INCR` state.rs:438, `EXPIRE` state.rs:439) | reclaim path |
-| `stalwart:jmap:dlq`, `stalwart:telegram:dlq` | Stream, no EX | Lua `XADD` at state.rs:441; name built at notify.rs:428 (`max_attempts` 3, same call) | **nothing in code reads it** |
+| `retry:{stream}:{id}` | EX 86_400 | `retry_or_dlq` Lua script (key state.rs:480, `INCR` state.rs:484, `EXPIRE` state.rs:485) | reclaim path |
+| `stalwart:jmap:dlq`, `stalwart:telegram:dlq` | Stream, no EX | Lua `XADD` at state.rs:487; name built at notify.rs:428 (`max_attempts` 3, same call) | **nothing in code reads it** |
 
 There is no `delivery:pending:{stream}` key — "pending" refers to the Redis Streams
 pending-entries list (PEL), which Redis maintains internally.
@@ -89,7 +93,7 @@ acknowledgement.
 
 The DLQ is **append-and-ack**: the same Lua script that appends to `stalwart:jmap:dlq` /
 `stalwart:telegram:dlq` also `XACK`s the message out of the source stream, so increment, DLQ
-append and source acknowledgement are atomic (state.rs:438-442). No code path reads the DLQ
+append and source acknowledgement are atomic (state.rs:484-488). No code path reads the DLQ
 back — replay is an operator action, not a service feature.
 
 ### 1.4 Idempotency and rate limits
@@ -99,7 +103,7 @@ back — replay is an operator action, not a service feature.
 | `dedup:tg:{update_id}` | EX 86_400 | key at notify.rs:198, `claim_dedup` at notify.rs:199, `release_dedup` at :208 | — |
 | `dedup:jmap:{account}:{email}` | EX 86_400 | key at notify.rs:854, `claim_dedup` at notify.rs:855, `release_dedup` at :864; same key rebuilt at worker.rs:360 and claimed with `claim_dedup_and_enqueue` at worker.rs:373 | — |
 | `ratelimit:push-verify:{subscription}` | EX 30 | key at notify.rs:815, `claim_dedup` at notify.rs:816 (`push_verify_rate_limited` at :819) | — |
-| `state:jmap:since` | **No EX** | `set_reconcile_state` (state.rs:629; key at state.rs:632, `SET` without `EX`) | `get_reconcile_state` (state.rs:621) |
+| `state:jmap:since` | **No EX** | `set_reconcile_state` (state.rs:675; key at state.rs:678, `SET` without `EX`) | `get_reconcile_state` (state.rs:667) |
 
 `state:jmap:since` is the only state key that survives indefinitely without an explicit
 delete, by design: it is the reconciliation cursor, and expiring it would force a full
@@ -123,11 +127,11 @@ duplicate. Source comment, notify.rs:904-905:
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `push:subscription:{id}` | EX 300 (caller-supplied, min 1) | `remember_push_subscription` (state.rs:639, called at notify.rs:833) | `push_subscription_verified` (state.rs:663) |
-| `push:subscription:id` | No EX | `remember_push_subscription_id` (state.rs:672) | current-subscription lookup |
-| `push:subscription:{id}:status` | 900 / 300 / 86_400 (min 1 enforced) | `set_push_subscription_status` (state.rs:679, key at state.rs:687); pending at notify.rs:960, verified at notify.rs:845, disabled at notify.rs:1031 | **none** |
-| `push:registration:{sha256(callback_url)}` | EX 604_800 | `remember_push_subscription_for_callback` (state.rs:732, key at state.rs:739, `EX` at state.rs:742; called at notify.rs:977) | `get_push_subscription_for_callback` (state.rs:721); removed by `remove_push_subscription_for_callback` (state.rs:748) |
-| `push:orphan:{subscription_id}` | EX 604_800 | `record_push_orphan` (state.rs:712) | orphan sweep |
+| `push:subscription:{id}` | EX 300 (caller-supplied, min 1) | `remember_push_subscription` (state.rs:685, called at notify.rs:833) | `push_subscription_verified` (state.rs:702) |
+| `push:subscription:id` | No EX | `remember_push_subscription_id` (state.rs:715) | current-subscription lookup |
+| `push:subscription:{id}:status` | 900 / 300 / 86_400 (min 1 enforced) | `set_push_subscription_status` (state.rs:725, key at state.rs:733); pending at notify.rs:960, verified at notify.rs:845, disabled at notify.rs:1031 | **none** |
+| `push:registration:{sha256(callback_url)}` | EX 604_800 | `remember_push_subscription_for_callback` (state.rs:778, key at state.rs:785, `EX` at state.rs:787; called at notify.rs:977) | `get_push_subscription_for_callback` (state.rs:767); removed by `remove_push_subscription_for_callback` (state.rs:794) |
+| `push:orphan:{subscription_id}` | EX 604_800 | `record_push_orphan` (state.rs:751) | orphan sweep |
 
 **Two distinct keys that are frequently confused. Read this before editing either.**
 
@@ -139,7 +143,7 @@ duplicate. Source comment, notify.rs:904-905:
 They use the same digest but are separate keys with unrelated lifetimes and purposes.
 
 **Annotation: `push:subscription:{id}:status` is write-only by design.**
-The source carries an explicit note at state.rs:169:
+The source carries an explicit note at state.rs:210:
 
 > `push:subscription:{id}:status` is currently write-only
 
@@ -358,7 +362,7 @@ endpoint.
 | `jmap_timeout_ms` | 15_000 | 100..=300_000 | default state.rs:55; validated notify.rs:411 |
 | `telegram_timeout_ms` | 10_000 | 100..=300_000 | default state.rs:56; validated notify.rs:412 |
 | `llm_timeout_ms` | 30_000 | 100..=300_000 | default state.rs:57; validated notify.rs:413 |
-| `max_retries` | 3 | hard cap 5 | default state.rs:58; rejected at notify.rs:414; re-clamped at channel.rs:87 |
+| `max_retries` | 3 | hard cap 5 | default state.rs:58; rejected at notify.rs:414; re-clamped at channel.rs:138 |
 
 There is **no** `LLM_MAX_RETRIES` environment variable; retry count lives in
 `config:outbound` and is bounded at 5 regardless of what is written.
@@ -377,7 +381,24 @@ There is **no** `LLM_MAX_RETRIES` environment variable; retry count lives in
 
 ### 6.3 Idle threshold
 
-XAUTOCLAIM's idle threshold is **batch size × 300 s**, not a fixed 300 s.
+XAUTOCLAIM's idle threshold is derived from the live outbound config (state.rs:98):
+
+```
+count × (max_retries + 1) × (jmap_timeout_ms + telegram_timeout_ms + llm_timeout_ms) × 2
+```
+
+floored at the legacy 300 s single-event ceiling (state.rs:65) and capped at 6 h
+(state.rs:75). The floor is also the fallback when the config cannot be read, so a
+Redis hiccup never collapses the window. Only duplicate-on-multi-instance is at
+stake, never loss.
+
+### 6.4 Search limits
+
+| Constant | Value | Source |
+|---|---|---|
+| `SEARCH_LIMIT` | 10 | worker.rs:618 |
+| `SEARCH_SUBJECT_MAX` | 120 chars | worker.rs:620 |
+| `SEARCH_PREVIEW_MAX` | 160 chars | worker.rs:622 |
 
 ---
 
@@ -410,10 +431,12 @@ and only `script-src`, `style-src` and `connect-src` re-open a same-origin chann
 
 Recorded here so that references elsewhere cannot be mistaken for shipped features.
 
-- `/search` is not implemented. `SearchSnippet` and `search_snippet` have zero occurrences in
-  `src/`.
-- There is no `Search` variant in the worker's `Intent` enum, so the search path cannot be
-  entered even indirectly.
+- `/search` **is** implemented (`bfe0fd8`, `worker.rs` / `jmap_service.rs`). What is *not*
+  possible: **body-level** snippets. jmap-client `0.4.2` only exposes `emailId`/`subject`/
+  `preview` from `SearchSnippet/get`, and its `Filter` type has no comparator syntax, so
+  per-part body highlight cannot be modelled through the locked crate. Search degrades to
+  `subject`/`preview` highlights plus a pure-ID list when snippets are unsupported. Design
+  note in `docs/design.md` §5.7.
 - The Cloudflare Worker contains no Rust: `cloudflare-worker/src/` holds only `index.js`,
   `lb.js`, `backends.js` and `health.js`. Any `*.rs` path written under `cloudflare-worker/`
   is a documentation error, not a source file.
