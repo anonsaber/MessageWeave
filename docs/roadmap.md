@@ -2,7 +2,7 @@
 
 > 只放**缺口**、**阻塞**与**阶段目标**。已实现能力见 `README.md`、`docs/design.md`、`docs/deployment.md`；
 > 可核对的事实（Redis 键、TTL、错误码、路由）见 `docs/reference.md`。
-> 验证基线：`bfe0fd8`。门禁命令见 `docs/deployment.md` 的 Gate 一节；当前 `GATE-P0` 全绿（62 passed / 0 failed / 1 ignored）。
+> 验证基线：`b70d188`。门禁命令见 `docs/deployment.md` 的 Gate 一节；当前 `GATE-P0` 全绿（62 passed / 0 failed / 1 ignored）。
 
 ## 阶段目标
 
