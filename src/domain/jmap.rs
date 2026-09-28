@@ -66,6 +66,25 @@ pub struct EmailChanges {
     pub has_more: bool,
 }
 
+/// Highlighted RFC 8621 `SearchSnippet/get` fragment for one email. Values
+/// carry the server's highlight markup (`<mark>`); the boundary passes them
+/// through untouched and the presentation layer must sanitize before display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchSnippet {
+    pub email_id: String,
+    pub subject: Option<String>,
+    pub preview: Option<String>,
+}
+
+/// Bounded search outcome: matched ids in server order plus any snippets the
+/// server produced. `snippets` is empty when `Email/query` succeeded but
+/// `SearchSnippet/get` was unavailable; ids remain the authoritative result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResult {
+    pub ids: Vec<String>,
+    pub snippets: Vec<SearchSnippet>,
+}
+
 #[async_trait]
 pub trait JmapBackend: Send + Sync {
     async fn create_push_subscription(&self, callback_url: &str) -> Result<String, JmapError>;
@@ -109,6 +128,17 @@ pub trait JmapBackend: Send + Sync {
         account_id: &str,
         email_id: &str,
     ) -> Result<Option<EmailContent>, JmapError>;
+    /// Bounded RFC 8621 `Email/query` text search across the mailbox. The
+    /// result set must be capped at `limit`; implementations must not fall
+    /// back to a full-mailbox scan. Snippet retrieval is best-effort —
+    /// `SearchSnippet/get` failure degrades to ids-only, `Email/query` failure
+    /// propagates as an error.
+    async fn search_emails(
+        &self,
+        account_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<SearchResult, JmapError>;
 }
 
 /// Single-account service. `long_email_limit` only annotates output; it never
@@ -234,6 +264,19 @@ impl<B: JmapBackend> JmapService<B> {
         content.is_long = content.character_count > self.long_email_limit;
         Ok(Some(content))
     }
+
+    pub async fn search_emails(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<SearchResult, JmapError> {
+        if query.trim().is_empty() || limit == 0 {
+            return Err(JmapError::InvalidRequest("search query"));
+        }
+        self.backend
+            .search_emails(&self.account_id, query, limit)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -332,6 +375,22 @@ mod tests {
                 is_long: false,
             }))
         }
+        async fn search_emails(
+            &self,
+            account_id: &str,
+            query: &str,
+            limit: usize,
+        ) -> Result<SearchResult, JmapError> {
+            assert_eq!((account_id, query, limit), ("account-1", "hello", 10));
+            Ok(SearchResult {
+                ids: vec!["email-1".into()],
+                snippets: vec![SearchSnippet {
+                    email_id: "email-1".into(),
+                    subject: Some("<mark>hello</mark>".into()),
+                    preview: Some("say <mark>hello</mark> now".into()),
+                }],
+            })
+        }
     }
 
     #[tokio::test]
@@ -346,6 +405,27 @@ mod tests {
         assert_eq!(email.text, "原文内容");
         assert_eq!(email.character_count, 4);
         assert!(email.is_long);
+    }
+
+    #[tokio::test]
+    async fn service_search_passes_bounded_query_through() {
+        let service = JmapService::new(MockBackend, "account-1").unwrap();
+        let result = service.search_emails("hello", 10).await.unwrap();
+        assert_eq!(result.ids, vec!["email-1"]);
+        assert_eq!(result.snippets.len(), 1);
+        assert_eq!(
+            result.snippets[0].subject.as_deref(),
+            Some("<mark>hello</mark>")
+        );
+    }
+
+    #[tokio::test]
+    async fn service_rejects_invalid_search_input() {
+        let service = JmapService::new(MockBackend, "account-1").unwrap();
+        let err = service.search_emails("   ", 10).await.unwrap_err();
+        assert!(matches!(err, JmapError::InvalidRequest("search query")));
+        let err = service.search_emails("hello", 0).await.unwrap_err();
+        assert!(matches!(err, JmapError::InvalidRequest("search query")));
     }
 
     #[test]

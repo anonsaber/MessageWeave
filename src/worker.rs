@@ -2,7 +2,7 @@
 use crate::ai::LlmClient;
 use crate::channel::telegram::TelegramClient;
 use crate::config::BusinessConfig;
-use crate::domain::jmap::{JmapBackend, JmapService};
+use crate::domain::jmap::{JmapBackend, JmapService, SearchResult};
 use crate::domain::Notification;
 use crate::state::ReliableState;
 use async_trait::async_trait;
@@ -392,6 +392,9 @@ impl<B: JmapBackend> MetadataWorker<B> {
                 .await
                 .map_err(|_| ());
         }
+        if let Intent::Search(query) = &intent {
+            return self.handle_search(message.chat.id, query).await;
+        }
         if let Intent::Consent { ttl, label } = &intent {
             if *ttl == 0 {
                 self.state
@@ -462,6 +465,29 @@ impl<B: JmapBackend> MetadataWorker<B> {
             .await
             .map_err(|_| ())
     }
+
+    async fn handle_search(&self, chat_id: i64, query: &str) -> Result<(), ()> {
+        let query = query.trim();
+        if query.is_empty() {
+            return self
+                .telegram
+                .send_text(chat_id, "请提供搜索关键词，例如：/search 发票")
+                .await
+                .map_err(|_| ());
+        }
+        let result = self.jmap.search_emails(query, SEARCH_LIMIT).await;
+        match search_reply(result.as_ref().map_err(|_| ()), query, SEARCH_LIMIT) {
+            SearchReply::Text(reply) => self
+                .telegram
+                .send_text(chat_id, &reply)
+                .await
+                .map_err(|_| ()),
+            // Hard JMAP failure: propagate so the coordinator answers
+            // 503 + Retry-After and the event is retried; never send an
+            // error stack to the user.
+            SearchReply::Retry => Err(()),
+        }
+    }
 }
 
 fn fallback(body: &str) -> String {
@@ -480,6 +506,7 @@ enum Intent {
     Consent { ttl: u64, label: &'static str },
     Summary(String),
     Query,
+    Search(String),
     Unknown,
 }
 
@@ -493,9 +520,27 @@ impl Intent {
 }
 
 fn parse_intent(input: &str) -> Intent {
-    let text = input.trim().to_ascii_lowercase();
+    let input = input.trim();
+    let text = input.to_ascii_lowercase();
     if text == "/help" || text == "help" || text.contains("帮助") || text.contains("怎么用") {
         return Intent::Help;
+    }
+    // `/search <query>`: the remainder is the whole query, read back from the
+    // sender's original casing so the JMAP filter and the echoed reply keep
+    // their capitalisation. A bare `/search` maps to Search("") so the handler
+    // can ask for keywords; `/searchx` is not a command and falls through.
+    if let Some(rest) = input.strip_prefix("/search") {
+        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+            return Intent::Search(rest.trim().to_owned());
+        }
+    }
+    // The Chinese equivalents are also prefix-matched: matching a keyword
+    // anywhere in the sentence would turn "帮我搜一下发票" into a search for
+    // "一下发票" and hijack consent and summary requests.
+    for keyword in ["搜索", "查找", "检索"] {
+        if let Some(rest) = input.strip_prefix(keyword) {
+            return Intent::Search(rest.trim().to_owned());
+        }
     }
     if text.contains("临时") || text.contains("一次") {
         return Intent::Consent {
@@ -566,7 +611,159 @@ fn parse_intent(input: &str) -> Intent {
 }
 
 fn help_message() -> &'static str {
-    "使用说明：\n邮件到达后会先发送发件人、主题和时间等元数据通知。\n\n授权示例（请按原文中文输入，不支持英文别名）：\n1小时：/ai on、临时一次、临时、一次\n今天：今天\n7天：7天\n直到我撤销（最长365天）：直到我撤销、长期\n撤销授权：/ai off、关闭 ai、撤销授权、停止摘要\n/summary <email_id>：请求指定邮件摘要；未授权或授权到期时只返回元数据并提示重新授权。\n/help（或 help）：显示本说明。\n\n隐私：AI 默认关闭，只有你明确开启后才会发送正文；授权有期限且不会自动续期；正文和 AI 结果不会持久化，也不会写入日志。\n如果未配置 AI 或 AI 调用失败，将回退为本地截取摘要。"
+    "使用说明：\n邮件到达后会先发送发件人、主题和时间等元数据通知。\n\n授权示例（请按原文中文输入，不支持英文别名）：\n1小时：/ai on、临时一次、临时、一次\n今天：今天\n7天：7天\n直到我撤销（最长365天）：直到我撤销、长期\n撤销授权：/ai off、关闭 ai、撤销授权、停止摘要\n/summary <email_id>：请求指定邮件摘要；未授权或授权到期时只返回元数据并提示重新授权。\n/search <关键词>：搜索邮件主题与正文，返回带高亮片段的匹配列表（最多 10 条）。\n/help（或 help）：显示本说明。\n\n隐私：AI 默认关闭，只有你明确开启后才会发送正文；授权有期限且不会自动续期；正文和 AI 结果不会持久化，也不会写入日志。\n如果未配置 AI 或 AI 调用失败，将回退为本地截取摘要。"
+}
+
+/// Upper bound on how many matching emails one `/search` reply lists.
+const SEARCH_LIMIT: usize = 10;
+/// Upper bound on characters of a snippet subject shown per result.
+const SEARCH_SUBJECT_MAX: usize = 120;
+/// Upper bound on characters of a snippet preview shown per result.
+const SEARCH_PREVIEW_MAX: usize = 160;
+
+enum SearchReply {
+    Text(String),
+    Retry,
+}
+
+/// Decide what to do with a search outcome without touching the network, so
+/// the mapping is unit-testable: any hard failure becomes `Retry` (surfaced
+/// as 503 + Retry-After by the coordinator), everything else renders to text.
+fn search_reply(result: Result<&SearchResult, ()>, query: &str, limit: usize) -> SearchReply {
+    match result {
+        Ok(result) => SearchReply::Text(render_search_results(result, query, limit)),
+        Err(()) => SearchReply::Retry,
+    }
+}
+
+/// Render a search outcome as a plain-text Telegram reply. Highlight tags are
+/// stripped (see [`strip_mark_tags`]) and subject/preview are truncated.
+fn render_search_results(result: &SearchResult, query: &str, limit: usize) -> String {
+    if result.ids.is_empty() {
+        return format!("没有找到匹配「{query}」的邮件。");
+    }
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!(
+        "搜索「{query}」：共 {} 封匹配邮件",
+        result.ids.len()
+    ));
+    if result.snippets.is_empty() {
+        // SearchSnippet/get was unavailable: degrade to ids, never invent
+        // fragments.
+        lines.push("（高亮片段暂不可用，以下为匹配的邮件 ID）".to_owned());
+        for id in result.ids.iter().take(limit) {
+            lines.push(format!("- {id}"));
+        }
+        return lines.join("\n");
+    }
+    for snippet in result.snippets.iter().take(limit) {
+        let subject = truncate_chars(
+            &snippet
+                .subject
+                .as_deref()
+                .map(clean_snippet)
+                .unwrap_or_else(|| "（无主题）".to_owned()),
+            SEARCH_SUBJECT_MAX,
+        );
+        let preview = truncate_chars(
+            &snippet
+                .preview
+                .as_deref()
+                .map(clean_snippet)
+                .unwrap_or_default(),
+            SEARCH_PREVIEW_MAX,
+        );
+        let id = snippet.email_id.as_str();
+        // The id is what makes a hit actionable: without it the user cannot
+        // follow up with `/summary <email_id>`.
+        if preview.is_empty() {
+            lines.push(format!("- {subject}（{id}）"));
+        } else {
+            lines.push(format!("- {subject}（{id}）\n  {preview}"));
+        }
+    }
+    lines.join("\n")
+}
+
+/// Strip RFC 8621 `<mark>`/`</mark>` highlight tags so a snippet value can be
+/// sent to Telegram as plain text. Byte offsets are safe because
+/// `to_ascii_lowercase` preserves string length.
+fn strip_mark_tags(input: &str) -> String {
+    const OPEN: &str = "<mark>";
+    const CLOSE: &str = "</mark>";
+    let mut output = String::with_capacity(input.len());
+    let mut remainder = input;
+    while let Some(start) = remainder.to_ascii_lowercase().find(OPEN) {
+        output.push_str(&remainder[..start]);
+        remainder = &remainder[start + OPEN.len()..];
+        match remainder.to_ascii_lowercase().find(CLOSE) {
+            Some(end) => {
+                output.push_str(&remainder[..end]);
+                remainder = &remainder[end + CLOSE.len()..];
+            }
+            None => {
+                output.push_str(remainder);
+                return output;
+            }
+        }
+    }
+    output.push_str(remainder);
+    output
+}
+
+/// Decode the HTML entities RFC 8621 §5 puts around snippet text, so an email
+/// containing `&&` or `a < b` is not echoed back as `&amp;&amp;`. The pass is
+/// strictly left-to-right, so `&amp;lt;` stays the literal text `&lt;` instead
+/// of being decoded twice.
+fn unescape_html_entities(input: &str) -> String {
+    const ENTITIES: [(&str, &str); 6] = [
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&#39;", "'"),
+        ("&apos;", "'"),
+        ("&amp;", "&"),
+    ];
+    let mut output = String::with_capacity(input.len());
+    let mut remainder = input;
+    while let Some(entity) = remainder.find('&') {
+        let (head, tail) = remainder.split_at(entity);
+        output.push_str(head);
+        let mut decoded = false;
+        for (name, replacement) in ENTITIES {
+            if let Some(next) = tail.strip_prefix(name) {
+                output.push_str(replacement);
+                remainder = next;
+                decoded = true;
+                break;
+            }
+        }
+        if !decoded {
+            output.push('&');
+            remainder = &tail[1..];
+        }
+    }
+    output.push_str(remainder);
+    output
+}
+
+/// Clean one RFC 8621 §5 snippet value for Telegram plain text. Tags are
+/// stripped before entities are decoded: the server escapes angle brackets too,
+/// so a literal `<mark>` in the email arrives as `&lt;mark&gt;`, and decoding
+/// first would turn that into a real tag and erase the user's text.
+fn clean_snippet(input: &str) -> String {
+    unescape_html_entities(&strip_mark_tags(input))
+}
+
+/// Truncate to at most `max_chars` characters (by char, not byte), adding an
+/// ellipsis when anything was cut.
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_owned();
+    }
+    let cut: String = text.chars().take(max_chars).collect();
+    format!("{cut}…")
 }
 
 #[derive(serde::Deserialize)]
@@ -587,12 +784,24 @@ struct TelegramChat {
 
 #[cfg(test)]
 mod tests {
-    use super::{help_message, parse_intent, Intent};
+    use crate::domain::jmap::SearchSnippet;
+
+    use super::{
+        help_message, parse_intent, render_search_results, search_reply, strip_mark_tags,
+        truncate_chars, unescape_html_entities, Intent, SearchReply, SearchResult,
+        SEARCH_PREVIEW_MAX, SEARCH_SUBJECT_MAX,
+    };
 
     #[test]
     fn help_is_safe_and_actionable() {
         let text = help_message();
-        for command in ["/ai on", "/ai off", "/summary <email_id>", "/help"] {
+        for command in [
+            "/ai on",
+            "/ai off",
+            "/summary <email_id>",
+            "/search <关键词>",
+            "/help",
+        ] {
             assert!(text.contains(command));
         }
         assert!(text.contains("默认关闭"));
@@ -631,6 +840,128 @@ mod tests {
             Intent::Summary("e-123".into())
         );
         assert_eq!(parse_intent("查询邮件"), Intent::Query);
+        // /search keeps the sender's casing and consumes the whole remainder.
+        assert_eq!(
+            parse_intent("/search Invoice Q3"),
+            Intent::Search("Invoice Q3".into())
+        );
+        assert_eq!(parse_intent("/search"), Intent::Search(String::new()));
+        // Bare-word queries: the keyword must lead the sentence, so that
+        // "帮我搜一下发票" is not searched as "一下发票" and consent phrases
+        // containing a later keyword stay consent intents.
+        assert_eq!(
+            parse_intent("搜索发票 报销"),
+            Intent::Search("发票 报销".into())
+        );
+        assert_eq!(
+            parse_intent("查找 e-1 的摘要"),
+            Intent::Search("e-1 的摘要".into())
+        );
+        assert_eq!(parse_intent("帮我搜一下发票"), Intent::Unknown);
+        assert!(matches!(
+            parse_intent("同意一次搜索摘要"),
+            Intent::Consent { ttl: 3600, .. }
+        ));
+        assert_eq!(parse_intent("/searchx abc"), Intent::Unknown);
+    }
+
+    #[test]
+    fn strip_mark_tags_handles_case_mixed_and_unmatched_pairs() {
+        assert_eq!(
+            strip_mark_tags("<mark>invoice</mark> by friday"),
+            "invoice by friday"
+        );
+        assert_eq!(strip_mark_tags("<MARK>a</MARK> <Mark>b</Mark>"), "a b");
+        // An unmatched opener is dropped rather than emitted, so no raw markup
+        // can reach Telegram.
+        assert_eq!(strip_mark_tags("<mark>"), "");
+        assert_eq!(strip_mark_tags("<mark>hello"), "hello");
+        assert_eq!(strip_mark_tags("a & <b> not a mark"), "a & <b> not a mark");
+        assert_eq!(strip_mark_tags(""), "");
+    }
+
+    #[test]
+    fn unescape_html_entities_decodes_a_single_pass() {
+        assert_eq!(
+            unescape_html_entities("A &lt; B &gt; C &quot;pay&quot; &#39;now&#39;"),
+            "A < B > C \"pay\" 'now'"
+        );
+        assert_eq!(unescape_html_entities("Tom &amp; Jerry"), "Tom & Jerry");
+        // A lone ampersand and a partially escaped entity must not mangle the text.
+        assert_eq!(unescape_html_entities("100% & ok"), "100% & ok");
+        assert_eq!(unescape_html_entities("&amp;lt;"), "&lt;");
+        assert_eq!(unescape_html_entities(""), "");
+    }
+
+    #[test]
+    fn search_reply_maps_failures_to_retry_and_renders_outcomes() {
+        assert!(matches!(
+            search_reply(Err(()), "发票", 10),
+            SearchReply::Retry
+        ));
+        assert!(matches!(
+            search_reply(Ok(&SearchResult { ids: vec![], snippets: vec![] }), "发票", 10),
+            SearchReply::Text(text) if text.contains("没有找到匹配")
+        ));
+        assert!(matches!(
+            search_reply(
+                Ok(&SearchResult { ids: vec!["e-1".into()], snippets: vec![] }),
+                "发票",
+                10
+            ),
+            SearchReply::Text(text) if text.contains("e-1")
+        ));
+    }
+
+    #[test]
+    fn render_search_results_strips_highlights_and_degrades_to_ids() {
+        let result = SearchResult {
+            ids: vec!["e-1".into(), "e-2".into()],
+            snippets: vec![
+                SearchSnippet {
+                    subject: Some("<mark>invoice</mark> Q3".into()),
+                    preview: Some("pay &lt;100&gt; &amp; send".into()),
+                    email_id: "e-1".into(),
+                },
+                SearchSnippet {
+                    subject: None,
+                    preview: None,
+                    email_id: "e-2".into(),
+                },
+            ],
+        };
+        let text = render_search_results(&result, "invoice", 2);
+        assert!(!text.contains("<mark>"));
+        assert!(text.contains("invoice Q3"));
+        assert!(text.contains("pay <100> & send"));
+        assert!(text.contains("（e-2）"));
+        assert!(text.contains("（无主题）"));
+
+        let ids_only = SearchResult {
+            ids: vec!["e-9".into()],
+            snippets: vec![],
+        };
+        let ids_text = render_search_results(&ids_only, "发票", 2);
+        assert!(ids_text.contains("e-9"));
+        assert!(ids_text.contains("高亮片段暂不可用"));
+    }
+
+    #[test]
+    fn render_search_results_truncates_oversized_fields() {
+        let result = SearchResult {
+            ids: vec!["e-1".into()],
+            snippets: vec![SearchSnippet {
+                subject: Some("s".repeat(300)),
+                preview: Some("p".repeat(300)),
+                email_id: "e-1".into(),
+            }],
+        };
+        let text = render_search_results(&result, "q", 10);
+        assert!(text.contains("…"));
+        // Neither field may survive the cap: the raw 300-char runs are gone.
+        assert!(!text.contains(&"s".repeat(SEARCH_SUBJECT_MAX + 1)));
+        assert!(!text.contains(&"p".repeat(SEARCH_PREVIEW_MAX + 1)));
+        assert!(text.contains(&truncate_chars(&"s".repeat(300), SEARCH_SUBJECT_MAX)));
     }
 }
 

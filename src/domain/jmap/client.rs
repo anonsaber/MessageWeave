@@ -1,6 +1,9 @@
 //! Concrete read-only adapter (MOD-JMAP-CLIENT, GATE-G1-JMAP-READONLY).
 
-use super::{EmailChanges, EmailContent, EmailMetadata, Folder, JmapBackend, JmapError};
+use super::{
+    EmailChanges, EmailContent, EmailMetadata, Folder, JmapBackend, JmapError, SearchResult,
+    SearchSnippet,
+};
 use crate::state::{runtime_provider, OutboundConfig, RuntimeConfigProvider};
 use async_trait::async_trait;
 use jmap_client::{email, mailbox, DataType, Get};
@@ -309,6 +312,51 @@ impl JmapBackend for JmapClientBackend {
             is_long: false,
             text,
         }))
+    }
+
+    async fn search_emails(
+        &self,
+        account_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<SearchResult, JmapError> {
+        if account_id != self.account_id || limit == 0 || query.trim().is_empty() {
+            return Err(JmapError::InvalidRequest("email search"));
+        }
+        // JMAP caps a single Email/query page; a bounded search never pages,
+        // so clamp instead of issuing a follow-up position request.
+        let limit = limit.min(100);
+        let filter = email::query::Filter::text(query);
+        let mut request = self.client.build();
+        let email_query = request.query_email();
+        email_query.filter(filter.clone()).position(0).limit(limit);
+        let mut response = tokio::time::timeout(self.timeout(), request.send_query_email())
+            .await
+            .map_err(|_| JmapError::Timeout)??;
+        let mut ids = response.take_ids();
+        ids.truncate(limit);
+        // Snippets are display-only: when the server cannot answer
+        // SearchSnippet/get (e.g. `unknownMethod`) we still return the matched
+        // ids so the caller can degrade to a result list without highlights.
+        let snippets = match tokio::time::timeout(
+            self.timeout(),
+            self.client
+                .search_snippet_get(Some(filter), ids.iter().cloned()),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response
+                .list()
+                .iter()
+                .map(|snippet| SearchSnippet {
+                    email_id: snippet.email_id().to_owned(),
+                    subject: snippet.subject().map(str::to_owned),
+                    preview: snippet.preview().map(str::to_owned),
+                })
+                .collect(),
+            Ok(Err(_)) | Err(_) => Vec::new(),
+        };
+        Ok(SearchResult { ids, snippets })
     }
 }
 
