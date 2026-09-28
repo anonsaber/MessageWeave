@@ -64,17 +64,81 @@ async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
+/// Probe budget for readiness checks. Kept short so `/ready` fails fast instead of holding an
+/// upstream connection open (no long-lived connections).
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(3_000);
+
+/// Read the cached runtime configuration without holding the lock guard across an await.
+/// Callers refresh the cache first so this never reports a stale view.
+fn cached_jmap_session_url(app: &AppState) -> Option<String> {
+    app.business_runtime
+        .read()
+        .ok()?
+        .as_ref()
+        .map(|config| config.jmap_session_url.clone())
+}
+
+fn cached_bot_token(app: &AppState) -> Option<secrecy::SecretString> {
+    app.business_runtime
+        .read()
+        .ok()?
+        .as_ref()
+        .map(|config| config.bot_token.clone())
+}
+
+/// End-to-end JMAP session probe: the configured session URL must answer with a 2xx.
+/// Reusable by the remote debug surface so readiness and debugging share one implementation.
+async fn probe_jmap_session(app: &AppState) -> Result<(), &'static str> {
+    let Some(session_url) = cached_jmap_session_url(app) else {
+        return Err("jmap session url not configured");
+    };
+    let request = reqwest::Client::new().get(session_url).send();
+    match tokio::time::timeout(PROBE_TIMEOUT, request).await {
+        Ok(Ok(response)) => response
+            .error_for_status()
+            .map(|_| ())
+            .map_err(|_| "jmap session probe failed"),
+        Ok(Err(_)) => Err("jmap session probe failed"),
+        Err(_) => Err("jmap session probe timed out"),
+    }
+}
+
+/// End-to-end Telegram probe: `getMe` must answer with a 2xx. The bot token is used to build the
+/// request URL only; it is never logged, echoed, or returned (SAF-NO-SECRET-ECHO).
+async fn probe_telegram_get_me(app: &AppState) -> Result<(), &'static str> {
+    let Some(token) = cached_bot_token(app) else {
+        return Err("telegram bot token not configured");
+    };
+    let request = reqwest::Client::new()
+        .get(format!(
+            "https://api.telegram.org/bot{}/getMe",
+            token.expose_secret()
+        ))
+        .send();
+    match tokio::time::timeout(PROBE_TIMEOUT, request).await {
+        Ok(Ok(response)) => response
+            .error_for_status()
+            .map(|_| ())
+            .map_err(|_| "telegram get_me probe failed"),
+        Ok(Err(_)) => Err("telegram get_me probe failed"),
+        Err(_) => Err("telegram get_me probe timed out"),
+    }
+}
+
 async fn ready(State(app): State<AppState>) -> Response {
     let configured = app.setup_missing.is_empty();
     let redis = app.state.is_enabled().await.is_ok();
-    if configured && redis {
+    refresh_business_config(&app).await;
+    let jmap = probe_jmap_session(&app).await.is_ok();
+    let telegram = probe_telegram_get_me(&app).await.is_ok();
+    if configured && redis && jmap && telegram {
         axum::Json(serde_json::json!({
             "status": "ready",
             "configured": configured,
             "redis": redis,
-            "jmap": configured,
+            "jmap": jmap,
             "push": configured,
-            "telegram": configured,
+            "telegram": telegram,
         }))
         .into_response()
     } else {
