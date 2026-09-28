@@ -1,7 +1,7 @@
 /**
  * Cloudflare Worker 入口 — MessageWeave 多实例 LB/HA（ARCH-LB-WORKER / deployment.md §10）。
  *
- * 稳定 ID（AGENTS.md §5/§7）：
+ * 稳定 ID（docs/charter.md §3 安全边界；注册表 §8）：
  * - SAF-LB-PASSTHRU：透传 headers/body（含鉴权头），不做鉴权改写。
  * - C-HTTPS-INBOUND：仅 https 后端 origin。
  * - ARCH-LB-WORKER / C-LB-SINGLE-REG-URL：safelist 路由，未知路径 404、method 不符 405。

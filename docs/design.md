@@ -6,10 +6,11 @@
 > 目标读者：Codex CLI（lead）、后续 AI coding agent、最终用户评审
 >
 > **相关文档**（职责分离，避免重复堆砌）：
-> - [AGENTS.md](../AGENTS.md) — 给后续 AI coding agent 的硬性安全边界、实现顺序、禁止事项、测试验收与文档引用关系
+> - [docs/charter.md](charter.md) — 项目章程：项目目标、技术选型、安全不变量、实现阶段、禁止事项、测试验收与稳定 ID 注册表
+> - [AGENTS.md](../AGENTS.md) — 通用、语言无关的代码编写与环境构建规范（不含项目专属内容）
 > - [docs/deployment.md](deployment.md) — 部署运维与发布：通用 HTTPS-only Docker 容器、Secrets、Redis（状态唯一载体）、短请求 Webhook/Push/对账路由、健康检查、CI 发布与仍需确认项
 >
-> 本文档只保留与**产品行为、代码架构、模块接口、状态机、数据流、错误处理、测试和实施阶段**直接相关的内容。部署运维、Docker/通用容器平台细节与给 coding agent 的通用操作指令已分别移至 `deployment.md` 与 `AGENTS.md`。
+> 本文档只保留与**产品行为、代码架构、模块接口、状态机、数据流、错误处理、测试和实施阶段**直接相关的内容。部署运维与 Docker/通用容器平台细节已移至 `deployment.md`；项目约束与安全不变量在 `docs/charter.md`；通用、语言无关的代码编写与环境构建规范在 `../AGENTS.md`。
 
 ---
 
@@ -48,7 +49,7 @@
 
 ### 1.3 调研依据
 - [`stalwartlabs/jmap-client`](https://github.com/stalwartlabs/jmap-client)（main 分支，截至本次调研）
-- 项目目录：`/home/okabe/Repo/messageweave/`（工具链要求见 §10.0 与 AGENTS.md）
+- 项目目录：`/home/okabe/Repo/messageweave/`（工具链要求见 §10.0 与 `../AGENTS.md §3.3`）
 
 ---
 
@@ -259,7 +260,7 @@ Stalwart JMAP Push → POST /push/jmap (StateChange{Email/EmailDelivery: new_sta
   → 若 Redis 丢失：由外部 Cron 对账(FLOW-RECONCILE) 重建游标并补发
 ```
 > 关键：`Email/changes` 在 `created` 列出新建邮件 id，避免全量 `email_query`；`sinceState` 存外部 Redis（`C-REDIS-ONLY-STATE`），Redis 丢失时由对账从 JMAP 重建，**事实源在 JMAP**。
-> 通知只含发件人/主题/时间（+附件数），正文绝不出现在通知里（见 AGENTS.md 安全边界 `SAF-NOTIFY-META`）。
+> 通知只含发件人/主题/时间（+附件数），正文绝不出现在通知里（见 `docs/charter.md §3` 安全边界 `SAF-NOTIFY-META`）。
 > 无长连接：Push 为短请求回调，对账由**外部 HTTPS Cron**触发（`C-NO-LONG-CONN`），非容器内自持定时器。
 
 ### 5.5 数据流：命令 `/read <seq>`（长邮件分支）
@@ -521,7 +522,7 @@ pub enum BotError {
 - `sinceState` 存外部 Redis：模拟重启后从正确游标续传；模拟 Redis 清空后由对账（`reconcile`，`FLOW-RECONCILE`）从 JMAP 恢复游标。
 - 通知去重：同一 `email_id` 不重复推送。
 - 正文转义：含 `<script>` 的邮件正文在 HTML 模式下被转义。
-- **安全边界断言（硬性，见 AGENTS.md）**：
+- **安全边界断言（硬性，见 `docs/charter.md §3`）**：
   - VIEW/查看原文路径：mock AI 端点零请求（LLM client 未被调用）；
   - 新邮件通知：消息内无正文内容（断言泄漏）；
   - 长邮件：正文 > 4000 字符不发送全文；
@@ -779,5 +780,5 @@ src/ai.rs   # LlmClient（唯一实现）：summarize() 打 OpenAI 兼容 /chat/
 - `stalwartlabs/jmap-client` main 分支：`src/lib.rs`（URI/Method/DataType/Error）、`src/client.rs`（认证/连接/event_source）、`src/email/`、`src/email_submission/helpers.rs`、`src/event_source/`、`src/push_subscription/`（create/verify/update_types/destroy）、`src/core/error.rs`、`Cargo.toml`、`README.md`、`examples/`。
 - crates.io：`jmap-client` 元数据。
 - `stalwartlabs/mail-server` main 分支：`crates/common/src/auth/credential.rs`（Password/AppPassword/ApiKey）、`crates/http/src/auth/authenticate.rs`（AccessScope 权限裁剪）、`crates/jmap/src/push/`、`api/v1/openapi.yml`（`securitySchemes`: basicAuth/bearerAuth/liveToken 60s）。
-- 项目目录 `/home/okabe/Repo/messageweave/`（工具链要求见 §10.0 与 AGENTS.md）。
+- 项目目录 `/home/okabe/Repo/messageweave/`（工具链要求见 §10.0 与 `../AGENTS.md §3.3`）。
 - 部署/平台相关调研依据（lambda_runtime/worker/aws-sdk 等）见 deployment.md。

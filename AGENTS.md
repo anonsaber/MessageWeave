@@ -1,275 +1,239 @@
-# AGENTS.md — MessageWeave 开发守则
+# 工程规范（Engineering Norms）
 
-> 本文档是后续任何 AI coding agent 在本仓库工作的**操作守则与硬性约束**。
-> 架构 / 模块接口 / 状态机 / 数据流 / 测试 / 实施阶段以 [docs/design.md](docs/design.md) 为准；
-> 部署运维与发布（通用 HTTPS-only Docker / Secrets / Redis 状态层 / Webhook / Push / 外部 Cron 对账 / CI）以 [docs/deployment.md](docs/deployment.md) 为准。
+> 本文件是**语言无关**的通用工程规范：适用于本仓库中任何语言的源代码、脚本、前端资源与文档。
+> 它不描述任何具体项目的事实。项目目标、技术选型、安全不变量、禁止事项、测试验收清单、
+> 稳定 ID 注册表在 [`docs/charter.md`](docs/charter.md)。
 >
-> 三份文档职责分离，改动时请遵循 [§6 文档边界](#6-文档边界与引用关系)，避免内容重复堆砌与跨文档冲突。
->
-> **跨文档引用一律用稳定 ID**（`C-` / `NG-` / `MOD-` / `FLOW-` / `REQ-` 等），**不用章节号（§x.y）**；定义点位置与一句话说明见 [§7 跨文档引用索引](#7-跨文档引用索引表)。
->
-> **版本基线 v4（2026-09-28）：代码 `b70d188`（陈旧/幻影引用清理，`main.rs` 净减 2 行并重锚 6 处）。**
-> ④ 新增 `src/debug.rs` 远程联调面与 6 个 `*DEBUG*` ID（§2 第 19 条、§5 测试清单、§7 六行），文档侧同步落位
-> `docs/deployment.md` §2.1、`docs/reference.md` §3/§4、`README` 中英双版；⑥ 落地 `/search` 与两项可靠性修复，
-> `docs/design.md` §5.7、`docs/reference.md` §6.3/§6.4、`docs/roadmap.md` 代码缺口区同步更新。
-> 各文档的行号锚点以代码 `b70d188` 为准，代码变动后须同步重锚。
->
-> **改完文档或动了 `src/` 行号，先跑 `bash scripts/docs_check/run_all.sh`**（GATE-DOCS，4 个检查全 exit 0 才算过）：
-> `validate_docs.py`（代码块围栏/行内反引号/本地链接与锚点可达）、`check_tables.py`（表格列数一致，行内代码里的 `|` 不计）、
-> `audit_anchors.py`（`foo.rs:N` 行号锚点存在且非空行）、`check_sec_refs.py`（`§N.N` 交叉引用指向真实标题）。
-> **注意 `audit_anchors.py` 只证明锚点可达，不证明该行内容与所述一致**——它无法发现「指向了错行」的锚点，那需要人工读目标行。
-> 引「0 errors」时请区分这两种含义。校验器自身随仓库版本化，无需 `/tmp` 副本。
+> 两者冲突时：**项目事实与安全不变量以 `docs/charter.md` 为准，质量规则以本文件为准。**
+
+> **版本基线** `b70d188`（代码：所有行号锚点）｜`526a73b`（文档：所有 `§x.y` 引用）
+
+> 校验命令（`GATE-DOCS` / `GATE-P0`）的具体可复制版本写在 [`docs/charter.md`](docs/charter.md) §5。
 
 ---
 
-## 1. 项目目标
+## 1. 优先级与冲突仲裁
 
-构建一个 Rust 写的 Telegram 机器人，作为 Stalwart JMAP 邮箱的**个人邮件助手**（详见 [design.md §1](docs/design.md#1-任务与范围)）：
+规则从高到低，下位不得覆盖上位：
 
-- 通过 Telegram 命令查询/阅读邮件、查看文件夹、发送邮件、管理关键词等。
-- 利用 **JMAP Push HTTPS 回调**（唯一实时通道）+ 外部 Cron 对账（建议 5–10 分钟），新邮件到达时主动推送到 Telegram；**不使用** EventSource/SSE/长轮询（`NG-POLLING-SSE`/`NG-LONG-POLLING`，见 deployment.md `C-NO-LONG-CONN`）。
-- **单账户**实现（`REQ-SINGLE-ACCOUNT`），多账户 = 多个 bot 实例；部署为**通用 HTTPS-only Docker 容器**（短请求模型，平台提供公网 HTTPS URL `C-HTTPS-URL`），详见 deployment.md。
-- 可靠性目标：**通知可用性 ≥ 99.9%**，允许少量延迟（`NFR-NOTIFY-SLA`，策略见 deployment.md §6.4/§6.5）。
+1. 可复核的代码事实
+2. `docs/charter.md` 的项目事实与安全不变量
+3. 本文件的质量规则
+4. 文档表述
+5. 任何 AI 输出的推测
 
-技术栈：`jmap-client`（rustls，**App Password + Basic** `C-AUTH-APP-BASIC`）+ Telegram Bot API（**版本不锁定**；渠道在 `src/channel.rs` 用 `reqwest` 自研实现，`teloxide` 未引入，见 `ARCH-DEPS-STAGE4`）+ tokio + **外部 Redis（用户托管 + AOF）**（`C-REDIS-MANAGED-AOF`；**服务端版本不锁定**，只要求能力集：Streams、XPING/PING、SET NX EX）。**未写代码前不得初始化 cargo 工程之外的内容**（仅文档阶段）。
-
----
-
-## 2. 硬性安全边界（不可违反）
-
-> 任何改动都不得破坏以下不变量。实现时必须有对应断言测试（见 §5 与 [design.md §9.3](docs/design.md#93-关键不变量测试)）。
-
-1. **查看原文 = JMAP 直取，绝不经 AI**：`/read` 与任何"看正文"路径调用 `JmapService::read_email`，LLM 不在查看路径上。
-2. **AI 仅在用户明确要求并确认后接触正文**：用户明确发起"分析/总结/翻译"意图**并再次确认**（点 `[AI 总结]` / `/summarize`）后才把正文交给 LLM；未经确认，LLM 看不到正文。意图或目标不唯一 → 追问确认，禁止猜测执行。
-3. **长邮件禁止发送完整原文**：正文 > 阈值（默认 4000 字符，见 [design.md §12.3](docs/design.md#123-正文获取策略与长邮件处理需求-1235)）不发全文，只发预览 + `[AI 总结]`/`[继续查看原文(截断)]` 选项；"继续查看"也是截断版并标注"完整请电脑查看"。
-4. **新邮件通知只含元数据**（`SAF-NOTIFY-META`）：发件人 / 主题 / 时间（+附件数），绝不含正文；正文访问须用户显式读信/分析。
-5. **附件默认不下载、不预载**：仅用户显式请求才触发 `Blob/get`；AI 永不接收附件内容。
-6. **分析 / 摘要结果不持久化**：不写 Redis、不落盘、不缓存，即取即弃。
-7. **AI 失败约 3 次 → 熔断 + 用户确认回退**：回退为规则模板 + 原文直取，标注"AI 不可用"；恢复需用户选择。
-8. **密钥不出仓库、不出日志**：`secrecy::SecretString` 包裹、`tracing` 屏蔽 `Authorization/password/token`；秘密一律运行期注入（`C-NO-SECRET-IN-IMAGE`，deployment.md）。变量命名以 `src/config.rs` 为准，模板见根目录 [`.env.example`](./.env.example)（**仅占位符，禁放真实值**）。
-9. **聊天白名单（硬约束 `SAF-CHAT-ALLOWLIST`）**：`CHAT_ALLOWLIST` 必填；任何入站事件在做任何 JMAP/AI 调用或状态变更**之前**必须先校验 `chat.id ∈ CHAT_ALLOWLIST`，否则直接拒绝终止。（阶段0 已完成解析骨架；强制拒绝随阶段2 渠道接入落地。）
-10. **LLM 无工具权**：AI 输出仅为文本；删除/归档/下载/发送等动作只能由用户显式指令触发，绝不由 LLM 输出驱动（邮件正文视为不可信数据，正文内指令无效）。
-11. **无长连接**：运行模式仅 `webhook`/`reconcile`/`health`，禁止 SSE/EventSource/WebSocket/Telegram 长轮询（`C-NO-LONG-CONN`/`NG-POLLING-SSE`/`NG-LONG-POLLING`）。
-12. **状态仅外部 Redis（用户托管 + AOF）**：会话/去重/Redis Streams/熔断计数/sinceState 一律走外部 Redis（`C-REDIS-ONLY-STATE`/`C-REDIS-MANAGED-AOF`），禁止 SQLite/本地卷作持久层（`NG-SQLITE-PERSIST`/`NG-LOCAL-VOLUME`）；Redis 丢失由 JMAP 对账 `FLOW-RECONCILE` 重建 sinceState，**事实源在 JMAP**。
-13. **正文仅在用户明确允许后才外发 AI**（`REQ-AI-EXTERNAL-CONSENT`）：默认不外发；发送前须用户显式同意（与第 2 条叠加）。
-14. **单账户**（`REQ-SINGLE-ACCOUNT`）：一个实例只接一个 Stalwart 账户；多账户 = 多个 bot 实例，不做多账户单实例。
-15. **三入口鉴权 fail-closed（硬约束 `SAF-AUTH-RECONCILE`/`SAF-AUTH-TG-WEBHOOK`/`SAF-AUTH-JMAP-PUSH`）**：三条写路径必须先鉴权——`/reconcile` 校验 `Authorization: Bearer RECONCILE_TOKEN`、`/webhook/tg` 校验 `X-Telegram-Bot-Api-Secret-Token == TG_WEBHOOK_SECRET`、`/push/jmap` 校验请求体 `pushSubscriptionId` + `verificationCode`——按 `pushSubscriptionId` 查 Redis 短期验证状态（值存 `session_digest` 摘要，见 `src/notify.rs` `jmap_push`），状态缺失或摘要不符即拒绝；`/reconcile`、`/webhook/tg` 的凭证比较用**常数时间**（`subtle`），失败 `401` 且**在鉴权通过前不得产生任何副作用**；三密钥必填，缺失即启动失败，**禁止任何"未配置则放行"降级**。`/healthz`（`ARCH-HEALTHZ`）与 `/ready` 为**公开探针**（`SAF-PROBE-PUBLIC`：无鉴权、仅健康状态、不含敏感信息）；**`/ready` 已做端到端探测**（`ARCH-READY-BASELINE`）：配置完整性 + Redis 可达性 + 出站只读探测（JMAP session `GET` / TG `getMe`，各 `PROBE_TIMEOUT`=3000ms、并行执行，最坏约 3s），任一失败返 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`；Uptime Kuma 按状态码 200/503 监控，不受响应体影响）；出站探测要求 egress 可达 JMAP host 与 `api.telegram.org:443`（bot token 仅用于拼 URL，不日志/不回显）——**禁止再声称 `/ready` 只做基础探测**。
-16. **多实例高可用（`ARCH-LB-WORKER`）**：允许同一镜像跨多个 serverless 平台实例化、前置免费 Cloudflare Worker 做唯一入口与故障转移（`C-LB-SINGLE-REG-URL`），共享同一 Redis（`C-REDIS-ONLY-STATE`）。**信任模型为透传（`SAF-LB-PASSTHRU`）——后端鉴权不可省**（小平台无防火墙/ACL，后端入口可能被公网直连）；多实例**必须共享同一组 `SAF-AUTH-*` secret**（`C-LB-SHARED-SECRETS`）。`/reconcile` **禁止多实例并发**，用 Redis 锁单实例执行（`SAF-RECONCILE-LOCK`）；Streams 用**同一消费组**分摊（`MOD-STREAMS-GROUP`）；Worker 可提供**聚合健康视图**（`MOD-HEALTH-AGG`）。**Redis 单点故障不在本方案范围**（`NFR-HA-MULTI-INSTANCE`，用户外部解决）。业务代码无需为 LB 改动。详见 deployment.md §10。
-17. **生产红线（无数据库 / 无本地写入 / 标准输出日志，`C-NO-DB` / `C-NO-LOCAL-WRITE` / `C-LOG-STDOUT-ONLY` / `SAF-LOG-PURITY` / `C-NO-STATEFUL-RECOVERY`）**：
-    - **不使用任何数据库**（`C-NO-DB`）：无 SQLite / Postgres / MySQL / 嵌入式数据库；Redis 是唯一生产状态存储（`C-REDIS-ONLY-STATE`）。应用**不自建、不连接第二个数据库实例**。
-    - **禁止本地文件/目录写入**（`C-NO-LOCAL-WRITE`）：无日志文件、无数据文件、无临时缓存、不挂载本地卷（`NG-LOCAL-VOLUME`）。
-    - **日志只写 stdout/stderr**（`C-LOG-STDOUT-ONLY`）：容器/平台负责采集落盘；禁用 `rolling-file` / `FileAppender` 等文件日志后端。
-    - **日志与 Redis 写入内容约束**（`SAF-LOG-PURITY`）：仅限结构化事件、计数、时间戳、脱敏后的请求摘要；**禁止**写入密钥原文、JMAP 邮件正文、AI 请求/响应内容、附件内容。
-    - **禁止依赖进程内状态做生产恢复**（`C-NO-STATEFUL-RECOVERY`）：任何"重启续跑"（去重、sinceState、Streams 断点、熔断计数、会话）必须由外部 Redis + JMAP 对账（`C-REDIS-ONLY-STATE` / `FLOW-RECONCILE`）实现；进程内缓存仅为性能优化，**丢失必须安全可重入**。
-18. **无数据库/无本地写入/标准输出日志 = 发布门禁**：发布前必做 deployment.md §8.2 的 6 项红线自检（镜像无 DB 引擎、无本地可写挂载、日志仅 stdout/stderr、日志/Redis 无敏感数据、重启恢复不依赖进程内状态、Redis 由外部提供）；任一失败禁止发布。
-19. **远程 debug 双因子门禁（`MOD-DEBUG`/`SAF-DEBUG-GATE`/`SAF-DEBUG-AUTH`/`REQ-DEBUG-ENDPOINTS`）**：`/debug/*` 只在**两个条件同时满足**时才挂载——启动命令带 `--debug` 且 Secret 环境变量 `DEBUG_TOKEN` 非空；缺任一即完全不挂载该组路由，请求落到通用 `404`（**正常情况下绝对关闭**，禁止任何"未配置即放行"降级）。已挂载后每个 `/debug/*` 仍须 `Authorization: Bearer DEBUG_TOKEN` 并与 secret 做**常数时间**比较（`SAF-DEBUG-AUTH`），失败 `401` 且**在鉴权通过前不得产生任何副作用**。Worker 白名单（`ARCH-LB-WORKER`）不含 `/debug/*`，故公网唯一入口**永远不可达**该组路由；debug 仅供直连后端 origin 的远程联调。所有 `/debug/*` 响应体**不含任何 secret 原文**（`SAF-NO-SECRET-ECHO`），只回显"是否已设置"与探针结论；`DEBUG_TOKEN` 不回显、不入日志（`SAF-LOG-PURITY`）。
-
-### 2.1 代码规模（软性指导，非硬限制）
-- 单个 `.rs` 文件原则上不超过 **500 行**；这是**软性指导**而非硬性门禁。
-- 复杂度、内聚性与可维护性优先：禁止为了凑 500 行制造奇怪的拆分（如过度抽象、跨文件跳转式"减肥"）。
-- 若要拆分，只按职责/内聚边界拆；超过 500 行本身不是错误，但**需要在 PR/提交说明中写明原因**（如"本文件保持命令表 + 全部子命令处理，超行因命令数量，拆开反而分散"）。
-
-### 2.2 代码注释与文档一致性（必须）
-- 代码必须包含与设计文档匹配的必要注释；注释至少覆盖非显而易见的架构边界、状态流转、可靠性取舍、安全不变量和外部协议约束。
-- `domain/`、`channel/`、`notify/`、Redis Streams、`sinceState`、AI 确认/回退、长邮件与附件处理等关键路径，必须能从代码注释追溯到 `design.md` 或稳定语义 ID（`C-*`、`REQ-*`、`FLOW-*`、`SAF-*`）。**注释中的稳定 ID 必须取自 §7 索引所用的前缀集**（`C-`/`NG-`/`MOD-`/`FLOW-`/`REQ-`/`SAF-`/`NFR-`/`GATE-`/`BOUND-`/`ARCH-`）；**禁止自造未登记 ID**（如 `JMAP-n`、`DATA-n`、`JMAP-*`、`DATA-*`）——新增语义需先在 §7 登记再引用。
-- 设计规则、安全边界或数据流变更时，必须同步更新受影响的代码注释和对应文档；禁止保留与实现不符的注释。
-- 注释应解释“为什么”和约束，不要逐行复述代码；简单自解释代码不要求添加废话注释。
-- Code review/测试应检查关键模块注释是否与文档一致；注释缺失或过时视为实现不完整，但不要求为每个函数添加固定格式的注释。
+- **文档与代码冲突时以代码为准**，并在同一改动内修正文档。
+- **两份文档互相矛盾时**，以权威来源声明更明确的一方为准；若均无声明，以更靠近可执行事实
+  （代码、测试、校验器）的一方为准。
+- **未验证不得断言。** 任何声称「已经实现 / 已经修好 / 门禁已通过」的句子，必须来自本轮亲自执行的
+  命令输出或代码阅读。禁止把历史结论、推测、"应该是"写成事实。
+- 无法核实的部分必须明确写「未验证」，并说明缺什么（凭据、环境、依赖版本、外部服务）。
 
 ---
 
-## 3. 实现顺序
+## 2. 代码编写规范
 
-按 [design.md §10](docs/design.md#10-分阶段实施计划) 推进（每阶段验收标准见对应小节）：
+### 2.1 文件规模
 
-```
-阶段 0  脚手架 + HTTPS 入口骨架（已完成，待过 P0 门禁 GATE-P0）
-        —— 交付：cargo 工程 + 模块骨架(main/config/error/domain/channel/notify)
-           + 单端口 axum 路由占位(/webhook/tg /push/jmap /reconcile /healthz /ready)
-           + /healthz=liveness；/ready 阶段0 交付为占位 200，现已演进为端到端探测（ARCH-READY-BASELINE：配置完整性 + Redis 可达性 + 出站只读探测 JMAP session GET / TG getMe，各 3000ms，不就绪→503）
-           + env 配置骨架 + 最小测试；实际依赖：axum 0.8 / serde / serde_json / thiserror / secrecy / subtle / url / tokio / tracing；jmap-client =0.4.2（default-features=false, features=["async","rustls"]）
-           + 入口鉴权已落地：/reconcile(Bearer) /webhook/tg(secret 头) /push/jmap(verificationCode)，fail-closed SAF-AUTH-*
-阶段 1  JMAP 只读（`jmap-client` 0.4.2 **已引入**，`ARCH-DEPS-STAGE1`；R1 入口鉴权已在阶段0 落地，不重复实现）
-          + `JMAP_SESSION_URL` 归一化（`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）：接受服务基地址或完整 /.well-known/jmap，交给 jmap-client 前归一化为 origin/base；仅 HTTPS、禁内嵌凭据
-          + `read_email` 多 part 原文拼接（`REQ-JMAP-RAW-MULTIPART`）
-阶段 2  渠道适配骨架（Channel/Notifier/MessageAdapter + 首个渠道 Telegram；CHAT_ALLOWLIST 强制 + throttle；/start /folders /list /read）
-阶段 3  发送 + 状态（send_email draft+submission；/send FSM；/flag）
-阶段 3.5 LLM 门面 + 回退（见 design.md §12.8）
-阶段 4  实时推送（Push 回调 + Redis Streams worker + 外部 Cron 对账 + sinceState→Redis）
-阶段 5  搜索 + 搜索片段 + 打磨（搜索 + 搜索片段已完成，`bfe0fd8`，见 design.md §5.7）
-```
+- 单文件规模控制在 **500 行**以内（软上限）。
+- 接近 400 行必须评估拆分。确需超过 500 行时，在文件头部写一句拆分评估结论与当前不拆的理由
+  （例：内聚性优先——A 与 B 共享 C，拆分会引入 N 处重复）。
+- **未写明理由的超限文件视为待办项。** 超限不自动合规。
+- 不得为凑合规而机械拆分，也不得为压低行数把逻辑塞进不可读的长函数。
 
-> **阶段门禁**：`GATE-P0`（阶段0 P0 门禁，8 项）与 `BOUND-STAGE1`（阶段1 推进边界）定义见 design.md §10.0。**未过 `GATE-P0` 不得进入阶段1**；阶段0 业务体为无副作用占位，**不应暴露公网**。**注意**：三条写路径的**入口鉴权 `R1` 已在阶段0 落地**（`SAF-AUTH-*`，fail-closed），阶段1 不再重复实现，也**禁止放宽/绕过**。
-> **依赖引入节奏**：`jmap-client` **已引入**（`=0.4.2`，实际 `default-features = false, features = ["async","rustls"]`，`ARCH-DEPS-STAGE1`：版本与 features **以 `Cargo.toml` 为准**；⚠️ 其默认 features `["async","websockets","aws_lc_rs"]` **含 WebSocket 栈**，故须关闭默认 features 且不选 `websockets`，以遵守 `C-NO-LONG-CONN`）；`redis`(`0.27`) / `reqwest`(`0.13`) **已加入 Cargo.toml**（阶段3.5/4 已落地，版本**以 `Cargo.toml` 为准**，`ARCH-DEPS-STAGE4`）；`teloxide` **未引入**——Telegram 渠道在 `src/channel.rs` 用 reqwest 自研实现，不依赖 teloxide 类型（`src/domain.rs` 注释禁止 teloxide 类型跨越领域边界）；不得在文档/注释中声称已使用未引入的依赖。配置为**环境变量手工解析**（`ARCH-CONFIG-ENV`，无 figment/TOML）。`ACCOUNT_ID` **可选**：留空 → 取 JMAP session 的**默认/主账户**；显式值经校验后使用（`REQ-SINGLE-ACCOUNT`）。
+### 2.2 注释与代码一致
 
-> 部署/镜像相关工作（Dockerfile、compose、健康检查、CI 发布）不是各功能阶段的目标，集中在 deployment.md；功能阶段验收通过 `cargo test`，不需要先做镜像。
-> **JMAP session URL 语义**（`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）：`JMAP_SESSION_URL` 可填**服务基地址**（`https://host[:port]`）或**完整** `…/.well-known/jmap`；代码在 `Client::connect` 前归一化为 **origin/base**（jmap-client 自行追加 `/.well-known/jmap`），**不得出现重复路径**（`…/.well-known/jmap/.well-known/jmap`）。仅 **HTTPS**；**禁止 URL 内嵌用户名/密码**（凭据只经 `JMAP_USERNAME`/`JMAP_PASSWORD`）；拒绝危险 query。
+- 注释描述**行为**，不描述意图、计划或愿望。
+- 禁止在注释里写「未来会改为 X」「计划支持 Y」这类未实现的东西。
+- 占位实现必须显式标注为占位，并说明「真实实现需要什么环境 / 凭据」。
+- **注释里出现的标识符必须真实存在。** 函数名、类型名、键名、环境变量名、文件路径，
+  每个都要能被检索到定义。检索零命中即为**幻影标识符**，属阻塞缺陷——它比一个 bug 更坏，
+  因为它会诱导人去做不存在的实现，或误以为某个保护已经存在。
 
----
+### 2.3 禁止死代码与全局抑制
 
-## 4. 禁止事项
+- **不得引入死代码**：定义但无任何调用点的函数、常量、导出、字段，一律删除。
+- **禁止全局抑制警告**（整文件 / 整模块级别的 warning allow）。
+- 确需保留未使用符号时，用**局部、点名、带理由**的方式标注，写清保留原因与预期何时删除。
+  理由写不出来的，删掉。
 
-- 禁止把 AI 输出当作可执行操作（LLM 无工具权）。
-- 禁止未确认就把正文 / 附件内容送入 LLM；禁止把分析结果持久化（Redis/磁盘/缓存）。
-- 禁止在生产路径绕过 chat 白名单、关闭 TLS 校验、关闭熔断/回退。
-- 禁止把 secrets（token / 密码 / LLM API key）写入代码、配置、日志或镜像。
-- 禁止把部署/平台细节塞回 `design.md`（见 §6）；反之亦然。
-- 禁止引入 Alpine/musl 基础镜像或非 Docker 部署形态（deployment.md 硬约束 C-DOCKER/C-DEBIAN-SLIM）。
-- 禁止引入 SSE/EventSource/WebSocket/长轮询等长连接运行模式（`C-NO-LONG-CONN`/`NG-POLLING-SSE`/`NG-LONG-POLLING`）。
-- 禁止 SQLite/本地卷作持久层；状态与游标仅外部 Redis（`NG-SQLITE-PERSIST`/`NG-LOCAL-VOLUME`/`C-REDIS-ONLY-STATE`），Redis 丢失走 JMAP 对账 `FLOW-RECONCILE` 恢复。
-- 禁止无授权改动 `docs/design.md`、`docs/deployment.md`、`AGENTS.md` 之外的内容；安全边界变更须同步三份文档。
-- 禁止在领域层（`domain.rs` / `ai.rs` / `worker.rs`）引入具体渠道 SDK 类型；渠道 SDK 只允许出现在渠道层（当前为 `src/channel.rs`，**不引入第三方 Bot 框架**）。
-- 禁止提前实现钉钉/飞书 adapter（仅保留抽象与扩展位，不写具体渠道代码、不建渠道专属配置项）。
-- 禁止在文档/注释中声称已使用**尚未加入 `Cargo.toml`** 的依赖（`teloxide`/`figment` 等）；`jmap-client`/`redis`/`reqwest` 已引入（版本以 `Cargo.toml` 为准，`ARCH-DEPS-STAGE4`），其中 jmap-client **禁止启用其 WebSocket feature**（`C-NO-LONG-CONN`）；配置恒为环境变量手工解析（`ARCH-CONFIG-ENV`），禁止引入 figment/TOML 配置文件。
-- 禁止在未通过 `GATE-P0` 时进入阶段1；禁止把阶段0 容器暴露公网（业务体仍为占位，`BOUND-STAGE1`）。入口鉴权（`SAF-AUTH-*`，R1）**已在阶段0 落地**，禁止移除、放宽或绕过（fail-closed）。
-- 禁止在**透传 LB 模型**（`SAF-LB-PASSTHRU`）下削弱/关闭任何后端的 `SAF-AUTH-*` 校验（小平台无防火墙，后端可能被公网直连）；禁止让多实例使用**不同**的 `SAF-AUTH-*` secret（`C-LB-SHARED-SECRETS`）；禁止让 `/reconcile` 多实例并发（必须 Redis 锁，`SAF-RECONCILE-LOCK`）。
-- 禁止引入**任何数据库**（`C-NO-DB`）：不引入 SQLite/Postgres/MySQL/嵌入式数据库；不连接 Redis 之外的第二个状态存储。
-- 禁止**本地文件/目录写入**（`C-NO-LOCAL-WRITE`）：不写日志文件、不写数据文件、不写临时缓存、不挂载本地卷。
-- 禁止将日志写入非 stdout/stderr 的目的地（`C-LOG-STDOUT-ONLY`）：不用 `rolling-file`/`FileAppender`/自定义文件 sink；日志只能输出到容器标准输出/错误，由平台采集。
-- 禁止把**密钥、邮件正文、AI 请求/响应内容、附件内容**写入日志或 Redis（`SAF-LOG-PURITY`）：日志/Redis 仅允许结构化事件、计数、时间戳、脱敏摘要。
-- 禁止依赖**进程内状态**做生产恢复（`C-NO-STATEFUL-RECOVERY`）：任何重启续跑（去重、sinceState、Streams 断点、熔断计数、会话）必须能从 Redis + JMAP 对账重建；进程内缓存仅为性能优化，丢失必须安全可重入。
+### 2.4 依赖诚实
+
+- **不得在文档、注释或代码中引用没有实际引入的依赖、模块或 API。**
+- 引入新依赖前写清它解决的唯一问题；已有实现能解决的不引入。
+- 依赖版本以**锁文件**为准。描述某依赖的能力时，以锁文件里的实际版本 API 为准，
+  不得照抄设计文档或凭记忆。
+- 文档写「已引入 / 未引入」时必须逐字对照依赖清单文件。
+
+### 2.5 引用必须真实存在
+
+- 文档、注释、表格中的**文件路径**必须真实存在。表格里的模块路径不要靠 grep 推断——
+  逐个用文件系统存在性检查验证。
+- **行号锚点必须指向对应内容**，不能只指向「文件里那一行」。文档写「某文件第 120 行是
+  重试上限」，第 120 行就必须是重试上限；行号漂移而描述跟着跑，比行号写错更危险。
+- **校验器只能证明「该行号存在且非空」，不能证明该行内容符合描述。** 内容级核对必须人工读。
+
+### 2.6 分层与依赖方向
+
+- 领域逻辑不得依赖任何传输层 / 渠道层 / SDK 类型；渠道 SDK 只能出现在渠道适配层。
+- 依赖只能指向更下层，不得反向引用。
+- 领域层对外暴露纯函数，使业务规则可以被不依赖任何外部服务的测试直接调用。
 
 ---
 
-## 5. 测试验收（至少满足）
+## 3. 配置与密钥规范
 
-- `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` 全绿；**并在 Debian `rust:1-slim-bookworm` 容器内执行**（`GATE-P0`/`C-DEBIAN-SLIM`；阶段0 P0 门禁要求）。
-- 占位符使用**局部** `#[expect(dead_code, reason="稳定ID+阶段0占位")]`；**禁止 crate 级 `#[allow]`**；不得为过 clippy 删除安全访问器（如 `JMAP_PASSWORD` getter）或让 `Debug` 泄密。
-- 不变量测试（[design.md §9.3](docs/design.md#93-关键不变量测试)）：
-  - **VIEW / 查看原文**：mock AI 端点零请求（断言 LLM client 未被调用）。
-  - **新邮件通知**：消息内无正文内容（断言泄漏）。
-  - **长邮件**：正文 > 4000 字符不发送全文，仅预览 + 选项。
-  - **AI 前置确认**：未确认前 LLM 零调用；确认后才发起请求。
-  - **结果不落盘**：分析处理后无新增磁盘/Redis 写入路径。
-  - **AI 3 次失败**：触发熔断 → 弹确认 → 回退带"AI 不可用"徽标；`LLM_ENABLED=false` 全走回退。
-  - 正文转义、sinceState 存 Redis + 模拟 Redis 删除后由对账 `FLOW-RECONCILE` 恢复、通知去重。
-  - **入口鉴权（`SAF-AUTH-*`）**：`/reconcile`/`/webhook/tg`/`/push/jmap` 在缺失或错误凭证下返回 `401` 且**无副作用**（无 Redis 写入、无 JMAP/AI 调用）；正确凭证放行。
-  - **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz` 返回 `200`；`/ready` 做端到端探测（`ARCH-READY-BASELINE`：配置完整性 + Redis 可达性 + 出站只读探测 JMAP session `GET` / TG `getMe`，各 3000ms，任一失败返 `503`）——测试**可以**断言 `/ready` 在配置 / Redis / 上游探针失败时返回 `503`；两个探针（`probe_jmap_session` / `probe_telegram_get_me`）是可复用纯函数，④ 远程 debug 直接调用，**不要另写一套**；两者响应体均不含敏感信息。
-  - **远程 debug（`MOD-DEBUG`/`SAF-DEBUG-GATE`/`SAF-DEBUG-AUTH`/`REQ-DEBUG-ENDPOINTS`）**：缺 `--debug` 或 `DEBUG_TOKEN` 缺失/为空时，`/debug/*` **一律 `404`**（路由根本没挂载）；双因子齐备时挂载，缺 `Bearer` 或 token 不符返回 `401`，正确 token 放行；`GET /debug/config` 响应体**不得出现任何 secret 原文**（`SAF-NO-SECRET-ECHO`，测试可断言只含布尔/计数/结论字段）；出站只读探针直接复用 `probe_jmap_session` / `probe_telegram_get_me`（`ARCH-READY-BASELINE`），不另写实现；`POST /debug/notify` 复用真实出站路径（`TelegramClient::send_text`，`src/channel.rs:134`），不得另建第二套 Telegram 客户端。
-  - **JMAP 只读 adapter（`MOD-JMAP-CLIENT`/`GATE-G1-JMAP-READONLY`）**：mock 测试覆盖 session/account 选择（`ACCOUNT_ID` 空→主账户、显式值校验）、**URL 归一化**（`JMAP_SESSION_URL` 基地址与完整 `…/.well-known/jmap` 两种输入结果一致、无重复路径、`http://` 拒绝、内嵌凭据拒绝，`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）、`list_folders`/`list_emails`（`limit` 边界）/`read_email`（多 part 拼接与"无可用部分"明确错误，`REQ-JMAP-RAW-MULTIPART`）、`received_at` 解析；真机测试用 `#[ignore]` 标记、经环境变量驱动（运行：`cargo test -- --ignored jmap::`；仅编译：`cargo test --no-run`），**缺环境时清晰跳过且不泄密**，CI 默认不跑真机用例。**G1/D-G1-1 代码已实现，待真实 `cargo test -- --ignored jmap::` 验证；未实际运行 `--ignored` 前不得声称"真机通过"。**
-- 领域/渠道解耦测试：领域模块（`src/domain.rs` / `src/ai.rs` / `src/worker.rs`）的公开接口不出现任何渠道 SDK 类型（编译期检查）；`JmapBackend` 的 `MockBackend` 可驱动全部 JMAP 领域流程（不联网）。
-- 文件行数抽查：>500 行的 `.rs` 文件在 PR 说明中可见（软性，不自动 fail）。
-- 代码注释一致性：抽查关键领域、渠道、通知、Redis/AI 模块，确认注释引用的稳定语义 ID、状态流转和安全边界与 `design.md`/`deployment.md` 一致。
-- 涉及部署的改动需过 deployment.md 的 CI/验收清单（`C-DOCKER` 镜像扫描、非 root、health 端点等）。
-- 涉及部署/日志/状态的改动需过 deployment.md §8.2 红线自检 6 项（`C-NO-DB` / `C-NO-LOCAL-WRITE` / `C-LOG-STDOUT-ONLY` / `SAF-LOG-PURITY` / `C-NO-STATEFUL-RECOVERY` / 外部 Redis）；任一失败禁止发布。
+### 3.1 配置分层
 
----
+- **进程配置**（连接地址、监听端口、密钥）只来自环境变量；必填项缺失时快速失败。
+- **业务配置**（用户可调的行为参数）只存在于持久化状态存储中，由受保护的管理接口写入。
+- 两者不得混用；**不得为了让本地开发方便而让业务配置静默回退到环境变量。**
+- **不得引入通用配置框架。** 配置解析用最小必要代码，手写解析可以接受。
+- 配置热加载必须显式（由受保护接口触发），进程不得轮询或监听配置文件。
 
-## 6. 文档边界与引用关系
+### 3.2 密钥
 
-| 文件 | 内容 | 何时更新 |
-|---|---|---|
-| `README.md` / `README.zh-CN.md` | 面向最终用户：是什么 / 五分钟跑起来 / 配置入口 / 安全边界一句话 / 去哪读更多（英文版 / 中文版，内容须对等，顶部互链） | 用户可见行为或流程变更时 |
-| `docs/reference.md` | **可核对事实的唯一权威来源**：Redis 键与 TTL、错误 envelope 与错误码、后端路由与网关白名单矩阵、环境变量三层、出站与预算常量 | 公共 API 或 Redis 键名/TTL 变更时（**必更**） |
-| `docs/design.md` | 产品行为、架构、模块接口、状态机、数据流、错误处理、测试、实施阶段、渠道抽象（Channel/Notifier/MessageAdapter）、历史问题与决策归档（§11，产品/架构类，均已收口） | 行为/接口变更时 |
-| `docs/deployment.md` | 通用 HTTPS-only Docker、Debian、构建/运行时、Secrets、Redis（状态唯一载体）、**可选远程联调面 `/debug/*`（§2.1，`SAF-DEBUG-GATE`）**、Webhook/Push/对账短请求路由、**多实例 LB/HA（Worker 前置，§10）**、健康检查、CI、外部调度示例、已确认决策表（`Q-DEP-A`/`Q-DEP-B` 已决策归档） | 部署/发布变更时 |
-| `docs/roadmap.md` | **只放缺口、阻塞与阶段目标**（取代 `docs/todo.md`，已删除） | 缺口或阻塞项增减时 |
-| `docs/retired.md` | **已废弃 / 未采用路线与虚构条目**：每条含「类型 / 原因 / 替代或现状」；记录 teloxide 未采用、FSM 未落地、幽灵文件与虚构键、已删文档。**只写结论与原因，不写当前事实** | 新增废弃项或删除文档时 |
-| `AGENTS.md`（本文件） | 目标、硬性安全边界、实现顺序、禁止事项、测试验收、文档引用关系、**跨文档引用索引（§7）** | 安全边界/流程变更时 |
+- **不得在代码、文档示例、日志或错误响应中回显密钥、令牌或密码。** 示例一律用占位符。
+- 凭据只在内存中使用：不写本地文件、不进入提交记录、不出现在 URL 查询串。
+- 比较凭据必须用**常量时间比较**，避免时序侧信道。
+- **信任根单一。** 管理凭据、会话凭据、外部服务令牌各自独立，不得互相推导；
+  不得用一个凭据（如存储连接密码）兼任另一个角色（如用户界面认证）——
+  无密码的部署形态会让被兼任的角色永久不可用。
 
-### 6.1 权威与冲突仲裁
+### 3.3 环境构建规范
 
-- **`docs/reference.md` 是可核对事实的唯一权威来源。两份文档表述冲突时，以 `docs/reference.md` 为准。**
-- 可核对事实（Redis 键名与 TTL、错误码、路由、环境变量分层、预算常量）**只存在于 `docs/reference.md`**。
-  `design.md` 保留"为什么"，`deployment.md` 保留"怎么配"；两者不得复制 reference.md 的表格或数值，只引用它。
-
-### 6.2 同轮同步规则
-
-- **`README.md` 与 `README.zh-CN.md` 必须同轮更新。**改了一个就必须同轮改另一个并保持内容对等；只改一份的改动不予合入。
-- **改动 `src/config.rs`、`src/state.rs`、`src/worker.rs`、`src/notify.rs` 的公共 API，或改动任何 Redis 键名 / TTL，必须同轮更新 `docs/reference.md`。**评审按此拦截。
-
-### 6.3 边界
-
-- 改动产品规则必须同步三份文档的相关表述，保持一致、不重复堆砌。
-- `design.md` 不写部署细节，`deployment.md` 不写产品行为/接口；交叉处用**稳定 ID**（§7 索引）互相引用，不用章节号。
-- `README.md` 只回答"是什么 / 怎么跑 / 去哪配 / 安全边界 / 去哪读"；**不写缺口、不写 roadmap、不写深水区、不写历史环境变量清单**。缺口一律进 `docs/roadmap.md`。
-- **文档里出现的模块、函数、trait、Redis 键必须是 `src/` 中真实存在的。**要保留一个不存在的名字（例如未采用的框架、未落地的目标模块），必须同时写入 `docs/retired.md` 并在那里说明"从未存在 / 从未落地"，不允许只出现在正文里。
+- 构建与测试必须在**最小发行版**中执行，不得在功能完整的环境里通过门禁。
+- 门禁命令必须在文档中给出**完整可复制**版本（含用户、挂载、环境变量、工作目录）。
+- 构建产物必须是静态链接、非 root、只读文件系统友好。
+- 依赖缓存目录不得进入版本控制，也不得进入构建镜像。
+- **门禁范围不得缩小。** 不得为了让门禁变绿而删除测试、跳过校验、放宽检查级别或缩小检查范围。
 
 ---
 
-## 7. 跨文档引用索引表
+## 4. 生产运行约束
 
-> 约定：跨文档引用一律用下表的**稳定 ID**（不用 `§x.y` 章节号）。ID 语义稳定、全仓唯一、可 grep；内容搬家时**只更新本表的"文件/锚点"列**，所有引用本身零改动。
-> 新增约束/组件时，先在本表登记一行，再在定义点写 `**[ID]**` 标签。
+- **禁止数据库**：不得引入关系型或文档型数据库。
+- **禁止本地文件写入**：一切状态只存在于外部托管的状态存储。
+- **禁止本地文件状态**：不得用本地文件持久化业务状态；进程重启必须可以完全无损。
+- **禁止非 stdout 日志**：日志只写 stdout（错误信息可写 stderr），不得写日志文件。
+- **禁止长连接**：不得引入 WebSocket / SSE / 长轮询；所有通信走短请求-响应。
+- **禁止有状态恢复流程**：实例崩溃后不得依赖本地或内存状态「续做」未完成工作；
+  恢复必须来自外部状态存储中的可重放记录。
+- **fail-closed 是默认姿态**：依赖不可用、配置缺失、校验失败时返回可诊断的失败，
+  不得降级成「看起来成功」。
+- 错误响应结构全仓统一（统一 envelope + 可关联的请求 ID）；可重试的失败必须告知重试时机。
 
-| ID | 定义文件 | 一句话 | 类别 |
-|---|---|---|---|
-| `C-DOCKER` | docs/deployment.md §0 | 必须 Docker 部署 | 部署约束 |
-| `C-DEBIAN-SLIM` | docs/deployment.md §0 | Debian slim，禁 Alpine | 部署约束 |
-| `C-NO-SECRET-IN-IMAGE` | docs/deployment.md §0 | secrets 不进镜像 | 部署约束 |
-| `C-RUSTLS` | docs/deployment.md §0 | rustls + native-roots | 部署约束 |
-| `C-HTTPS-INBOUND` | docs/deployment.md §0 | HTTPS-only 入站，容器内明文 HTTP | 部署约束 |
-| `C-HTTPS-URL` | docs/deployment.md §0 | 公网 HTTPS URL 由平台提供（bot 不持证书） | 部署约束 |
-| `C-AUTH-APP-BASIC` | docs/deployment.md §9 / design.md §3.1 | Stalwart 认证 = App Password + Basic | 部署约束 |
-| `C-NO-TCP-EXPOSE` | docs/deployment.md §0 | 单监听 `PORT`，不暴露附加 TCP 端口 | 部署约束 |
-| `C-NO-LONG-CONN` | docs/deployment.md §0 | 无 SSE/WS/长轮询等长连接 | 部署约束 |
-| `C-REDIS-ONLY-STATE` | docs/deployment.md §0 | 状态仅外部 Redis，不用 SQLite/本地卷 | 部署约束 |
-| `C-REDIS-MANAGED-AOF` | docs/deployment.md §0 | Redis 用户托管 + 开启 AOF 持久化 | 部署约束 |
-| `C-PORT` | docs/deployment.md §0 | 通用 PORT 约定 | 部署约束 |
-| `NG-SERVER-MODE` | docs/deployment.md §1 | `RUN_MODE=server` 常驻，非目标 | 非目标 |
-| `NG-POLLING-SSE` | docs/deployment.md §1 | EventSource/SSE 长连接，非目标 | 非目标 |
-| `NG-LONG-POLLING` | docs/deployment.md §1 | Telegram 长轮询，非目标 | 非目标 |
-| `NG-SQLITE-PERSIST` | docs/deployment.md §1 | SQLite 持久化，非目标 | 非目标 |
-| `NG-LOCAL-VOLUME` | docs/deployment.md §1 | 本地卷持久化，非目标 | 非目标 |
-| `NG-SERVERLESS-BIND` | docs/deployment.md §1 | 绑定具体 serverless 平台，非目标 | 非目标 |
-| `MOD-DEDUP` | docs/deployment.md §6 | Redis `SET NX` 幂等键 | 组件 |
-| `MOD-STREAMS` | docs/deployment.md §6 | Redis Streams 队列 + worker | 组件 |
-| `MOD-SINCESTATE` | docs/deployment.md §6 | sinceState 游标（存 Redis） | 组件 |
-| `FLOW-NEW-MAIL` | docs/design.md §5.4 / deployment.md §6 | Push 新邮件流 | 数据流 |
-| `FLOW-RECONCILE` | docs/deployment.md §6 | 外部 Cron 对账补差 + Redis 丢失恢复 | 数据流 |
-| `REQ-AI-CONFIRM` | docs/design.md §12 | AI 仅在明确要求+确认后接触正文 | 需求 |
-| `REQ-VIEW-DIRECT` | docs/design.md §12 | 查看原文始终 JMAP 直取 | 需求 |
-| `REQ-LONG-EMAIL` | docs/design.md §12 | 长邮件禁止发全文，AI 摘要 ~300 字 | 需求 |
-| `REQ-ANALYSIS-EPHEMERAL` | docs/design.md §12 | 分析/摘要结果不持久化 | 需求 |
-| `REQ-ATTACH-ONDEMAND` | docs/design.md §12 | 附件按需拉取 | 需求 |
-| `REQ-AI-FUSE` | docs/design.md §12 | AI 失败约 3 次 → 熔断 + 用户确认回退 | 需求 |
-| `REQ-LLM-OPENAI-COMPAT` | docs/design.md §12 | OpenAI-compatible 环境变量 | 需求 |
-| `REQ-AI-EXTERNAL-CONSENT` | docs/design.md §12 / AGENTS.md §2 | 仅用户明确允许后才向外部 AI 发正文 | 需求 |
-| `REQ-AI-CONSENT` | docs/design.md §12.3.1 | AI 授权期限与 Redis 短期 TTL（授权有效期、到期后重新询问） | 需求 |
-| `REQ-SINGLE-ACCOUNT` | docs/design.md §3.1/§11.3 | 单账户；多账户 = 多 bot 实例 | 需求 |
-| `REQ-RECONCILE-IDEMPOTENCY` | src/state.rs `ReconcileState` / docs/design.md §8.2 | JMAP 对账游标只有在全部分页事件成功入队（XADD）后才推进；单次对账由 Redis SET NX EX 锁 `lock:reconcile` 保证单飞（TTL 300s，owner token 续期 90s，仅持有者可续期/释放）；处理端再经 `claim_dedup`（SET NX EX，86400s）保证同一流消息不重复投递 | 需求 |
-| `NFR-NOTIFY-SLA` | docs/deployment.md §6.5 | 通知可用性 ≥99.9%，允许少量延迟 | 非功能 |
-| `NFR-RECONCILE-INTERVAL` | docs/deployment.md §6.3 | 外部 Cron 对账间隔 5–10 分钟 | 非功能 |
-| `SAF-NOTIFY-META` | AGENTS.md §2 | 新邮件通知只含元数据，正文不入通知 | 安全 |
-| `SAF-CHAT-ALLOWLIST` | AGENTS.md §2 / design.md §7.3 | CHAT_ALLOWLIST 硬约束，处理前先拒绝非白名单 | 安全 |
-| `SAF-AUTH-RECONCILE` | AGENTS.md §2 / design.md §7.3 | `/reconcile` 需 `Authorization: Bearer RECONCILE_TOKEN`，fail-closed | 安全 |
-| `SAF-AUTH-TG-WEBHOOK` | AGENTS.md §2 / design.md §7.3 | `/webhook/tg` 需头 `X-Telegram-Bot-Api-Secret-Token == TG_WEBHOOK_SECRET` | 安全 |
-| `SAF-AUTH-JMAP-PUSH` | AGENTS.md §2 / design.md §7.3 | `/push/jmap` 按 `pushSubscriptionId` 查 Redis 短期验证状态（存 `session_digest` 摘要），缺失或摘要不符拒绝；状态缺失回落 worker 重新验证（fail-closed） | 安全 |
-| `SAF-ADMIN-SESSION` | src/config.rs `admin_session_digest` / §7 | 返回用于 Redis admin-session 记录的 SHA-256 摘要；bearer token 本体绝不写入 Redis | 安全 |
-| `SAF-NO-SECRET-ECHO` | src/config.rs `SecretString` 字段与公共配置 API | 密钥字段不实现 `Debug` 且永不进入公共配置 API 响应；Redis 线格式类型私有，不得序列化进 HTTP 响应 | 安全 |
-| `SAF-PROBE-PUBLIC` | AGENTS.md §2 / design.md §7.3 | `/healthz`、`/ready` 公开探针：无鉴权、无敏感信息 | 安全 |
-| `ARCH-HEALTHZ` | docs/design.md §7.3/§10.0 | `/healthz` liveness（进程存活），语义长期稳定 | 架构 |
-| `ARCH-READY-BASELINE` | docs/design.md §7.3 / src/notify.rs `ready`+`probe_jmap_session`+`probe_telegram_get_me` | `/ready` 端到端就绪：配置完整性 + Redis 可达性 + **出站只读探测**（JMAP session `GET`、Telegram `getMe`，各 `PROBE_TIMEOUT`=3000ms、并行，最坏约 3s），四者全过 `200`（就绪报告 JSON 含真实 `jmap`/`telegram` 字段），任一失败 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`）；探针只读、无状态写入（`refresh_business_config` 仅读 Redis），bot token 仅用于拼 URL | 架构 |
-| `GATE-P0` | docs/design.md §10.0 | 阶段0 P0 门禁（fmt/clippy/test 过 Debian 容器等 8 项） | 流程 |
-| `BOUND-STAGE1` | docs/design.md §10.0 | 阶段1 推进边界（过 GATE-P0 才进；R1 入口鉴权已在阶段0 落地） | 流程 |
-| `ARCH-CONFIG-ENV` | docs/design.md §7.1 | 配置=环境变量手工解析，无 figment/TOML | 架构 |
-| `ARCH-AXUM-08` | docs/design.md §10.0 | 单端口 axum 0.8 入口（版本以 Cargo.toml 为准） | 架构 |
-| `ARCH-STAGE0` | docs/design.md §10.0 / §5.3 | 阶段0 实际交付与现状 | 架构 |
-| `ARCH-DEPS-STAGE0` | docs/design.md §10.0 / AGENTS.md §3 | 阶段0 实际依赖集（axum/serde/secrecy/subtle/tokio/tracing…） | 架构 |
-| `ARCH-DEPS-STAGE1` | docs/design.md §10.0-1 / AGENTS.md §3 | 阶段1 依赖现况：`jmap-client 0.4.2` 已引入，版本/features 以 Cargo.toml 为准，禁用 WebSocket feature | 架构 |
-| `ARCH-DEPS-STAGE4` | docs/design.md §10.0-1 / AGENTS.md §3 | 阶段3.5/4 后依赖现况：`redis 0.27`、`reqwest 0.13` 已引入并实际使用；`teloxide` **未**引入（Telegram 由 `src/channel.rs` 用 reqwest 自研实现）；版本一律以 `Cargo.toml` 为准 | 架构 |
-| `MOD-JMAP-CLIENT` | docs/design.md §6-7 / AGENTS.md §3 | `domain::jmap::client` 真实只读 adapter（session/account/mailbox/email 只读） | 组件 |
-| `MOD-TELEGRAM-NOTIFY` | src/worker.rs / docs/design.md §12 | 有界元数据通知 worker：消费出站队列，把脱敏通知经 Telegram 投递（不承载正文/AI 响应） | 组件 |
-| `REQ-JMAP-SESSION-URL` | docs/design.md §7.1 / .env.example | `JMAP_SESSION_URL` 接受服务基地址或完整 /.well-known/jmap，归一化为 origin/base 后再交 jmap-client（无重复路径）；**代码已实现（D-G1-1），待真机验证** | 需求 |
-| `SAF-JMAP-URL` | docs/design.md §7.1 / AGENTS.md §3 | JMAP URL 约束：仅 HTTPS、禁止内嵌凭据、拒绝危险 query | 安全 |
-| `REQ-JMAP-RAW-MULTIPART` | docs/design.md §3.2/§10.1 | `read_email` 多 part 原文：按 text_body 顺序拼接"有 part_id 且 bodyValue"的部分；无可用部分→明确错误 | 需求 |
-| `GATE-G1-JMAP-READONLY` | docs/design.md §10.1 / AGENTS.md §5 | G1 门禁：只读 adapter **代码已实现**（mock + `#[ignore]` 真机测试），**待真实 `cargo test -- --ignored jmap::` 验证** | 流程 |
-| `ARCH-LB-WORKER` | docs/deployment.md §10 | 多实例 LB/HA：免费 Cloudflare Worker 作唯一对外入口 + 故障转移，后端为多平台同镜像 | 架构 |
-| `C-LB-SINGLE-REG-URL` | docs/deployment.md §10.1 | Telegram/Push/Cron 只登记 Worker 的稳定 URL；后端平台入口不对外登记 | 约束 |
-| `C-LB-SHARED-SECRETS` | docs/deployment.md §10.3 | 多实例必须共享同一组 `SAF-AUTH-*` secret，否则随机 401 | 约束 |
-| `SAF-LB-PASSTHRU` | docs/deployment.md §10.3 / AGENTS.md §2 | 信任模型=透传：Worker 不改写鉴权；后端必须继续 fail-closed 校验（后端可能被公网直连） | 安全 |
-| `SAF-RECONCILE-LOCK` | docs/deployment.md §10.5 | `/reconcile` 不扇出，Redis 锁保证单实例执行，避免重复对账 | 安全 |
-| `MOD-STREAMS-GROUP` | docs/deployment.md §10.5 | 多实例用同一 Streams 消费组名，Redis 自动分摊（at-least-once 不重复处理） | 组件 |
-| `MOD-HEALTH-AGG` | docs/deployment.md §10.6 | Worker 聚合健康视图，报告各后端存活供外部监控 | 组件 |
-| `MOD-DEBUG` | src/debug.rs / docs/deployment.md §2.1 / docs/design.md §7.6 / docs/reference.md §3 | 远程联调只读表面：`--debug` + `DEBUG_TOKEN` 双因子开启后挂载 `/debug/*`，否则不挂载 | 组件 |
-| `SAF-DEBUG-GATE` | src/main.rs / src/debug.rs / docs/design.md §7.6 / docs/deployment.md §2.1 | 双因子门禁：启动带 `--debug` **且** `DEBUG_TOKEN` 非空才挂载路由；缺任一完全不挂载（请求落通用 `404`），默认绝对关闭 | 安全 |
-| `SAF-DEBUG-AUTH` | src/debug.rs / docs/deployment.md §2.1 | 挂载后 `/debug/*` 须 `Authorization: Bearer DEBUG_TOKEN` 常数时间比较，失败 `401` 且无副作用 | 安全 |
-| `REQ-DEBUG-ENDPOINTS` | src/debug.rs / docs/reference.md §3 / docs/deployment.md §2.1 | 端点契约：`GET /debug/ping`、`/config`、`/redis`、`/jmap`、`/telegram`、`/worker` 均只读；`POST /debug/notify` 走真实出站链路发一条测试消息；响应体不含 secret 原文（凭据字段只出 `*_configured` 布尔，非密文的身份与预算字段仍明文返回） | 需求 |
-| `SAF-DEBUG-ORIGIN-ONLY` | docs/deployment.md §2.1 / docs/reference.md §4 | `/debug/*` 不在网关 14 条安全路由内，Worker 一律 `404 route not forwarded`；只能直连后端 origin，公网不可达 | 安全 |
-| `SAF-DEBUG-ALLOWLIST` | src/debug.rs / docs/deployment.md §2.1 | `POST /debug/notify` 仅在 chat 白名单**非空**时校验 `chat_id`；白名单未配置（空）时不拦截，故启用本面须确认业务白名单已配置 | 安全 |
-| `NFR-HA-MULTI-INSTANCE` | docs/deployment.md §10.7 / §9.1 | 多实例高可用语义；双活或主备均可；Redis 单点故障不在方案范围（用户外部解决） | 非功能 |
-| `C-NO-DB` | docs/deployment.md §0 / §9.1 / AGENTS.md §2 | 生产不使用任何数据库（无 SQLite/Postgres/MySQL/嵌入式），Redis 为唯一状态存储；应用不连接第二个数据库 | 约束 |
-| `C-NO-LOCAL-WRITE` | docs/deployment.md §0 / §9.1 / AGENTS.md §2 | 禁止本地文件/目录写入（日志/数据/临时缓存/本地卷） | 约束 |
-| `C-LOG-STDOUT-ONLY` | docs/deployment.md §0 / §9.1 / AGENTS.md §2 | 日志只写 stdout/stderr，由平台采集；禁用文件日志后端 | 约束 |
-| `SAF-LOG-PURITY` | docs/deployment.md §0 / §9.1 / AGENTS.md §2 | 日志与 Redis 写入内容仅限结构化事件/计数/时间戳/脱敏摘要；禁止密钥/邮件正文/AI 请求响应/附件内容 | 安全 |
-| `C-NO-STATEFUL-RECOVERY` | docs/deployment.md §0 / §9.1 / AGENTS.md §2 | 禁止依赖进程内状态做生产恢复；恢复一律走 Redis + JMAP 对账；进程内缓存仅为性能优化，丢失须安全可重入 | 约束 |
+---
+
+## 5. 安全与鉴权规范
+
+### 5.1 默认拒绝
+
+- 所有外部入口默认拒绝，白名单放行。
+- 白名单必须穷举，禁止通配（无 `*`、无前缀通配）。
+
+### 5.2 鉴权分离
+
+- **不同调用方不得共享同一认证凭据。** 用户界面会话、外部服务推送、机器对机器任务、
+  负载均衡转发必须各自持有独立凭据。
+- 会话必须是随机的、有短 TTL 的、可撤销的。
+- **凭据摘要可以落库，凭据本体不得落库。**
+
+### 5.3 诊断面
+
+- 诊断 / 联调面必须默认**绝对关闭**，且关闭态必须做到「路由不存在」（落到通用 404），
+  而不是「路由存在但拒绝」。
+- 开启必须要求**两个独立因子同时满足**（一个启动期显式开关 + 一个密钥环境变量）。
+- 诊断面不得暴露在任何公共网关 / CDN 白名单内，只能直连后端 origin 访问。
+- 诊断面必须是只读或纯函数式探测：不得写入外部系统状态，不得修改配置。
+- 若含测试性写操作，必须要求显式目标标识；**空目标必须视为拒绝而非放行**——
+  「空白名单 = 放行一切」是必须显式校验的坑。
+
+---
+
+## 6. 测试与门禁规范
+
+### 6.1 变更验证闭环
+
+任何涉及运行时行为或可核对事实的改动，必须**同一改动内**完成：实现 → 校验 → 修文档。
+
+- 改动不得只存在于代码、也不得只存在于文档；不得留到「以后补」。
+- 改代码 → 改测试 → 改文档，三者一起提交。
+
+### 6.2 测试要求
+
+- 每个行为变更都要有测试覆盖；纯重构不得改变测试总数。
+- **每条硬性安全不变量都要有一条测试或断言能证明它成立**，而不是只写在文档里。
+- 门禁必须全部通过才算交付：格式化检查、依赖锁校验、静态检查（warning 当错误）、测试。
+- **禁止**删除测试、跳过测试、放宽检查级别、删除访问控制来通过门禁。
+- **不得提交未验证的代码。** 门禁结果必须来自本轮实际执行，不得沿用历史结论。
+
+### 6.3 测试与实现同路径
+
+- 探针、测试、健康检查等「验证某依赖可用」的代码，**必须与真实调用走同一条路径**
+  （同样的认证、同样的 URL 归一化、同样的协议细节）。
+- 简化版验证代码会误报不可用，或更糟——误报可用。误报不可用会让入口层停发流量，
+  后果是全站不可用。
+
+### 6.4 外部依赖测试
+
+- 无外部服务凭据时，测试用 mock 或本地回环服务。
+- 真实环境集成测试必须显式标注为可忽略，且缺凭据时**静默跳过**（不泄露凭据、不判失败）。
+- **不得声称已通过真实环境验证，除非本轮真的连过。**
+
+### 6.5 跨层改动
+
+- 改公共 API / 状态存储键与 TTL / 配置项 / 错误码 / 用户可见文案时，
+  **文档、后端、前端或网关侧必须同轮同步**。
+- 网关白名单改动必须同步路由文档与白名单测试。
+- **文案是产品行为的一部分。** 面向用户的提示若与后端实际行为不符，就是一个 bug——
+  填错的用户无法自助排障。
+
+---
+
+## 7. 文档治理规范
+
+### 7.1 文档分工与权威
+
+- 每个文档只回答一个问题；**不得跨文档复制表格、清单或数值。**
+- 必须明确声明哪个文档是哪类事实的**唯一权威来源**。
+- 其他文档引用事实时给稳定锚点（文件 + 稳定 ID），不复制数值本身。
+
+### 7.2 同轮同步
+
+- 改公共 API、状态存储键名与 TTL、配置项、错误码、用户可见文案时，**同轮**更新相关文档。
+- 中英双语文档必须信息对等（覆盖相同的事实集，不要求逐句对应）。
+
+### 7.3 稳定 ID 与引用
+
+- 项目用**稳定 ID** 做跨文档引用；注册表属于项目文档，不属于通用规范。
+- **跨文档禁止用 `§x.y` 章节号做引用**（章节号随编辑漂移）；用稳定 ID。
+- **同文档内**允许 `§x.y` 引用。
+- **新增稳定 ID 必须先登记到注册表。** 未登记 ID 不得出现在注释、文档或标识符中。
+
+### 7.4 自动化校验
+
+- 文档必须经过仓库内的文档校验器校验，通过才算完成。
+- **校验器只能证明「可达」**：行号存在、引用可解析、表格列数一致。
+  **它不能证明语义正确。**
+- 报告校验结果时必须同时说明这个区分，不得把「0 error」说成「内容已验证」。
+- **新增文档必须加入校验器的文档清单**，否则它永远不会被校验——这是静默失效。
+
+---
+
+## 8. 变更流程
+
+1. 确认 `docs/charter.md` 的安全不变量未被违反。
+2. 实现 + 测试。
+3. 跑门禁，全部通过。
+4. 跑文档校验器，全部通过。
+5. 同轮同步文档（代码 ↔ 测试 ↔ 文档 ↔ 前端 / 网关）。
+6. 提交。
+
+**不得**：
+
+- 为了过门禁而删测试、跳校验、放宽级别、删访问控制、缩小检查范围。
+- 把未验证的东西写进文档（「已通过」「已实现」「已验证」一律需本轮证据）。
+- 在文档或注释里引用不存在的依赖、函数、类型、键、路径或行号。
+- 把「计划做」写成「已完成」；把「推测」写成「结论」。
+- 只改代码不改文档，或只改文档不改代码。

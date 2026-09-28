@@ -8,7 +8,7 @@
 > 故障转移，不接受任意目标主机，也不提供任何形式的流量中转或访问隐藏能力。
 
 > 设计依据：`docs/design.md §10 / NFR-HA-MULTI-INSTANCE`、`docs/deployment.md §10`。
-> 安全基线：`AGENTS.md §2/§4`。
+> 安全基线与禁止事项：`docs/charter.md §3/§5`（稳定 ID 注册表 §8）。
 
 ## 目录
 

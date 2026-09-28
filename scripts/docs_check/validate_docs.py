@@ -2,7 +2,8 @@ import re, sys
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DOCS = ['AGENTS.md', 'README.md', 'README.zh-CN.md', 'docs/design.md',
-        'docs/deployment.md', 'docs/reference.md', 'docs/retired.md', 'docs/roadmap.md']
+        'docs/deployment.md', 'docs/reference.md', 'docs/retired.md',
+        'docs/roadmap.md', 'docs/charter.md']
 errors = []
 
 def slug(t):
@@ -75,7 +76,9 @@ for d in DOCS:
         if in_fence or '`' in line or line.lstrip().startswith(('#', '|')):
             continue
         if re.search(r'docs/[a-z]+\.md|README(?:\.zh-CN)?\.md', line) and '§' in line:
-            if d == 'AGENTS.md' or '本文件' in line:
+            # AGENTS.md and charter.md hold the stable-ID index, which legitimately
+            # cites other docs' sections (registry definition-file column).
+            if d in ('AGENTS.md', 'docs/charter.md') or '本文件' in line:
                 continue
             errors.append(f'{d}:{i} cross-doc section ref: {line.strip()}')
 

@@ -1,7 +1,7 @@
 /**
  * Wrangler 示例配置 — MessageWeave 多实例 LB/HA（ARCH-LB-WORKER / deployment.md §10）。
  *
- * 安全约束（AGENTS.md §2/§4，稳定 ID）：
+ * 安全约束（docs/charter.md §3/§5，稳定 ID 注册表 §8）：
  * - 后端 origin 仅允许 https（C-HTTPS-INBOUND / C-HTTPS-URL）；env 校验时拒绝
  *   http/非 https/内嵌凭据。
  * - 不代理 Redis/JMAP（C-NO-DB / C-REDIS-ONLY-STATE）：Worker 只做请求转发，后端连自己的 Redis。

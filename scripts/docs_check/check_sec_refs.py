@@ -15,7 +15,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DOCS = ["AGENTS.md", "README.md", "README.zh-CN.md", "docs/design.md",
         "docs/deployment.md", "docs/reference.md", "docs/retired.md",
-        "docs/roadmap.md"]
+        "docs/roadmap.md", "docs/charter.md"]
 
 HEADING = re.compile(r"^(#{2,4})\s+(\d+(?:\.\d+)?\.?)\s")
 # §2.3, §5.7, §3 (bare), also `§2.3/§3.4` chains handled by finditer
@@ -23,7 +23,7 @@ SEC = re.compile(r"§(\d+(?:\.\d+)?)")
 # an explicit target file sitting immediately before the §ref
 TARGET_BEFORE = re.compile(
     r"(?:docs/)?(AGENTS\.md|README\.md|README\.zh-CN\.md|design\.md|"
-    r"deployment\.md|reference\.md|retired\.md|roadmap\.md)\s*[`\s]*"
+    r"deployment\.md|reference\.md|retired\.md|roadmap\.md|charter\.md)\s*[`\s]*"
     r"§(\d+(?:\.\d+)?)")
 
 

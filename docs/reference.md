@@ -327,9 +327,10 @@ most likely cause of "the container is healthy but nothing happens".
 
 ### 5.2 Redis-resident business configuration
 
-Written by the SPA through `PUT /api/bootstrap`, then hot-reloaded by
-`PUT /api/business-config` (effective within 1 s). The process never reads these from the
-environment in normal operation.
+Written by the SPA through `PUT /api/business-config` (effective within 1 s); the first
+successful write creates the configuration, later writes hot-reload it. The same write is
+also exposed as a one-shot `POST /api/bootstrap` against the backend origin for automation.
+The process never reads these from the environment in normal operation.
 
 ### 5.3 Legacy compatibility (read but not required)
 

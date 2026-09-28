@@ -37,10 +37,10 @@ docker build -t messageweave:latest .
 docker run --env-file .env -p 8080:8080 messageweave:latest
 ```
 
-Then open `http://localhost:8080` in a browser. The first-boot SPA calls
-`POST /api/bootstrap`, stores the business secrets in Redis, and creates the admin session.
-From that point the browser configures the service through Redis — no environment variable
-is read or written again for business configuration.
+Then open `http://localhost:8080` in a browser and enter your `CONFIG_ENCRYPTION_KEY`
+value. The SPA exchanges it with `POST /api/admin/session` for a 900-second admin session,
+then writes the business secrets to Redis with `PUT /api/business-config`. No environment
+variable is read or written again for business configuration.
 
 For local builds without Docker: `cargo build --locked` produces the `message-weave` binary.
 
@@ -109,6 +109,7 @@ the credential for any HTTP endpoint.
 | [`docs/reference.md`](docs/reference.md) | **Single source of truth for verifiable facts** — Redis keys and TTLs, error codes, routes, environment layers, budgets |
 | [`docs/roadmap.md`](docs/roadmap.md) | Gaps, blockers and the next phase |
 | [`docs/retired.md`](docs/retired.md) | What was tried and dropped — abandoned routes, unreleased designs, and names that never existed |
-| [`AGENTS.md`](AGENTS.md) | Contribution rules, hard boundaries, the stable-ID index for cross-document references |
+| [`docs/charter.md`](docs/charter.md) | Project charter: goals, locked technology choices, security invariants, prohibitions, and the stable-ID registry |
+| [`AGENTS.md`](AGENTS.md) | Language-agnostic engineering norms: code style, config and secrets, build environment, testing gates, document governance |
 
 Facts that matter are traceable. If two documents disagree, `docs/reference.md` wins.

@@ -35,9 +35,9 @@ docker build -t messageweave:latest .
 docker run --env-file .env -p 8080:8080 messageweave:latest
 ```
 
-然后在浏览器打开 `http://localhost:8080`。首启 SPA 调用 `POST /api/bootstrap`，把业务
-密钥写入 Redis 并创建 admin session。此后浏览器通过 Redis 配置服务——业务配置不再读取或
-写入任何环境变量。
+然后在浏览器打开 `http://localhost:8080`，输入你的 `CONFIG_ENCRYPTION_KEY` 值。SPA 用它
+经 `POST /api/admin/session` 换取 900 秒的 admin session，再用 `PUT /api/business-config`
+把业务密钥写入 Redis。此后业务配置不再读取或写入任何环境变量。
 
 不用 Docker 的本地构建：`cargo build --locked` 产出 `message-weave` 二进制。
 
@@ -93,6 +93,7 @@ Telegram 发送。它由双因子开关控制——进程必须带 `--debug` **�
 | [`docs/reference.md`](docs/reference.md) | **可核对事实的唯一权威来源**——Redis 键与 TTL、错误码、路由、环境变量分层、预算常量 |
 | [`docs/roadmap.md`](docs/roadmap.md) | 缺口、阻塞项与下一阶段目标 |
 | [`docs/retired.md`](docs/retired.md) | 试过但没用的：废弃路线、未落地的设计与从未存在的名字 |
-| [`AGENTS.md`](AGENTS.md) | 贡献规则、硬边界、跨文档引用的稳定 ID 索引 |
+| [`docs/charter.md`](docs/charter.md) | 项目章程：项目目标、锁定的技术选型、安全不变量、禁止事项与稳定 ID 注册表 |
+| [`AGENTS.md`](AGENTS.md) | 语言无关的工程规范：代码风格、配置与密钥、构建环境、测试门禁、文档治理 |
 
 重要的事实都可追溯。两份文档不一致时，以 `docs/reference.md` 为准。
