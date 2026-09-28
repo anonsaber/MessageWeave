@@ -23,7 +23,7 @@
 
 - **`/search` + `SearchSnippet/get` 高亮（已完成，`bfe0fd8`）** — `Intent::Search` 变体 + `JmapService::search_emails`（`email_query`(`Filter::text`) 取 ID + `SearchSnippet/get` 取高亮）；高亮经 `strip_mark_tags`/`unescape_html_entities` 渲染成 Telegram 纯文本；snippet 不支持时降级为纯 ID 列表；`subject`/`preview` 有 120/160 字符截断上限；每条命中带 `email_id` 可直接接 `/summary`。设计见 `docs/design.md` §2.3、§3.2、§5.7。
 - **Telegram 429 退避（已完成，`f4cae00`）** — `src/channel.rs` 的 `max_retries`（默认 3，硬上限 5）现在按 429 的 `Retry-After` 退避，缺该头时指数退避。
-- **多实例重复投递窗口（已完成，`6c99ce5`）** — XAUTOCLAIM 空闲阈值不再按固定 300s 单条上限缩放，改为按运行配置推导（超时预算 × 安全系数 × 批大小），单实例与多实例部署下的提前认领窗口关闭。
+- **多实例重复投递窗口（已完成，`6c99ce5`）** — XAUTOCLAIM 空闲阈值不再按固定 300s 单条上限缩放，改为按运行配置推导：`(max_retries + 1) × (jmap + telegram + llm 超时) × 2` 为单条上限、再乘批大小，下限 300s、上限 6h（完整公式见 `docs/reference.md` §6.3）。单实例与多实例部署下的提前认领窗口关闭。
 - **`/debug/notify` 空白名单不拦截**（`SAF-DEBUG-ALLOWLIST`）— 白名单校验只在白名单**非空**时才生效（`src/debug.rs:232-235`），因此业务白名单未配置时 `chat_id` 可为任意值。**已定位、已文档化、本轮不改代码**：该面默认关闭且需 Bearer，且业务白名单为空时主产品本身即接受任意 chat，沿用同一语义不构成额外泄露面。若日后要收紧，需把语义改为「空白名单则拒绝」，并补单元测试、跑 `GATE-P0`。
 
 ## 验收待办
