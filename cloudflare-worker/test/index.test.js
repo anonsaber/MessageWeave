@@ -40,6 +40,15 @@ test("Worker GET /healthz aggregates backend probes without touching forwarded r
   }
 });
 
+test("Worker: wrong method on the local /healthz probe => 405, not 404", async () => {
+  const res = await handleFetch(
+    new Request("https://lb.example/healthz", { method: "POST", body: "{}" }),
+    makeEnv(),
+  );
+  assert.equal(res.status, 405);
+  assert.equal(res.headers.get("allow"), "GET");
+});
+
 test("Worker: unknown route => 404 (C-LB-SINGLE-REG-URL)", async () => {
   const res = await handleFetch(
     new Request("https://lb.example/unknown", { method: "POST", body: "{}" }),

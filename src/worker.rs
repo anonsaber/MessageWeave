@@ -1,3 +1,4 @@
+//! SPLIT-EVAL: 已评估暂缓拆分——搜索降级链、通知编排与出站重试共用同一份配置读取、错误映射表与日志字段集合，拆分会引入重复的错误翻译与日志规约。
 //! Bounded metadata notification worker (MOD-TELEGRAM-NOTIFY).
 use crate::ai::LlmClient;
 use crate::channel::telegram::TelegramClient;

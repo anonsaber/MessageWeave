@@ -15,6 +15,7 @@ export const SAFE_ROUTES = Object.freeze([
   "/api/business-config",
   "/api/admin/session",
   "/api/admin/session/revoke",
+  "/api/enabled",
   "/webhook/tg",
   "/push/jmap",
   "/api/push/register",
@@ -33,7 +34,6 @@ export class BackendConfigError extends Error {
   }
 }
 
-const HTTP_STATUS = 80;
 const HTTPS_STATUS = 443;
 
 /**
@@ -118,4 +118,4 @@ export function parseBackendOrigins(raw) {
   return out;
 }
 
-export { HTTP_STATUS, HTTPS_STATUS };
+export { HTTPS_STATUS };

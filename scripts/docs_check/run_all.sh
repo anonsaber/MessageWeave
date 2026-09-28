@@ -16,9 +16,14 @@
 #                   with anchors on the wrong line -- someone must read them.
 #   check_sec_refs  every "§N.N" cross-reference resolves to a real heading in
 #                   the document it is attributed to.
+#   check_file_size every source file over 500 lines carries the SPLIT-EVAL
+#                   marker required by AGENTS.md §2.1. LIMITATION: it proves
+#                   the marker exists, not that the written reason is sound.
 #
 # audit_anchors and check_sec_refs only scan prose: lines inside fenced code
 # blocks are skipped, so examples and tables holding code do not raise noise.
+# check_file_size only scans src/, web/ and cloudflare-worker/src/ — docs and
+# tests are out of scope.
 #
 # Root is derived from this file's own location, so the whole suite works from a
 # clean clone without editing any path.
@@ -29,7 +34,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 rc=0
 fail=0
 
-for script in validate_docs check_tables audit_anchors check_sec_refs; do
+for script in validate_docs check_tables audit_anchors check_sec_refs check_file_size; do
     out="$(python3 "$here/$script.py" 2>&1)"
     code=$?
     # Each check prints "=== NAME (n errors) ===" as its summary, but not
@@ -46,7 +51,7 @@ for script in validate_docs check_tables audit_anchors check_sec_refs; do
 done
 
 if [ "$fail" -eq 0 ]; then
-    echo "GATE-DOCS: PASS (4/4 checks clean)"
+    echo "GATE-DOCS: PASS (5/5 checks clean)"
 else
     echo "GATE-DOCS: FAIL ($fail check(s) reported errors)"
 fi

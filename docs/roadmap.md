@@ -12,7 +12,7 @@
 ## 阻塞（需要真实环境，当前无法验证）
 
 - **真实 Stalwart 邮箱联调** — 未做任何真实邮箱端到端集成。JMAP adapter 代码与配置校验已完成并通过本地 `cargo test`，但 `Email/changes`、`PushSubscription` 路径未在真实账号上验证。`REQ-JMAP-SESSION-URL` 已实现（`D-G1-1`）但待真机验证。**阻塞原因**：无可用 Stalwart 账号/凭据；禁止使用测试账号或伪造结果。
-- **真实 Telegram Bot 联调** — 入站 `POST /webhook/tg` 的 secret 头校验 + chat 白名单（`notify.rs:175` 起）、出站 `sendMessage`（`channel.rs`）均已在代码内并有单元测试，但**都没有在真实 Bot 上跑过**。另：向 Telegram 注册 webhook URL 是运维步骤（调 `setWebhook`），应用内不实现；长轮询 `getUpdates` 从未实现（见 `docs/retired.md`）。**阻塞原因**：无 Bot Token；禁止向真实用户发消息。
+- **真实 Telegram Bot 联调** — 入站 `POST /webhook/tg` 的 secret 头校验 + chat 白名单（`notify.rs:176` 起）、出站 `sendMessage`（`channel.rs`）均已在代码内并有单元测试，但**都没有在真实 Bot 上跑过**。另：向 Telegram 注册 webhook URL 是运维步骤（调 `setWebhook`），应用内不实现；长轮询 `getUpdates` 从未实现（见 `docs/retired.md`）。**阻塞原因**：无 Bot Token；禁止向真实用户发消息。
 - **真实 Redis TLS 连接** — `rediss://` 握手、密码特殊字符 URL 编码、`CONFIG_ENCRYPTION_KEY` 热更新未实测。**阻塞原因**：无托管 Redis 实例。
 - **`Email/changes` 的 `newState` 语义** — 客户端已用「同 `sinceState` 翻倍 `maxChanges` 扩窗」消除按页漏批，但 `newState` 是否表示"全部待报变更之后"仍需真实 Stalwart 复验，否则停机积压边界无法判定。**阻塞原因**：无可用 Stalwart 账号/凭据。
 - **Push callback 公网映射** — 单飞锁 `lock:push-register:{sha256(callback_url)}`（360s）与映射 `push:registration:{sha256(callback_url)}`（7d）的 TTL 需真实回调时序验证。**阻塞原因**：无真实推送回调可观察。

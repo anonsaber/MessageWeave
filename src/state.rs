@@ -1,3 +1,4 @@
+//! SPLIT-EVAL: 已评估暂缓拆分——会话令牌、幂等去重、可靠队列与限流共用同一组 Redis key 约定、加密封装与错误类型，拆分会让 key 命名规范分散到多处而失去单点审阅。
 //! Redis-only reliability primitives (C-REDIS-ONLY-STATE, MOD-DEDUP, MOD-STREAMS).
 //! These APIs are deliberately short-request operations; no subscriptions or polling.
 

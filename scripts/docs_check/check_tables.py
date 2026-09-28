@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DOCS = ['AGENTS.md', 'README.md', 'README.zh-CN.md', 'docs/design.md',
         'docs/deployment.md', 'docs/reference.md', 'docs/retired.md',
-        'docs/roadmap.md', 'docs/charter.md']
+        'docs/roadmap.md', 'docs/charter.md', 'cloudflare-worker/README.md']
 
 CODE = re.compile(r'`[^`\n]*`')
 SEP = re.compile(r'^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$')

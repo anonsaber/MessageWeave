@@ -47,6 +47,7 @@ test("route safelist excludes /healthz and unknown paths (C-LB-SINGLE-REG-URL)",
     "/", "/assets/config.js", "/assets/styles.css", "/api/status", "/ready", "/webhook/tg", "/push/jmap", "/reconcile",
     "/api/push/register", "/api/push/disable",
     "/api/config", "/api/business-config", "/api/admin/session", "/api/admin/session/revoke",
+    "/api/enabled",
   ]) {
     assert.ok(LB_ROUTES.includes(r), `forwarded: ${r}`);
   }

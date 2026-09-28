@@ -280,7 +280,7 @@ TG /read 3 → handler 取会话里的 folder+page 游标
 
 当前**没有 FSM**。命令路由由 `src/worker.rs` 的 `parse_intent` 解析为 `Intent`；AI 授权态是 Redis 里的一个布尔加过期时间（键与 TTL 见 `docs/reference.md` 的 AI 授权态一节），不是多步确认态。
 
-仍成立的不变量：AI 摘要必须先有用户显式授权，**没有授权态不得调用 LLM**。授权一旦生效，摘要会拉取邮件正文全文送 LLM（`read_email` 请求 `TextBody` + `BodyValues` 并 `fetch_text_body_values(true)`，见 `src/domain/jmap/client.rs`），但正文**不回传给 Telegram**——出站只发摘要，或失败时回退为前 300 字符（`worker.rs:150` 注释：body text never reaches Telegram）。
+仍成立的不变量：AI 摘要必须先有用户显式授权，**没有授权态不得调用 LLM**。授权一旦生效，摘要会拉取邮件正文全文送 LLM（`read_email` 请求 `TextBody` + `BodyValues` 并 `fetch_text_body_values(true)`，见 `src/domain/jmap/client.rs`），但正文**不回传给 Telegram**——出站只发摘要，或失败时回退为前 300 字符（`worker.rs:151` 注释：body text never reaches Telegram）。
 
 曾设计过的 5 态 FSM（`Idle` / `AwaitClarify` / `AwaitConfirm` / `Analyzing` / `AwaitFallback`）连同状态转移表与渠道中立说明，见 `docs/retired.md`。
 
@@ -347,6 +347,7 @@ message-weave/
 | `ai` | reqwest 0.13 | `LlmClient` / `summarize` | mock OpenAI 兼容端点 | 已实现 |
 | `notify` | axum；redis | HTTP 鉴权、全局开关、`/push/jmap` 入队、`Email/changes` 对账和游标提交 | webhook 校验失败路径覆盖 403 | 已覆盖真实对账路径；仍需真实 Stalwart 环境做端到端验收 |
 | `web` | axum | `/config` 静态页 + `include_str!` 嵌入 + CSP | 前端由 `web/config.test.mjs` 覆盖 | 已实现 |
+| `debug` | reqwest 0.13；redis 0.27 | 远端诊断面 `/debug/*`（`src/debug.rs`）：6 条只读探针 `/debug/ping`、`/debug/config`、`/debug/redis`、`/debug/jmap`、`/debug/telegram`、`/debug/worker` + `POST /debug/notify`（走生产出站路径发一条测试消息，无独立实现） | 仅 `--debug` + `DEBUG_TOKEN` 双因子齐备时挂载路由；模块本身无条件编译 | 已实现，不进 Worker 白名单（`SAF-DEBUG-ORIGIN-ONLY`） |
 
 > 注：「现状」列是**模块级**口径（模块已落地），不代表行为完备。行为级缺口不在本表内：`docs/roadmap.md`「代码缺口」中 `/search`、Telegram 429 退避、多实例重复投递窗口均已实现，仅剩 1 条按产品决策保留不改（`SAF-DEBUG-ALLOWLIST`）。`worker` 模块的 `/search` 路径已随 `bfe0fd8` 落地。
 
@@ -386,7 +387,7 @@ message-weave/
 | `LLM_ENABLED` | 否 | `false` | 关闭时不校验 `LLM_*`（`REQ-LLM-OPENAI-COMPAT`） |
 | `LLM_ALLOW_NET` | 否 | `false` | AI 出网开关（`REQ-AI-EXTERNAL-CONSENT`） |
 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | `LLM_ENABLED=true` 时必填 | — | OpenAI-compatible |
-| `LLM_MAX_RETRIES` | 否（环境变量路径**不读取**） | `3` | 熔断阈值（`REQ-AI-FUSE`）。当前经 Redis 运行参数管理（`OutboundConfig.max_retries`，回落默认 `3`，见 `src/ai.rs`）；`Config::from_env()` **不读取**此变量 |
+| `LLM_MAX_RETRIES` | 否（环境变量路径**不读取**） | — | 熔断阈值（`REQ-AI-FUSE`）。当前经 Redis 运行参数管理（`OutboundConfig.max_retries`，回落默认见 `docs/reference.md` §6.1）；`Config::from_env()` **不读取**此变量 |
 | `LLM_SUMMARY_TARGET_CHARS` | 否 | `300` | 摘要目标字数（`REQ-LONG-EMAIL`） |
 
 > 当前 `config.rs` 通过环境变量和 Redis 业务配置提供上述字段（含 `TelegramConfig` / `JmapConfig` / `LlmConfig`）。未来若引入 TOML/figment 需另立决策；当前文档不假设配置文件存在。
@@ -411,7 +412,7 @@ message-weave/
   - `/ready` 做端到端探测：配置完整性 + Redis 可达性 + 出站只读探测（`GET {jmap_origin}/.well-known/jmap`，带配置的 Basic 认证；`GET https://api.telegram.org/bot<token>/getMe`；各 `PROBE_TIMEOUT` = 3000ms、**并行**（`tokio::join!`），最坏约 3s）；四者全过 `200` 与就绪报告（`{"status":"ready","configured":...,"jmap":...,"telegram":...}`，其中 `jmap`/`telegram` 是真实探针结果），任一失败 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`）。探针只读、只读配置状态，**不**触发邮件同步等业务副作用，也**不**回显 token 或第三方响应内容；`refresh_business_config` 仅读 Redis，无状态写入。因此 `/ready` 要求到 JMAP host 与 `api.telegram.org:443` 的出站 egress 可达（若该 egress 需要代理则 `/ready` 不可用，见 deployment.md）。
 - **chat 白名单（硬约束 `SAF-CHAT-ALLOWLIST`）**：`CHAT_ALLOWLIST` 是**必填**配置；任何入站事件（TG 命令 / 回调触发的动作）在**做任何 JMAP 调用、AI 调用或状态变更之前**，必须先校验 `chat.id ∈ CHAT_ALLOWLIST`，不在白名单则**直接拒绝并终止**（防止 token 泄露后被任意人调用）。阶段0 已完成 `CHAT_ALLOWLIST` 解析骨架；强制拒绝逻辑已随 Telegram 渠道接入落地（`src/notify.rs` 的 `telegram_webhook` 在任何 JMAP/AI/状态操作之前先校验白名单，拒绝即终止）。
 - **命令最小化**：只暴露必要命令；发邮件等写操作必须二次确认（当前未实现发信，见 §10.3）。
-- **速率**：出站侧未建本地令牌桶；Telegram 出站发送按 Redis 运行参数 `max_retries`（默认 3、上限 5）重试；当前仅对 Push 验证码写入做 Redis 限流（`ratelimit:push-verify:*`）。Telegram 服务端 30 msg/s 限制下的 429 **按 `parameters.retry_after` 秒自动退避**（`channel.rs`，`f4cae00`）：`retry_after_ms` 解析后截断到 60s 预算上限，缺该字段或非数字时回退指数退避 `backoff_delay_ms`（250ms 起、封顶 4s），整体重试预算 60s。仍不做本地令牌桶限流——超出预算直接返回失败，交由上游重试。
+- **速率**：出站侧未建本地令牌桶；Telegram 出站发送按 Redis 运行参数 `max_retries` 重试（默认值与硬上限见 `docs/reference.md` §6.1）；当前仅对 Push 验证码写入做 Redis 限流（`ratelimit:push-verify:*`）。Telegram 服务端 30 msg/s 限制下的 429 **按 `parameters.retry_after` 秒自动退避**（`channel.rs`，`f4cae00`）：`retry_after_ms` 解析后截断到 60s 预算上限，缺该字段或非数字时回退指数退避 `backoff_delay_ms`（250ms 起、封顶 4s），整体重试预算 60s。仍不做本地令牌桶限流——超出预算直接返回失败，交由上游重试。
 
 ### 7.3.1 配置管理 API
 - `GET /` 提供嵌入 Rust 二进制的 SPA；`/assets/config.js` 与 `/assets/styles.css` 提供页面资源。服务不在运行时读取或写入本地文件（`C-NO-LOCAL-WRITE`）。
@@ -427,7 +428,7 @@ message-weave/
     "max_retries": 3
   }
   ```
-- 三个 timeout 单位均为毫秒，范围 `100..=300000`；`max_retries` 范围 `0..=5`，表示首次请求之外的最大重试次数。Redis 中尚无配置时 GET 返回默认值 `15000 / 10000 / 30000 / 3`；PUT 成功返回保存后的相同对象并持久化到 Redis（`C-REDIS-ONLY-STATE`）。
+- 三个 timeout 单位均为毫秒；默认值、取值范围与 `max_retries` 的硬上限以 `docs/reference.md` §6.1 为唯一权威（下表与上面的示例响应体只做示意，不重复数值）。`max_retries` 表示首次请求之外的最大重试次数。Redis 中尚无配置时 GET 返回默认值对象；PUT 成功返回保存后的相同对象并持久化到 Redis（`C-REDIS-ONLY-STATE`）。
 - `PUT /api/business-config` 接受完整 `BusinessConfigWire`，完整替换加密保存的业务配置，先构建客户端再切换运行 worker；Push verification 不属于 Wire，由 Stalwart 动态生成并由后端回写。成功返回 `204 No Content`，不会返回配置或密钥。
 - `PUT /api/config` 的运行参数错误使用 `401`（未授权）、`400`（JSON 无效）、`422`（范围错误）、`503`（Redis 不可用）；GET 读取失败时也以 `503` 表示 Redis 不可用。业务 PUT 使用 `401`、`400`、`422` 与 `503`（Redis 写入或依赖客户端构建失败）；其余错误不回显敏感数据。Redis/会话初始化未完成时管理页面显示 `503` 状态；运行参数在重新读取成功前禁用保存（`C-REDIS-ONLY-STATE`）。LLM 启用时，业务配置要求提供 HTTPS Base URL、非空 API key 和模型名。
 
@@ -682,7 +683,7 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 
 ### 11.4 已由代码回答的早期问题（不再待确认）
 以下问题在设计阶段以 Q6–Q30 形式列出，**代码落地时已各自给出答案**，因此不再是"待确认项"，此处只记结论：
-- **消息格式**（Q6）：`TelegramClient::SendMessage` 只带 `chat_id` + `text` 两个字段，**没有 `parse_mode`**——Telegram 收到后按纯文本渲染，既不用 HTML 也不用 MarkdownV2。
+- **消息格式**（Q6）：出站只有 `send_text`（`src/channel.rs:134`），其载荷结构体 `SendMessage`（`src/channel.rs:80`）只有 `chat_id` + `text` 两个字段，**没有 `parse_mode`**——Telegram 收到后按纯文本渲染，既不用 HTML 也不用 MarkdownV2。
 - **长邮件 / 原文直发**（Q7、Q29）：不存在"正文超过 4000 字符不发全文"的策略。`read_email` 拉全文送 LLM；AI 失败时回退为前 300 字符且**无"已截断"标注**（见 §12.3/§12.5）。
 - **附件**（Q8、Q28）：完全未实现。领域模型只有 `has_attachment: bool`，出站只有 `sendMessage`，没有 `send_document` 也没有 `Blob/get`（见 §12.3）。
 - **推送范围**（Q9）：对账拉全量 `changes`，Bot 侧不做文件夹/发件人/关键词过滤，也没有 Sieve 依赖（Q11 因此无影响）。
@@ -727,9 +728,9 @@ src/ai.rs   # LlmClient（唯一实现）：summarize() 打 OpenAI 兼容 /chat/
 | `LLM_API_KEY` | string | 可省略 | Bearer token；仅 `LLM_ENABLED=true` 时必填 |
 | `LLM_BASE_URL` | URL | 可省略 | 仅启用时必填，且必须 `https`，否则 `AiError::InvalidEndpoint` |
 | `LLM_MODEL` | string | 可省略 | 仅启用时必填；透传给 `/chat/completions` 的 `model` |
-| `LLM_SUMMARY_TARGET_CHARS` | int | `1024` | `LlmClient::max_chars`，对返回摘要文本做字符截断（**代码侧确有截断**） |
-| `max_retries`（运行参数） | int | `3` | 由 `OutboundConfig` 下发（`RuntimeConfigProvider`），硬上限 5；LLM 与 Telegram 出站共用 |
-| `llm_timeout_ms`（运行参数） | int | `30000` | 硬下限 100ms |
+| `LLM_SUMMARY_TARGET_CHARS` | int | `300` | `LlmClient::max_chars`，对返回摘要文本做字符截断（**代码侧确有截断**） |
+| `max_retries`（运行参数） | int | 见 `docs/reference.md` §6.1 | 由 `OutboundConfig` 下发（`RuntimeConfigProvider`），硬上限见 `docs/reference.md` §6.1；LLM 与 Telegram 出站共用 |
+| `llm_timeout_ms`（运行参数） | int | 见 `docs/reference.md` §6.1 | 由 `OutboundConfig` 下发；单位毫秒，下限与取值范围见 `docs/reference.md` §6.1 |
 
 **不存在** `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` / `LLM_TIMEOUT_SECS` / `LLM_MAX_RETRIES`：请求体只有 `model` / `messages` / `max_tokens`（= `max_chars * 2`），没有 temperature，也没有独立于 `llm_timeout_ms` 的超时开关。API key 只从配置读，不入源码、不打日志（`SAF-LOG-PURITY`），运行期 secret 注入方式见 deployment.md（`C-NO-SECRET-IN-IMAGE`）。
 
@@ -748,7 +749,7 @@ src/ai.rs   # LlmClient（唯一实现）：summarize() 打 OpenAI 兼容 /chat/
 
 ### 12.4 失败检测（当前实现）
 `LlmClient::summarize`（`src/ai.rs`）**只有重试，没有熔断**：
-- 超时 `llm_timeout_ms`（默认 30_000ms，最小 100ms），最多重试 `max_retries` 次（默认 3，硬上限 5，与 Telegram 出站共用同一配置项）。
+- 超时 `llm_timeout_ms`、重试次数 `max_retries`（单位、默认值、下限与硬上限均见 `docs/reference.md` §6.1；两项与 Telegram 出站共用同一配置）。
 - 只对上一次的失败重试：429 与 5xx 会重试；**其他 4xx（含 401/403）立即返回错误，不重试**。
 - 重试耗尽或全部超时 → `Err(AiError::Response)`；URL 解析失败或非 https → `Err(AiError::InvalidEndpoint)`；JSON 反序列化失败或缺 `choices[0].message.content` → `Err(AiError::Response)`。
 - `AiError` 只有三个变体：`InvalidEndpoint` / `Request` / `Response`。**不存在** 429/401/Timeout 的细分类型。

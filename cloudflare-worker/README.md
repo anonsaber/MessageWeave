@@ -3,7 +3,7 @@
 统一 HTTPS 入口 + 多后端 origin 故障转移（HA/LB 子项目）。
 **透传模型**：Worker 不感知业务，原样转发请求到多个 https 后端 origin；仅「超时 / 5xx」做有界故障转移。
 
-> 本组件是 **safelist 受限的边缘负载均衡器（edge load balancer）**：路由固定 14 条白名单、
+> 本组件是 **safelist 受限的边缘负载均衡器（edge load balancer）**：路由固定 15 条白名单、
 > 后端 origin 在部署期固定且仅允许 https、未知路径一律 404。它只对固定后端做请求转发与
 > 故障转移，不接受任意目标主机，也不提供任何形式的流量中转或访问隐藏能力。
 
@@ -31,21 +31,21 @@
 ### 透传（A，SAF-LB-PASSTHRU）
 - 原样转发 method / headers（含鉴权头）/ body；不鉴权改写。
 - 所有后端实例共享同一组 secret（`C-LB-SHARED-SECRETS`）：同一 `TELEGRAM_WEBHOOK_SECRET`、
-  `JMAP_PUSH_VERIFICATION_CODE`、`API_TOKEN`（`API_TOKEN` 在 §10 仅用于多实例互斥，非鉴权）
-  + 相同 App Password（各后端实例的 `JMAP` 可不同，§10.2）。
+  `JMAP_PUSH_VERIFICATION_CODE`、`API_TOKEN`（`API_TOKEN` 在 `docs/deployment.md` §10 仅用于多实例互斥，非鉴权）
+  + 相同 App Password（各后端实例的 `JMAP` 可不同，`docs/deployment.md` §10.2）。
 
 ### 路由 safelist（ARCH-LB-WORKER / C-LB-SINGLE-REG-URL）
-- 透传公开 `GET /api/status` 启动状态，以及管理 SPA API：`POST /api/admin/session[/revoke]`、`GET|PUT /api/config`、`PUT /api/business-config`。启动状态只包含缺少的环境变量名称；管理 API 的鉴权仍由后端执行。
+- 透传公开 `GET /api/status` 启动状态，以及管理 SPA API：`POST /api/admin/session[/revoke]`、`GET|PUT /api/enabled`（业务总开关，SPA 服务卡片读写）、`GET|PUT /api/config`、`PUT /api/business-config`。启动状态只包含缺少的环境变量名称；管理 API 的鉴权仍由后端执行。
 - 只透传 `POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`。
 - 其它路径 → **404**（不透传，避免 Worker 沦为后端任意路径的跳板）。
 - method 不符 → **405**。
 
-### 有界故障转移（§10.4，deployment.md）
+### 有界故障转移（`docs/deployment.md` §10.4）
 - 每次请求只试 `min(LB_MAX_ATTEMPTS, origins.length)` 次；默认 2（首次 + 1 次换实例）。
 - **仅** 超时（AbortError）或 5xx 触发换下一个实例；4xx / 2xx / 3xx 直接返回。
 - 起点按 `rng` 随机化（默认 `Math.random`），实现双活分摊；单 origin 配置时退化为确定性。
 - 全失败 → **503 All Backends Unavailable**（交由 Telegram / Stalwart 自动重投兜底，不丢消息）。
-- 健康缓存（`aggregateHealth` / `LB_HEALTH_TTL_MS`）仅服务于 `/healthz` 聚合视图；转发目前**不做健康路由过滤**（§10.4「只向健康实例转发」为后续增强，当前靠故障转移兜底）。
+- 健康缓存（`aggregateHealth` / `LB_HEALTH_TTL_MS`）仅服务于 `/healthz` 聚合视图；转发目前**不做健康路由过滤**（`docs/deployment.md` §10.4「只向健康实例转发」为后续增强，当前靠故障转移兜底）。
 - **例外：`POST /reconcile` 走 per-route 覆盖。** 它是后端同步长任务——后端持集群级锁 `lock:reconcile`（初租 300s，期间由心跳续期），全局 10s 超时会把它误判为失败并故障转移到第二实例，而第二实例必然立刻返回 409。所以该路由改为：超时取 `LB_RECONCILE_TIMEOUT_MS`（默认 `320000`，留足锁初租 + 心跳余量），且 `maxAttempts=1` 绝不故障转移。其余快路径保持全局默认。
 
 ### 健康聚合（MOD-HEALTH-AGG；C-NO-DB / C-REDIS-ONLY-STATE）

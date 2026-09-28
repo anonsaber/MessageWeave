@@ -1,3 +1,4 @@
+//! SPLIT-EVAL: 已评估暂缓拆分——jmap-client 0.4.2 的适配、请求建模与降级策略必须贴在一起才能对照 crate 文档逐字段验证，拆开会切断这条对照链。
 //! Concrete read-only adapter (MOD-JMAP-CLIENT, GATE-G1-JMAP-READONLY).
 
 use super::{

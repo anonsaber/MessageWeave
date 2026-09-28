@@ -1,3 +1,4 @@
+// SPLIT-EVAL: 已评估暂缓拆分——全部 HTTP 处理器共享同一套 Bearer/admin-session 鉴权、统一错误封装与路由装配顺序，拆分会让每个子模块重复导入并复述这些前置条件。
 use axum::{
     body::Bytes,
     extract::State,

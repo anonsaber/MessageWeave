@@ -51,6 +51,7 @@ const ROUTE_METHODS = Object.freeze({
   "/api/business-config": ["PUT"],
   "/api/admin/session": ["POST"],
   "/api/admin/session/revoke": ["POST"],
+  "/api/enabled": ["GET", "PUT"],
   "/webhook/tg": ["POST"],
   "/push/jmap": ["POST"],
   "/api/push/register": ["POST"],
@@ -69,7 +70,10 @@ export async function handleFetch(request, env) {
   const path = new URL(request.url).pathname;
 
   // LB 级健康聚合探针（不含敏感信息，SAF-PROBE-PUBLIC 精神）。
-  if (path === "/healthz" && request.method === "GET") {
+  if (path === "/healthz") {
+    if (request.method !== "GET") {
+      return text("method not allowed for /healthz", 405, { allow: "GET" });
+    }
     return handleHealth(env);
   }
 

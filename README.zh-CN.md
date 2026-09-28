@@ -57,7 +57,7 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 | `PORT` | 否 | `8080` |
 | `RUN_MODE` | 否 | `webhook` |
 
-`RUN_MODE` 只接受 `webhook` 或 `reconcile`。`.env.example` 只提供 2 个必需变量；其余是
+`RUN_MODE` 只接受 `webhook` 或 `reconcile`，但两种取值当前行为完全相同（共享同一套路由表），仅作前向占位，保持默认 `webhook` 即可。`.env.example` 只提供 2 个必需变量；其余是
 文档化默认值。
 
 **业务配置 —— 存于 Redis，由浏览器写入。**

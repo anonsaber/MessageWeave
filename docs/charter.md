@@ -9,7 +9,7 @@
 >
 > 三者冲突时：**可核对事实以 `reference.md` 为准，项目约束以本文件为准，质量规则以 `../AGENTS.md` 为准。**
 
-> **代码基线** `b70d188`（src/ 行号锚点）｜`526a73b`（文档）。
+> **代码基线** `b70d188`（src/ 行号锚点）｜`e0882c7`（文档）。
 
 ---
 
@@ -126,9 +126,12 @@ cd /home/okabe/Repo/messageweave && docker run --rm --user 1000:1000 \
 cd /home/okabe/Repo/messageweave && bash scripts/docs_check/run_all.sh
 ```
 
-4 个校验器全过、exit 0 才算通过。只读，从不写文件。
+5 个校验器全过、exit 0 才算通过。只读，从不写文件。
 
-**`0 error` 只证明「可达」**：行号存在、引用可解析、表格列数一致。
+新增 `check_file_size`：`src/`、`web/`、`cloudflare-worker/src/` 下超过 500 行的源文件必须带
+`SPLIT-EVAL:` 标记（AGENTS.md §2.1）。它证明标记存在，不证明写下的拆分理由站得住脚。
+
+**`0 error` 只证明「可达」**：行号存在、引用可解析、表格列数一致、标记就位。
 **它不证明语义正确。** 报告校验结果时必须说明这个区分。
 
 ### 6.4 前端测试
@@ -165,6 +168,8 @@ Push callback 公网映射。
 | `docs/reference.md` | 可核对事实的唯一权威来源：路由、Redis 键与 TTL、配置项、错误码、出站常量 | **可核对事实** |
 | `docs/roadmap.md` | 缺口、阻塞、下一阶段目标 | 未决项 |
 | `docs/retired.md` | 已废弃或已改名方案的记录与替代指向 | 历史决策 |
+| `docs/charter.md` | 本文件：项目约束、技术选型、实现阶段、安全不变量、稳定 ID 注册表 | 项目约束 |
+| `web/`（无文档，4 个文件） | 管理 SPA 源：静态配置页与前端逻辑，由 `web/config.test.mjs` 覆盖 | 前端行为（权威事实记在 `docs/design.md` 与 `docs/reference.md`） |
 | `cloudflare-worker/README.md` | 网关自身的配置与语义 | 网关 |
 
 **跨文档引用规则**：
@@ -184,7 +189,7 @@ Push callback 公网映射。
 - 新增 ID 必须先登记，再出现在注释、文档或标识符中；校验器会拒绝未登记 ID。
 - 内容搬家时**只更新本表「定义文件」列**，所有引用本身零改动。
 
-共 83 个 ID，按前缀分组：`C-*`（部署约束）· `NG-*`（非目标）· `MOD-*`（模块）·
+共 85 个 ID，按前缀分组：`C-*`（部署约束）· `NG-*`（非目标）· `MOD-*`（模块）·
 `FLOW-*`（数据流）· `REQ-*`（需求）· `SAF-*`（安全）· `NFR-*`（非功能）· `GATE-*`（门禁）·
 `BOUND-*`（边界）· `ARCH-*`（架构）。
 
@@ -223,6 +228,7 @@ Push callback 公网映射。
 | `REQ-AI-EXTERNAL-CONSENT` | docs/design.md §12 / §3 | 仅用户明确允许后才向外部 AI 发正文 | 需求 |
 | `REQ-AI-CONSENT` | docs/design.md §12.3.1 | AI 授权期限与 Redis 短期 TTL（授权有效期、到期后重新询问） | 需求 |
 | `REQ-SINGLE-ACCOUNT` | docs/design.md §3.1/§11.3 | 单账户；多账户 = 多 bot 实例 | 需求 |
+| `REQ-PUSH-TYPES` | src/domain/jmap/client.rs:109 注释 | `PushSubscription/set` create 在 jmap-client 0.4.2 中没有 `types` 参数；订阅 id 对外暴露前须经 `push_subscription_update_types` 收窄为 `Email` + `EmailDelivery` | 需求 |
 | `REQ-RECONCILE-IDEMPOTENCY` | src/state.rs `claim_dedup` + `get_reconcile_state` / docs/design.md §8.2 | JMAP 对账游标只有在全部分页事件成功入队（XADD）后才推进；单次对账由 Redis SET NX EX 锁 `lock:reconcile` 保证单飞（TTL 300s，owner token 续期 90s，仅持有者可续期/释放）；处理端再经 `claim_dedup`（SET NX EX，86400s）保证同一流消息不重复投递 | 需求 |
 | `NFR-NOTIFY-SLA` | docs/deployment.md §6.5 | 通知可用性 ≥99.9%，允许少量延迟 | 非功能 |
 | `NFR-RECONCILE-INTERVAL` | docs/deployment.md §6.3 | 外部 Cron 对账间隔 5–10 分钟 | 非功能 |
@@ -261,13 +267,14 @@ Push callback 公网映射。
 | `SAF-DEBUG-GATE` | src/main.rs / src/debug.rs / docs/design.md §7.6 / docs/deployment.md §2.1 | 双因子门禁：启动带 `--debug` **且** `DEBUG_TOKEN` 非空才挂载路由；缺任一完全不挂载（请求落通用 `404`），默认绝对关闭 | 安全 |
 | `SAF-DEBUG-AUTH` | src/debug.rs / docs/deployment.md §2.1 | 挂载后 `/debug/*` 须 `Authorization: Bearer DEBUG_TOKEN` 常数时间比较，失败 `401` 且无副作用 | 安全 |
 | `REQ-DEBUG-ENDPOINTS` | src/debug.rs / docs/reference.md §3 / docs/deployment.md §2.1 | 端点契约：`GET /debug/ping`、`/config`、`/redis`、`/jmap`、`/telegram`、`/worker` 均只读；`POST /debug/notify` 走真实出站链路发一条测试消息；响应体不含 secret 原文（凭据字段只出 `*_configured` 布尔，非密文的身份与预算字段仍明文返回） | 需求 |
-| `SAF-DEBUG-ORIGIN-ONLY` | docs/deployment.md §2.1 / docs/reference.md §4 | `/debug/*` 不在网关 14 条安全路由内，Worker 一律 `404 route not forwarded`；只能直连后端 origin，公网不可达 | 安全 |
+| `SAF-DEBUG-ORIGIN-ONLY` | docs/deployment.md §2.1 / docs/reference.md §4 | `/debug/*` 不在网关 15 条安全路由内，Worker 一律 `404 route not forwarded`；只能直连后端 origin，公网不可达 | 安全 |
 | `SAF-DEBUG-ALLOWLIST` | src/debug.rs / docs/deployment.md §2.1 | `POST /debug/notify` 仅在 chat 白名单**非空**时校验 `chat_id`；白名单未配置（空）时不拦截，故启用本面须确认业务白名单已配置 | 安全 |
 | `NFR-HA-MULTI-INSTANCE` | docs/deployment.md §10.7 / §9.1 | 多实例高可用语义；双活或主备均可；Redis 单点故障不在方案范围（用户外部解决） | 非功能 |
 | `C-NO-DB` | docs/deployment.md §0 / §9.1 / §3 | 生产不使用任何数据库（无 SQLite/Postgres/MySQL/嵌入式），Redis 为唯一状态存储；应用不连接第二个数据库 | 约束 |
 | `C-NO-LOCAL-WRITE` | docs/deployment.md §0 / §9.1 / §3 | 禁止本地文件/目录写入（日志/数据/临时缓存/本地卷） | 约束 |
 | `C-LOG-STDOUT-ONLY` | docs/deployment.md §0 / §9.1 / §3 | 日志只写 stdout/stderr，由平台采集；禁用文件日志后端 | 约束 |
 | `SAF-LOG-PURITY` | docs/deployment.md §0 / §9.1 / §3 | 日志与 Redis 写入内容仅限结构化事件/计数/时间戳/脱敏摘要；禁止密钥/邮件正文/AI 请求响应/附件内容 | 安全 |
+| `SAF-ENABLE-FLAG` | src/notify.rs `put_enabled` / src/state.rs `config:enabled` | 全局开关是 Redis 单键 `config:enabled`；未写入即视为关闭，`business_enabled` 出错也按关闭处理（fail-closed）；写入须 admin-session Bearer | 安全 |
 | `C-NO-STATEFUL-RECOVERY` | docs/deployment.md §0 / §9.1 / §3 | 禁止依赖进程内状态做生产恢复；恢复一律走 Redis + JMAP 对账；进程内缓存仅为性能优化，丢失须安全可重入 | 约束 |
 | `ARCH-STATE-REDIS` | docs/design.md §10.0 / Redis 为唯一状态来源 | 状态层统一走 Redis（Streams/SET NX/锁/摘要），进程不持有可恢复状态 | 架构 |
 | `C-REDIS-EXTERNAL` | docs/deployment.md §8.1 | Redis 由外部已认证实例提供，不与本服务同容器 | 部署约束 |

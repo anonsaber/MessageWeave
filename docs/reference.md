@@ -26,48 +26,52 @@ Conventions used throughout:
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `config:business` | No EX | `set_business_config` (state.rs:576, key at state.rs:580); first-time write via `SET NX` in `initialize_business_config` (state.rs:591) | `get_business_config` (state.rs:565) |
-| `config:business:revision` | No EX | atomic `INCR` on every config write (state.rs:584); `SET 1 NX` on first-time init (state.rs:604) | `business_config_revision` (state.rs:639) |
-| `config:outbound` | No EX | `set_outbound_config` (state.rs:552) | `get_outbound_config` (state.rs:536) |
-| `config:enabled` | No EX | `set_enabled` (state.rs:657) | `is_enabled` (state.rs:648) |
-| `config:admin_session` | EX 900 | `put_admin_session` (state.rs:614, key at state.rs:617) | `admin_session_valid` (state.rs:626); cleared by `revoke_admin_session` (state.rs:635) |
+| `config:business` | No EX | `set_business_config` (state.rs:577, key at state.rs:581); first-time write via `SET NX` in `initialize_business_config` (state.rs:592) | `get_business_config` (state.rs:566) |
+| `config:business:revision` | No EX | atomic `INCR` on every config write (state.rs:585); `SET 1 NX` on first-time init (state.rs:605) | `business_config_revision` (state.rs:640) |
+| `config:outbound` | No EX | `set_outbound_config` (state.rs:553) | `get_outbound_config` (state.rs:537) |
+| `config:enabled` | No EX | `set_enabled` (state.rs:658) | `is_enabled` (state.rs:649) |
+| `config:admin_session` | EX 900 | `put_admin_session` (state.rs:615, key at state.rs:618) | `admin_session_valid` (state.rs:627); cleared by `revoke_admin_session` (state.rs:636) |
 
 Notes:
 
 - `config:business:revision` is an **atomic Redis `INCR`**, not a read-modify-write. Every
-  request-bearing entry point calls `refresh_business_config` (notify.rs:717), which only
+  request-bearing entry point calls `refresh_business_config` (notify.rs:718), which only
   rebuilds the worker when the remote revision exceeds the cached local value
-  (notify.rs:722-724) — that guard is what keeps a stale or malformed snapshot from turning
+  (notify.rs:723-725) — that guard is what keeps a stale or malformed snapshot from turning
   into a rebuild loop.
 - `config:admin_session` carries no TTL metadata beyond the literal `EX 900` passed at write
   time; the handler reports the same window in its response body as `expires_in: 900`
-  (notify.rs:787).
+  (notify.rs:788).
 - `config:enabled` is consulted as a gate; missing or `false` keeps business processing off.
 
 ### 1.2 AI consent
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `consent:ai:{chat_id}` | EX 3600 / 86_400 / 604_800 / 31_536_000 | `set_ai_consent` (state.rs:504; key at state.rs:506, `EX` at state.rs:511) | `ai_consent_until` (state.rs:518); cleared by `clear_ai_consent` (state.rs:527) |
+| `consent:ai:{chat_id}` | EX 3600 / 86_400 / 604_800 / 31_536_000 | `set_ai_consent` (state.rs:505; key at state.rs:507, `EX` at state.rs:512) | `ai_consent_until` (state.rs:519); cleared by `clear_ai_consent` (state.rs:528) |
 
 The stored value is an **absolute Unix expiry timestamp**, not a duration; the key's `EX`
-carries the same duration, so the key removes itself (state.rs:508-513).
+carries the same duration, so the key removes itself (state.rs:509-514).
 
 Trigger words are exact Chinese literals with **no English aliases** — the in-app help text
-enforces this itself (`worker.rs:613`):
+enforces this itself (`worker.rs:614`):
 
 | Input | TTL | Label |
 |---|---|---|
-| `/ai on`, `临时一次`, `临时`, `一次` | 3600 | `1小时` |
+| `/ai on`, `/ai yes`, `开启 ai`, `同意摘要`, `允许 ai` | 3600 | `1小时` |
+| `临时`, `一次` (substring) | 3600 | `临时1小时` |
 | `今天` | 86_400 | `今天` |
 | `7天` | 604_800 | `7天` |
-| `直到我撤销`, `长期` | 31_536_000 (365 d) | `直到我撤销` |
+| `直到我撤销`, `长期` (substring) | 31_536_000 (365 d) | `直到撤销（最长365天）` |
 | `/ai off`, `关闭 ai`, `撤销授权`, `停止摘要` | — | revoke |
 
-`1小时` is a **category label, not a trigger word**: typing `1小时` alone grants nothing.
-Consent never auto-renews.
+The `/ai …` slash forms are exact matches on the whole message; the Chinese phrases are
+substring matches anywhere in the message (`worker.rs:546-566`, `:581-586`).
 
-The same `parse_intent` (worker.rs:522, `Intent` at worker.rs:504) routes `/search <关键词>`
+`1小时` / `临时1小时` / `直到撤销（最长365天）` are **category labels, not trigger words**:
+typing a label alone grants nothing. Consent never auto-renews.
+
+The same `parse_intent` (worker.rs:523, `Intent` at worker.rs:505) routes `/search <关键词>`
 and the Chinese prefixes `搜索`, `查找`, `检索` (prefix-matched only, never a substring) to
 `Intent::Search`. Search grants no consent and writes no Redis key.
 
@@ -75,11 +79,11 @@ and the Chinese prefixes `搜索`, `查找`, `检索` (prefix-matched only, neve
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `stalwart:jmap`, `stalwart:telegram` | Stream, no EX | `State::enqueue` (state.rs:282, `XADD` at state.rs:284); call sites notify.rs:203 (TG webhook) and notify.rs:859 (JMAP push); reconcile path via `claim_dedup_and_enqueue` (worker.rs:373) | `read_batch` over consumer group `stalwart-workers`, consumer `http-worker` (notify.rs:360, :428) |
-| `delivery:inflight:{stream}:{id}` | EX 60 | key built at notify.rs:395, `claim_dedup` at notify.rs:396 | `release_dedup` on completion (notify.rs:409, 416, 425) |
-| `delivery:committed:{stream}:{id}` | EX 604_800 | key built at notify.rs:374, `claim_dedup` at notify.rs:408 | `dedup_exists` before send (notify.rs:375) |
-| `retry:{stream}:{id}` | EX 86_400 | `retry_or_dlq` Lua script (key state.rs:480, `INCR` state.rs:484, `EXPIRE` state.rs:485) | reclaim path |
-| `stalwart:jmap:dlq`, `stalwart:telegram:dlq` | Stream, no EX | Lua `XADD` at state.rs:487; name built at notify.rs:428 (`max_attempts` 3, same call) | **nothing in code reads it** |
+| `stalwart:jmap`, `stalwart:telegram` | Stream, no EX | `State::enqueue` (state.rs:283, `XADD` at state.rs:285); call sites notify.rs:204 (TG webhook) and notify.rs:860 (JMAP push); reconcile path via `claim_dedup_and_enqueue` (worker.rs:374) | `read_batch` over consumer group `stalwart-workers`, consumer `http-worker` (notify.rs:361, :428) |
+| `delivery:inflight:{stream}:{id}` | EX 60 | key built at notify.rs:396, `claim_dedup` at notify.rs:397 | `release_dedup` on completion (notify.rs:410, 416, 425) |
+| `delivery:committed:{stream}:{id}` | EX 604_800 | key built at notify.rs:375, `claim_dedup` at notify.rs:409 | `dedup_exists` before send (notify.rs:376) |
+| `retry:{stream}:{id}` | EX 86_400 | `retry_or_dlq` Lua script (key state.rs:481, `INCR` state.rs:485, `EXPIRE` state.rs:486) | reclaim path |
+| `stalwart:jmap:dlq`, `stalwart:telegram:dlq` | Stream, no EX | Lua `XADD` at state.rs:488; name built at notify.rs:429 (`max_attempts` 3, same call) | **nothing in code reads it** |
 
 There is no `delivery:pending:{stream}` key — "pending" refers to the Redis Streams
 pending-entries list (PEL), which Redis maintains internally.
@@ -93,17 +97,17 @@ acknowledgement.
 
 The DLQ is **append-and-ack**: the same Lua script that appends to `stalwart:jmap:dlq` /
 `stalwart:telegram:dlq` also `XACK`s the message out of the source stream, so increment, DLQ
-append and source acknowledgement are atomic (state.rs:484-488). No code path reads the DLQ
+append and source acknowledgement are atomic (state.rs:485-489). No code path reads the DLQ
 back — replay is an operator action, not a service feature.
 
 ### 1.4 Idempotency and rate limits
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `dedup:tg:{update_id}` | EX 86_400 | key at notify.rs:198, `claim_dedup` at notify.rs:199, `release_dedup` at :208 | — |
-| `dedup:jmap:{account}:{email}` | EX 86_400 | key at notify.rs:854, `claim_dedup` at notify.rs:855, `release_dedup` at :864; same key rebuilt at worker.rs:360 and claimed with `claim_dedup_and_enqueue` at worker.rs:373 | — |
-| `ratelimit:push-verify:{subscription}` | EX 30 | key at notify.rs:815, `claim_dedup` at notify.rs:816 (`push_verify_rate_limited` at :819) | — |
-| `state:jmap:since` | **No EX** | `set_reconcile_state` (state.rs:675; key at state.rs:678, `SET` without `EX`) | `get_reconcile_state` (state.rs:667) |
+| `dedup:tg:{update_id}` | EX 86_400 | key at notify.rs:199, `claim_dedup` at notify.rs:200, `release_dedup` at :208 | — |
+| `dedup:jmap:{account}:{email}` | EX 86_400 | key at notify.rs:855, `claim_dedup` at notify.rs:856, `release_dedup` at notify.rs:865; same key rebuilt at worker.rs:361 and claimed with `claim_dedup_and_enqueue` at worker.rs:374 | — |
+| `ratelimit:push-verify:{subscription}` | EX 30 | key at notify.rs:816, `claim_dedup` at notify.rs:817 (`push_verify_rate_limited` at :819) | — |
+| `state:jmap:since` | **No EX** | `set_reconcile_state` (state.rs:676; key at state.rs:679, `SET` without `EX`) | `get_reconcile_state` (state.rs:668) |
 
 `state:jmap:since` is the only state key that survives indefinitely without an explicit
 delete, by design: it is the reconciliation cursor, and expiring it would force a full
@@ -113,12 +117,12 @@ re-baseline on the next restart.
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `lock:reconcile` | 300 | `acquire_lock` (notify.rs:239) | `renew_lock` heartbeat 90 (notify.rs:252) |
-| `lock:push-register:{sha256(callback_url)}` | 360 | `acquire_lock` (notify.rs:906) | `release_lock` (notify.rs:922, 937, 950, 967, 984, 994) |
+| `lock:reconcile` | 300 | `acquire_lock` (notify.rs:240) | `renew_lock` heartbeat 90 (notify.rs:253) |
+| `lock:push-register:{sha256(callback_url)}` | 360 | `acquire_lock` (notify.rs:907) | `release_lock` (notify.rs:923, 937, 950, 967, 984, 994) |
 
 **Why the registration lock is 360 s and not 300 s.** The lock must outlive the longest
 configured JMAP request timeout (300 s), otherwise a slow registration could admit a
-duplicate. Source comment, notify.rs:904-905:
+duplicate. Source comment, notify.rs:905-906:
 
 > The lock must outlive the configured 300s maximum JMAP request timeout; this prevents a
 > slow create from admitting a duplicate.
@@ -127,11 +131,11 @@ duplicate. Source comment, notify.rs:904-905:
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `push:subscription:{id}` | EX 300 (caller-supplied, min 1) | `remember_push_subscription` (state.rs:685, called at notify.rs:833) | `push_subscription_verified` (state.rs:702) |
-| `push:subscription:id` | No EX | `remember_push_subscription_id` (state.rs:715) | current-subscription lookup |
-| `push:subscription:{id}:status` | 900 / 300 / 86_400 (min 1 enforced) | `set_push_subscription_status` (state.rs:725, key at state.rs:733); pending at notify.rs:960, verified at notify.rs:845, disabled at notify.rs:1031 | **none** |
-| `push:registration:{sha256(callback_url)}` | EX 604_800 | `remember_push_subscription_for_callback` (state.rs:778, key at state.rs:785, `EX` at state.rs:787; called at notify.rs:977) | `get_push_subscription_for_callback` (state.rs:767); removed by `remove_push_subscription_for_callback` (state.rs:794) |
-| `push:orphan:{subscription_id}` | EX 604_800 | `record_push_orphan` (state.rs:751) | orphan sweep |
+| `push:subscription:{id}` | EX 300 (caller-supplied, min 1) | `remember_push_subscription` (state.rs:686, called at notify.rs:834) | `push_subscription_verified` (state.rs:703) |
+| `push:subscription:id` | No EX | `remember_push_subscription_id` (state.rs:716) | current-subscription lookup |
+| `push:subscription:{id}:status` | 900 / 300 / 86_400 (min 1 enforced) | `set_push_subscription_status` (state.rs:726, key at state.rs:734); pending at notify.rs:961, verified at notify.rs:846, disabled at notify.rs:1032 | **none** |
+| `push:registration:{sha256(callback_url)}` | EX 604_800 | `remember_push_subscription_for_callback` (state.rs:779, key at state.rs:786, `EX` at state.rs:788; called at notify.rs:978) | `get_push_subscription_for_callback` (state.rs:768); removed by `remove_push_subscription_for_callback` (state.rs:795) |
+| `push:orphan:{subscription_id}` | EX 604_800 | `record_push_orphan` (state.rs:752) | orphan sweep |
 
 **Two distinct keys that are frequently confused. Read this before editing either.**
 
@@ -143,7 +147,7 @@ duplicate. Source comment, notify.rs:904-905:
 They use the same digest but are separate keys with unrelated lifetimes and purposes.
 
 **Annotation: `push:subscription:{id}:status` is write-only by design.**
-The source carries an explicit note at state.rs:210:
+The source carries an explicit note at state.rs:211:
 
 > `push:subscription:{id}:status` is currently write-only
 
@@ -159,28 +163,34 @@ Do not infer correctness from its presence.
 Every error response uses one envelope shape:
 
 ```json
-{ "error": { "code": "<machine_code>", "message": "<human readable>" } }
+{ "error": "<machine_code>", "request_id": "<id>" }
 ```
+
+`error` is a **plain machine-readable string**, not a nested object — there is no `message`
+field. `request_id` is always present.
 
 | Status | Code | Retry-After |
 |---|---|---|
 | 400 | `invalid_request`, `missing` | — |
 | 401 | `unauthorized` | — |
-| 403 | `forbidden` | — |
+| 403 | `forbidden`, `chat_not_allowed` (`/debug/*` only) | — |
+| 404 | `push_subscription_not_found` | — |
 | 409 | `conflict` | — |
 | 422 | `invalid_configuration` | — |
+| 429 | `push_verify_rate_limited` | `30` |
 | 500 | `internal_error` | — |
-| 503 | `service_unavailable`, `disabled`, `push_subscription_not_found`, `push_verify_rate_limited`, `push_state_unavailable`, `push_destroy_failed` | `30` when retryable, or always for the push register/disable failures |
+| 502 | `telegram_send_failed` (`/debug/*` only) | — |
+| 503 | `service_unavailable`, `disabled`, `reconcile_retry`, `push_verify_failed`, `push_state_unavailable`, `push_destroy_failed` | `30` when retryable, or always for the push register/disable failures |
 
 `Retry-After` has two emission sites, both in `notify.rs`, and the value is always the literal
 string `"30"`:
 
-- `error_response` (`notify.rs:320-328`, inserted at `:324`) sets it **only when its `retry`
-  flag is true**. The readiness failure path (`notify.rs:161`) passes `retry = true`, so `/ready`
+- `error_response` (`notify.rs:321-329`, inserted at `:324`) sets it **only when its `retry`
+  flag is true**. The readiness failure path (`notify.rs:162`) passes `retry = true`, so `/ready`
   is covered by that rule rather than by a special case.
-- `error_response_with_id` (`notify.rs:1087-1093`, inserted at `:1090`) sets it
+- `error_response_with_id` (`notify.rs:1088-1094`, inserted at `:1090`) sets it
   **unconditionally**. It is used only for the push register/disable failures
-  `push_state_unavailable` and `push_destroy_failed` (`notify.rs:952`, `:969`, `:986`,
+  `push_state_unavailable` and `push_destroy_failed` (`notify.rs:953`, `:969`, `:986`,
   `:1023`), which are always `503`.
 
 `GET /api/status` is the exception that reports setup state with a non-envelope body.
@@ -189,7 +199,10 @@ string `"30"`:
 
 ## 3. Backend routes
 
-All registered in `router_with_worker_state_runtime_bootstrap_config` (notify.rs:1275), with the routes wired at `notify.rs:1304-1318`.
+All HTTP API routes are registered in `router_with_worker_state_runtime_bootstrap_config`
+(`notify.rs:1276`), with the routes wired at `notify.rs:1305-1319`. The three static SPA routes
+in the last table row are the exception: they live in `web::router()` (`src/web.rs:19-24`) and
+are merged into the production router at `src/main.rs:62` and `src/main.rs:194`.
 
 | Method | Path | Handler |
 |---|---|---|
@@ -208,14 +221,14 @@ All registered in `router_with_worker_state_runtime_bootstrap_config` (notify.rs
 | GET | `/healthz` | `healthz` |
 | GET | `/ready` | `ready` |
 | GET | `/api/status` | `setup_status` |
-| GET | `/`, `/assets/config.js`, `/assets/styles.css` | `index` / `web_config` |
+| GET | `/`, `/assets/config.js`, `/assets/styles.css` | `index` / `script` / `styles` |
 
 The remote-debug surface (`src/debug.rs:72-80`) is merged **only when the process is started
 with `--debug` and `DEBUG_TOKEN` is non-empty** (`SAF-DEBUG-GATE`, `src/main.rs:96-100`,
-`src/notify.rs:1320-1321`); otherwise none of these routes exist and requests fall through to
+`src/notify.rs:1321-1322`); otherwise none of these routes exist and requests fall through to
 axum's generic `404`, not a 401. All seven require `Authorization: Bearer <DEBUG_TOKEN>`,
 checked by `debug_authorized` (`src/debug.rs:45`), which delegates to the production
-`worker_authorized` so the comparison is constant time (`src/notify.rs:1135`).
+`worker_authorized` so the comparison is constant time (`src/notify.rs:1136`).
 
 | Method | Path | Handler |
 |---|---|---|
@@ -236,14 +249,16 @@ Response conventions:
   completeness (`setup_missing` empty), Redis reachability, and two upstream probes —
   `GET {jmap_origin}/.well-known/jmap` with the configured Basic credentials, and
   `GET https://api.telegram.org/bot<token>/getMe`. Both probes share `PROBE_TIMEOUT` = 3000ms
-  (`notify.rs:73`) and run **in parallel** (`tokio::join!`, `notify.rs:147`), so the worst case
+  (`notify.rs:74`) and run **in parallel** (`tokio::join!`, `notify.rs:148`), so the worst case
   is a single timeout, about 3s. On success the body is a report whose `jmap`/`telegram` fields
   are real probe results. The probes are plain reusable functions (`probe_jmap_session`,
   `probe_telegram_get_me`) also used by the remote-debug path, so they must not be duplicated.
   The JMAP probe deliberately authenticates against the *normalized origin*: probing the raw
   session URL unauthenticated would report not-ready forever and make ingress stop routing.
-- `GET /api/status` returns **503** with body `{"status":"configuration-setup","missing":[...]}`
-  when a required environment variable is absent.
+- `GET /api/status` (**always 200**, `notify.rs:166-174`) returns
+  `{"ready": <bool>, "mode": "env"|"redis", "missing": [...]}`. `ready` is `false` and
+  `missing` lists the absent required keys (`REDIS_URL`, `CONFIG_ENCRYPTION_KEY`) when a
+  variable is absent — the route itself never errors, so it is safe to poll.
 - `/debug/*` returns **503** in exactly one place: `POST /debug/notify` when the business
   config is not loaded or there is no outbound client — `service_unavailable` with
   `Retry-After: 30` (`src/debug.rs:56-58`). The three probe endpoints instead report failure
@@ -258,43 +273,49 @@ Response conventions:
 ## 4. Gateway vs backend route matrix
 
 > **Independently verified.** Source: `cloudflare-worker/src/backends.js` `SAFE_ROUTES`
-> (backends.js:9-24), 14 entries, alongside `ROUTE_METHODS` (index.js:45-60)
+> (backends.js:9-25), 15 entries, alongside `ROUTE_METHODS` (index.js:45-61)
 > which fixes one method set per path. The worker entry point is `src/index.js`
 > (wrangler.toml:20); `src/lb.js` performs forwarding and bounded failover (`SAF-LB-PASSTHRU`,
 > `C-NO-LONG-CONN`).
 
 The gate is **unconditional and fail-closed**. The worker reads no configuration switches at
-all: a path missing from `SAFE_ROUTES` returns **404** (index.js:77-78), a registered
-path with the wrong method returns **405** (index.js:80-83), and a missing or unparseable
-backend pool returns **503** rather than passing the request through (index.js:85-93).
+all: a path missing from `SAFE_ROUTES` (backends.js:9-25) returns **404** (index.js:81-82), a registered
+path with the wrong method returns **405** (index.js:84-86), and a missing or unparseable
+backend pool returns **503** rather than passing the request through (index.js:89-96).
 
-**Forwarded by the worker (14):**
+**Forwarded by the worker (15):**
 
 `/` · `/assets/config.js` · `/assets/styles.css` · `/api/status` · `/api/config` ·
 `/api/business-config` · `/api/admin/session` · `/api/admin/session/revoke` ·
+`/api/enabled` ·
 `/webhook/tg` · `/push/jmap` · `/api/push/register` · `/api/push/disable` · `/reconcile` ·
 `/ready`
 
-**Registered on the backend but NOT forwarded (5):**
+**Registered on the backend but NOT forwarded (4):**
 
 | Path | Why it is absent from the gateway |
 |---|---|
-| `GET, PUT /api/enabled` | Internal operational switch, not exposed through the public gateway |
 | `POST /api/bootstrap` | One-shot trust bootstrap; kept off the public path |
-| `POST /worker` | Operator-invoked worker trigger (Bearer-auth'd, `notify.rs:330`); not part of the public gateway path |
+| `POST /worker` | Operator-invoked worker trigger (Bearer-auth'd, `notify.rs:331`); not part of the public gateway path |
 | `GET /healthz` | Liveness is aggregated by the gateway itself |
 | `/debug/*` (7 routes) | Opt-in remote-debug surface (`SAF-DEBUG-GATE`); absent from `SAFE_ROUTES`, so it is reachable **only** by talking to the backend origin directly |
 
-Consequence: none of the five carries external business traffic, so no second ingress is
+`GET, PUT /api/enabled` (the `SAF-ENABLE-FLAG` kill switch) **is** forwarded, because the
+admin SPA serves it at the Worker URL and toggles it from the service card (`loadEnabled`
+reads it at `web/config.js:586`, the toggle writes it at `:958`); both calls are
+admin-session Bearer-auth'd, so the exposure is identical to the already-forwarded
+`/api/admin/session` pair.
+
+Consequence: none of the four carries external business traffic, so no second ingress is
 needed in front of the backend instances. The SPA's first-boot flow still cannot drive
 `/api/bootstrap` through the worker — bootstrap must be performed against the backend origin
 directly, or the bootstrap path must be added to the gateway allowlist.
 
 `POST /api/push/register` and `POST /api/push/disable` **are** forwarded. Both are safe to
-proxy: the callback URL is supplied by the client in the request body (`notify.rs:874`,
+proxy: the callback URL is supplied by the client in the request body (`notify.rs:875`,
 validated as a URL at :891), and every push subscription record is written to and read back
 from the shared Redis (`lock:push-register:{sha256(url)}`, `get_push_subscription_for_callback`
-at `notify.rs:917`), so it does not matter which backend instance the worker picks. Push
+at `notify.rs:918`), so it does not matter which backend instance the worker picks. Push
 registration therefore no longer requires hitting a specific backend address — see
 deployment.md §10.5.
 
@@ -304,24 +325,25 @@ deployment.md §10.5.
 
 Three distinct layers. They are not interchangeable.
 
-### 5.1 Boot-time (2 required, 2 optional with defaults)
+### 5.1 Boot-time (2 required, 3 optional with defaults)
 
 | Variable | Required | Default | Source |
 |---|---|---|---|
 | `REDIS_URL` | yes | — | read at main.rs:40 |
 | `CONFIG_ENCRYPTION_KEY` | yes | — | `encryption_key_from_env` at main.rs:50 |
-| `PORT` | no | `8080` | `unwrap_or(8080_u16)` at main.rs:34 |
-| `RUN_MODE` | no | `webhook` | `unwrap_or_else` at config.rs:338 |
+| `PORT` | no | `8080` | `unwrap_or(8080_u16)` at main.rs:34; parsed again at config.rs:312 on the legacy `from_env()` path (validation parity only, see the note at config.rs:37) |
+| `RUN_MODE` | no | `webhook` | `unwrap_or_else` at config.rs:345 |
+| `DEBUG_TOKEN` | no | — | `std::env::var` at main.rs:97, effective only when `--debug` is also passed (`SAF-DEBUG-GATE` / `SAF-DEBUG-ORIGIN-ONLY`) |
 
 `RUN_MODE` accepts only `webhook` or `reconcile`; anything else is rejected at boot
-(main.rs:78-81). Both modes currently route to the same no-op router; the distinction is
+(main.rs:78-82). Both modes currently route to the same no-op router; the distinction is
 load-bearing for future splits, not for behaviour today. Note the value is only read on
-the legacy env path (`config.rs:338`), so with the current two-variable production config
+the legacy env path (`config.rs:345`), so with the current two-variable production config
 it always resolves to the hardcoded default — setting it to `reconcile` has no effect.
 
 **Missing a required variable does not crash the process.** It logs a warning and serves
 `router_configuration_setup`, which builds a router over `MemoryState` with empty tokens and
-a `NoopWorker` (worker.rs:142-144). The container stays up and answers requests while doing
+a `NoopWorker` (worker.rs:143-145). The container stays up and answers requests while doing
 no business work. This is a deliberate fail-closed-to-setup posture, and it is the single
 most likely cause of "the container is healthy but nothing happens".
 
@@ -335,21 +357,27 @@ The process never reads these from the environment in normal operation.
 ### 5.3 Legacy compatibility (read but not required)
 
 `config.rs` still reads an environment-shaped business configuration for backward
-compatibility. Recognised names, unprefixed unless noted:
+compatibility. The full set of names it recognises (`from_env()`, `config.rs:311`),
+unprefixed unless noted:
 
-`BOT_TOKEN` · `CHAT_ALLOWLIST` · `TG_WEBHOOK_SECRET` · `TELEGRAM_CHAT_ID` ·
-`JMAP_*` · `RECONCILE_TOKEN`
+`CONFIG_ENCRYPTION_KEY` · `PORT` · `REDIS_URL` · `CHAT_ALLOWLIST` · `TELEGRAM_CHAT_ID` ·
+`LLM_ENABLED` · `LLM_ALLOW_NET` · `LLM_API_KEY` · `LLM_BASE_URL` · `LLM_MODEL` ·
+`LLM_SUMMARY_TARGET_CHARS` · `RUN_MODE` · `BOT_TOKEN` · `JMAP_SESSION_URL` · `JMAP_USERNAME` ·
+`JMAP_PASSWORD` · `ACCOUNT_ID` · `RECONCILE_TOKEN` · `TG_WEBHOOK_SECRET` · `WORKER_TOKEN`
+
+The `JMAP_*` family is exactly three names; `ACCOUNT_ID` is read here too, alongside the
+direct read the JMAP client performs when no `accountId` is present in the request.
 
 The single prefixed name is `TELEGRAM_CHAT_ID`. Anything else documented as
 `TELEGRAM_BOT_TOKEN` or similar is a documentation error, not a supported variable.
 
 **Trust root.** The SPA admin credential is `CONFIG_ENCRYPTION_KEY` itself: read at startup
 (main.rs:49) and held as `admin_token` (main.rs:92), it is checked in constant time by
-`worker_authorized` (notify.rs:445; compare at notify.rs:1135) at the top of both
-`POST /api/bootstrap` (notify.rs:604) and `POST /api/admin/session` (notify.rs:774). It is
+`worker_authorized` (notify.rs:446; compare at notify.rs:1136) at the top of both
+`POST /api/bootstrap` (notify.rs:605) and `POST /api/admin/session` (notify.rs:775). It is
 only compared against the request bearer — never echoed, logged, or stored. The session
 issued by `/api/admin/session` is a freshly generated random 32-byte hex token
-(notify.rs:778-787), never the credential; only its digest is retained in Redis under
+(notify.rs:779-788), never the credential; only its digest is retained in Redis under
 `config:admin_session`. `REDIS_URL` is the Redis connection string alone: an ACL password in
 it, if any, authenticates the Redis connection and is not the credential for any HTTP
 endpoint.
@@ -362,10 +390,10 @@ endpoint.
 
 | Parameter | Default | Range / cap | Source |
 |---|---|---|---|
-| `jmap_timeout_ms` | 15_000 | 100..=300_000 | default state.rs:55; validated notify.rs:491 |
-| `telegram_timeout_ms` | 10_000 | 100..=300_000 | default state.rs:56; validated notify.rs:492 |
-| `llm_timeout_ms` | 30_000 | 100..=300_000 | default state.rs:57; validated notify.rs:493 |
-| `max_retries` | 3 | hard cap 5 | default state.rs:58; rejected at notify.rs:494; re-clamped at channel.rs:138 |
+| `jmap_timeout_ms` | 15_000 | 100..=300_000 | default state.rs:56; validated notify.rs:492 |
+| `telegram_timeout_ms` | 10_000 | 100..=300_000 | default state.rs:57; validated notify.rs:493 |
+| `llm_timeout_ms` | 30_000 | 100..=300_000 | default state.rs:58; validated notify.rs:494 |
+| `max_retries` | 3 | hard cap 5 | default state.rs:59; rejected at notify.rs:495; re-clamped at channel.rs:138 |
 
 There is **no** `LLM_MAX_RETRIES` environment variable; retry count lives in
 `config:outbound` and is bounded at 5 regardless of what is written.
@@ -374,24 +402,24 @@ There is **no** `LLM_MAX_RETRIES` environment variable; retry count lives in
 
 | Constant | Value | Source |
 |---|---|---|
-| `MAX_BASELINE_PAGES` | 100 | worker.rs:248 |
-| `MAX_BASELINE_EMAILS` | 10_000 | worker.rs:249 |
-| `RECONCILE_BUDGET` | 20 s | worker.rs:250 |
-| `CHANGE_WINDOW_CAP` | 4_096 | worker.rs:306 |
-| Lock TTL / heartbeat | 300 s / 90 s | notify.rs:239 / 252 |
+| `MAX_BASELINE_PAGES` | 100 | worker.rs:249 |
+| `MAX_BASELINE_EMAILS` | 10_000 | worker.rs:250 |
+| `RECONCILE_BUDGET` | 20 s | worker.rs:251 |
+| `CHANGE_WINDOW_CAP` | 4_096 | worker.rs:307 |
+| Lock TTL / heartbeat | 300 s / 90 s | notify.rs:240 / 252 |
 
 `max_changes` is a function parameter, not a constant.
 
 ### 6.3 Idle threshold
 
-XAUTOCLAIM's idle threshold is derived from the live outbound config (state.rs:98):
+XAUTOCLAIM's idle threshold is derived from the live outbound config (state.rs:99):
 
 ```
 count × (max_retries + 1) × (jmap_timeout_ms + telegram_timeout_ms + llm_timeout_ms) × 2
 ```
 
-floored at the legacy 300 s single-event ceiling (state.rs:65) and capped at 6 h
-(state.rs:75). The floor is also the fallback when the config cannot be read, so a
+floored at the legacy 300 s single-event ceiling (state.rs:66) and capped at 6 h
+(state.rs:76). The floor is also the fallback when the config cannot be read, so a
 Redis hiccup never collapses the window. Only duplicate-on-multi-instance is at
 stake, never loss.
 
@@ -399,9 +427,9 @@ stake, never loss.
 
 | Constant | Value | Source |
 |---|---|---|
-| `SEARCH_LIMIT` | 10 | worker.rs:618 |
-| `SEARCH_SUBJECT_MAX` | 120 chars | worker.rs:620 |
-| `SEARCH_PREVIEW_MAX` | 160 chars | worker.rs:622 |
+| `SEARCH_LIMIT` | 10 | worker.rs:619 |
+| `SEARCH_SUBJECT_MAX` | 120 chars | worker.rs:621 |
+| `SEARCH_PREVIEW_MAX` | 160 chars | worker.rs:623 |
 
 ---
 
@@ -434,9 +462,10 @@ and only `script-src`, `style-src` and `connect-src` re-open a same-origin chann
 
 Recorded here so that references elsewhere cannot be mistaken for shipped features.
 
-- `/search` **is** implemented (`bfe0fd8`, `worker.rs` / `jmap_service.rs`). What is *not*
-  possible: **body-level** snippets. jmap-client `0.4.2` only exposes `emailId`/`subject`/
-  `preview` from `SearchSnippet/get`, and its `Filter` type has no comparator syntax, so
+- `/search` **is** implemented (`bfe0fd8`). Adapter: `search_emails` at `worker.rs:652` and
+  at `src/domain/jmap.rs:268`, backed by `search_emails` at `src/domain/jmap/client.rs:318`.
+  What is *not* possible: **body-level** snippets. jmap-client `0.4.2` only exposes
+  `emailId`/`subject`/`preview` from `SearchSnippet/get`, and its `Filter` type has no comparator syntax, so
   per-part body highlight cannot be modelled through the locked crate. Search degrades to
   `subject`/`preview` highlights plus a pure-ID list when snippets are unsupported. Design
   note in `docs/design.md` §5.7.

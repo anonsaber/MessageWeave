@@ -29,7 +29,7 @@
       </section>
 
       <div id="notice" class="notice notice-info" role="status" aria-live="polite" hidden data-i18n="notice.bootstrap">
-        Create a short-lived admin session using Redis management credentials.
+        Create a short-lived admin session using the CONFIG_ENCRYPTION_KEY value.
       </div>
 
       <section id="setup-card" class="panel auth-panel setup-panel" aria-labelledby="setup-title" aria-live="polite">
@@ -52,11 +52,11 @@
           </div>
           <div><p class="eyebrow" data-i18n="auth.eyebrow">Authorization required</p><h2 id="auth-title" data-i18n="auth.title">Create admin session</h2></div>
         </div>
-        <p class="panel-copy"><span data-i18n="auth.bodyPre">Enter the password of the Redis ACL user from the deployment </span><code>REDIS_URL</code><span data-i18n="auth.bodyPost">. The server issues a 15-minute admin session; the password and session exist only in the current page memory.</span></p>
+        <p class="panel-copy"><span data-i18n="auth.bodyPre">Enter the value of the required startup key </span><code>CONFIG_ENCRYPTION_KEY</code><span data-i18n="auth.bodyPost">. The server issues a 15-minute admin session; the key and session exist only in the current page memory.</span></p>
         <form id="auth-form" class="auth-form" autocomplete="off">
-          <label for="bootstrap-input" data-i18n="auth.label">Redis management credential</label>
+          <label for="bootstrap-input" data-i18n="auth.label">Business encryption key</label>
           <div class="token-row">
-            <input id="bootstrap-input" name="bootstrap-credential" type="password" autocomplete="new-password" spellcheck="false" required data-i18n-placeholder="auth.placeholder" placeholder="Enter the ACL password from the Redis URL" aria-describedby="bootstrap-hint" />
+            <input id="bootstrap-input" name="admin-credential" type="password" autocomplete="new-password" spellcheck="false" required data-i18n-placeholder="auth.placeholder" placeholder="Enter the CONFIG_ENCRYPTION_KEY value" aria-describedby="bootstrap-hint" />
             <button id="connect-button" class="button button-primary" type="submit" data-i18n="auth.submit">Create session</button>
           </div>
           <p id="bootstrap-hint" class="field-hint" data-i18n="auth.hint">Never written to localStorage, sessionStorage or cookies. You must re-authorize after closing or refreshing the page.</p>
