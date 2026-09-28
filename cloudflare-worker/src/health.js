@@ -6,7 +6,7 @@
  * - 缓存 TTL（默认 30秒）避免健康探测放大；TTL 内复用上次结果，过期后才重探。
  * - 探测失败/超时 → 该 origin 记为 down；`available` 统计存活数。
  * - 仅 HTTP 层健康（<500 记为 up）：**不**检查/代理 Redis、JMAP（C-NO-DB / C-REDIS-ONLY-STATE），
- *   就绪依赖检查仍由后端 `/ready`（GATE-READY-DEPS）承担。
+ *   就绪依赖检查仍由后端 `/ready`（ARCH-READY-BASELINE）承担。
  *
  * 可测性：fetch / 计时器 / 时钟均依赖注入。
  */

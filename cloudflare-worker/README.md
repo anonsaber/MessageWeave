@@ -3,7 +3,7 @@
 统一 HTTPS 入口 + 多后端 origin 故障转移（HA/LB 子项目）。
 **透传模型**：Worker 不感知业务，原样转发请求到多个 https 后端 origin；仅「超时 / 5xx」做有界故障转移。
 
-> 本组件是 **safelist 受限的边缘负载均衡器（edge load balancer）**：路由固定 12 条白名单、
+> 本组件是 **safelist 受限的边缘负载均衡器（edge load balancer）**：路由固定 14 条白名单、
 > 后端 origin 在部署期固定且仅允许 https、未知路径一律 404。它只对固定后端做请求转发与
 > 故障转移，不接受任意目标主机，也不提供任何形式的流量中转或访问隐藏能力。
 
@@ -36,7 +36,7 @@
 
 ### 路由 safelist（ARCH-LB-WORKER / C-LB-SINGLE-REG-URL）
 - 透传公开 `GET /api/status` 启动状态，以及管理 SPA API：`POST /api/admin/session[/revoke]`、`GET|PUT /api/config`、`PUT /api/business-config`。启动状态只包含缺少的环境变量名称；管理 API 的鉴权仍由后端执行。
-- 只透传 `POST /webhook/tg`、`POST /push/jmap`、`POST /reconcile`、`GET /ready`。
+- 只透传 `POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`。
 - 其它路径 → **404**（不透传，避免 Worker 沦为后端任意路径的跳板）。
 - method 不符 → **405**。
 
@@ -46,12 +46,13 @@
 - 起点按 `rng` 随机化（默认 `Math.random`），实现双活分摊；单 origin 配置时退化为确定性。
 - 全失败 → **503 All Backends Unavailable**（交由 Telegram / Stalwart 自动重投兜底，不丢消息）。
 - 健康缓存（`aggregateHealth` / `LB_HEALTH_TTL_MS`）仅服务于 `/healthz` 聚合视图；转发目前**不做健康路由过滤**（§10.4「只向健康实例转发」为后续增强，当前靠故障转移兜底）。
+- **例外：`POST /reconcile` 走 per-route 覆盖。** 它是后端同步长任务——后端持集群级锁 `lock:reconcile`（初租 300s，期间由心跳续期），全局 10s 超时会把它误判为失败并故障转移到第二实例，而第二实例必然立刻返回 409。所以该路由改为：超时取 `LB_RECONCILE_TIMEOUT_MS`（默认 `320000`，留足锁初租 + 心跳余量），且 `maxAttempts=1` 绝不故障转移。其余快路径保持全局默认。
 
 ### 健康聚合（MOD-HEALTH-AGG；C-NO-DB / C-REDIS-ONLY-STATE）
 - `GET /healthz`（由 Worker 自身承载）：按 TTL 缓存（默认 30s）探测各后端 `/healthz`，
   返回 `{status: ok|down, available, total, backends:[{origin, up, status}]}`；
   有 ≥1 后端 up → 200；全部 down → 503。
-- **不代理 Redis/JMAP**：Worker 不做数据库侧检查；后端 `GATE-READY-DEPS` 由 `/ready`（透传）承担。
+- **不代理 Redis/JMAP**：Worker 不做数据库侧检查；后端端到端就绪（配置完整性 + Redis 可达 + JMAP session + Telegram getMe，对应 `ARCH-READY-BASELINE`）由 `/ready`（透传）承担。
 
 ### 无长连接 / 无密钥日志（§4 红线）
 - 不使用 WebSocket/SSE/长轮询（`C-NO-LONG-CONN`）：纯请求-响应转发，body 一次性 `arrayBuffer` 回灌。
@@ -63,7 +64,8 @@
 |---|---|---|
 | `BACKEND_ORIGINS_JSON` | 是（secret） | JSON 数组，形如 `["https://a.platform1.example","https://b.platform2.example"]`；必须全部 https、无内嵌凭据/query/fragment/路径。 |
 | `LB_REQUEST_TIMEOUT_MS` | 否 | 单 origin 请求超时；默认 `10000`。建议 > 最坏 cold start + 最长 JMAP 拉取。 |
-| `LB_MAX_ATTEMPTS` | 否 | 每请求最多 origin 尝试次数；默认 `2`（= 1 次故障转移）。 |
+| `LB_MAX_ATTEMPTS` | 否 | 每请求最多 origin 尝试次数；默认 `2`（= 1 次故障转移）。`POST /reconcile` 固定为 `1`。 |
+| `LB_RECONCILE_TIMEOUT_MS` | 否 | 仅 `POST /reconcile` 的单 origin 超时覆盖；默认 `320000`（须大于后端锁初租 300s + 心跳余量）。 |
 | `LB_HEALTH_TTL_MS` | 否 | 健康探测缓存 TTL；默认 `30000`。 |
 
 > secret 通过 `wrangler secret put BACKEND_ORIGINS_JSON` 注入；`wrangler.toml` 里 `vars` 保持为空，不写明文。

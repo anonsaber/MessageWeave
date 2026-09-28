@@ -275,10 +275,11 @@ spec:
   兜底），不会重复通知。所以对 `503` 可以放心重试。
 - `204` 与 `409` 都是正常结果，不要把它们当失败重试——尤其别对 `409` 做紧密循环重试。
 - 调度间隔按 `NFR-RECONCILE-INTERVAL` 取 **5–10 分钟**即可。Push 是主路径，对账只是兜底。
-- 走 Worker 转发时注意：网关默认单请求超时 10 s、最多 2 次尝试（`index.js:29-30`），而
-  单飞锁租期是 300 s（对账持锁心跳每 30 s 续租至 90 s，`notify.rs:159`/`172`）。一次完整
-  对账可能超出网关转发窗口——若确实经 Worker 调度，请把 `LB_REQUEST_TIMEOUT_MS` 调到
-  大于锁租期，或让调度器直接打到后端 origin。
+- 走 Worker 转发**无需特殊设置**：网关已为 `POST /reconcile` 单独覆盖超时与尝试次数——超时取
+  `LB_RECONCILE_TIMEOUT_MS`（默认 `320000` ms，大于单飞锁租期 300 s + 心跳余量；锁续租逻辑见
+  `notify.rs:159`/`172`），且 `maxAttempts=1` **绝不故障转移**（故障转移只会让第二实例立刻返回
+  `409`）。其余快路径仍用全局 `LB_REQUEST_TIMEOUT_MS`（默认 `10000` ms）与 `LB_MAX_ATTEMPTS`
+  （默认 `2`），不受影响。
 
 ### 6.4 可靠性策略（Reliability）
 
@@ -448,7 +449,7 @@ Stalwart PushSub ────┼─▶ https://lb.<you>.workers.dev      ← 唯
 
 - **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **14 条**（`backends.js:9-24` 的 `SAFE_ROUTES` + `index.js:40-55` 的 `ROUTE_METHODS`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`PUT /api/business-config`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 4 条不在 safelist**：`GET|PUT /api/enabled`（内部开关）、`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`POST /worker`（运维手工触发的 worker 端点，Bearer 鉴权）、`GET /healthz`（网关自行聚合，不转发）——**这 4 条都不承载外部业务流量，因此后端实例前不需要第二道入口**。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
 - **健康聚合（`MOD-HEALTH-AGG`）**：Worker 自行承载 `GET /healthz`，按 TTL 缓存（默认 30s，`LB_HEALTH_TTL_MS` 可调）探测各后端 `/healthz`，返回 `{status, available, total, backends:[{origin,up,status}]}`；≥1 后端 up → 200，全 down → 503。`/ready` 透传给后端，做配置 + Redis + 出站只读探测（JMAP session、TG getMe，各 3s、并行，最坏约 3s），不触发业务副作用。
-- **故障转移（`forwardWithFailover`）**：每次请求最多 `min(LB_MAX_ATTEMPTS, origins.length)` 次尝试；**仅**超时（AbortError）或 5xx 触发换下一个 origin；4xx/2xx/3xx 直接返回；默认 `LB_MAX_ATTEMPTS=2`（首次 + 1 次故障转移）。
+- **故障转移（`forwardWithFailover`）**：每次请求最多 `min(LB_MAX_ATTEMPTS, origins.length)` 次尝试；**仅**超时（AbortError）或 5xx 触发换下一个 origin；4xx/2xx/3xx 直接返回；默认 `LB_MAX_ATTEMPTS=2`（首次 + 1 次故障转移）。**例外：`POST /reconcile` 固定 `maxAttempts=1`，绝不故障转移**——它持集群级单飞锁，切实例只会立刻撞 `409`；其单请求超时取 `LB_RECONCILE_TIMEOUT_MS`（默认 `320000` ms），其余路由不受影响。
 - **随机分摊**：起点 origin 按 `Math.random` 随机化，实现双活；单 origin 配置时退化为确定性。
 - **全失败兜底**：返回 `503 All Backends Unavailable`，交由 Telegram / Stalwart 自动重投（**不丢消息**）。
 - **超时预算**（`LB_REQUEST_TIMEOUT_MS`，默认 10s）> 最坏 cold start。
@@ -494,6 +495,7 @@ npx wrangler secret put BACKEND_ORIGINS_JSON   # JSON 数组，见下方示例
 # 可选（带默认值）
 npx wrangler secret put LB_REQUEST_TIMEOUT_MS   # 默认 10000ms
 npx wrangler secret put LB_MAX_ATTEMPTS         # 默认 2（首次 + 1 次故障转移）
+npx wrangler secret put LB_RECONCILE_TIMEOUT_MS # 默认 320000ms，仅 POST /reconcile 生效
 npx wrangler secret put LB_HEALTH_TTL_MS        # 默认 30000ms
 ```
 

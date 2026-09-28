@@ -156,3 +156,42 @@ test("Worker: POST /api/push/register and /api/push/disable are forwarded", asyn
     restore();
   }
 });
+
+test("Worker: /reconcile 走 per-route 长超时且绝不故障转移；其余快路径保持全局默认", async () => {
+  const seen = [];
+  let lastTimeoutMs = null;
+  const restore = stubFetch(async (url) => {
+    seen.push(String(url));
+    return new Response("err", { status: 503 });
+  });
+  // 只记录 setTimeout 收到的延迟，不真正触发——否则 abort 会让 fetch 提前失败
+  const origSetTimeout = globalThis.setTimeout;
+  const origClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (_fn, ms) => {
+    lastTimeoutMs = ms;
+    return 0;
+  };
+  globalThis.clearTimeout = () => {};
+  try {
+    await handleFetch(new Request("https://lb.example/reconcile", { method: "POST", body: "{}" }), makeEnv());
+    assert.equal(seen.length, 1, "POST /reconcile 必须 maxAttempts=1：后端 503 也不换实例");
+    assert.equal(lastTimeoutMs, 320_000, "POST /reconcile 默认超时 320000ms");
+
+    seen.length = 0;
+    await handleFetch(
+      new Request("https://lb.example/reconcile", { method: "POST", body: "{}" }),
+      makeEnv({ LB_RECONCILE_TIMEOUT_MS: "60000" }),
+    );
+    assert.equal(seen.length, 1, "POST /reconcile 的 maxAttempts=1 不受 env 覆盖影响");
+    assert.equal(lastTimeoutMs, 60_000, "POST /reconcile 必须遵守 LB_RECONCILE_TIMEOUT_MS");
+
+    seen.length = 0;
+    await handleFetch(new Request("https://lb.example/webhook/tg", { method: "POST", body: "{}" }), makeEnv());
+    assert.equal(seen.length, 2, "POST /webhook/tg 仍要故障转移到第二实例");
+    assert.equal(lastTimeoutMs, 5_000, "其余路由仍须使用全局 LB_REQUEST_TIMEOUT_MS");
+  } finally {
+    globalThis.setTimeout = origSetTimeout;
+    globalThis.clearTimeout = origClearTimeout;
+    restore();
+  }
+});

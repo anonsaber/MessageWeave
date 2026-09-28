@@ -28,6 +28,11 @@ import { aggregateHealth, healthResponse, DEFAULT_HEALTH_TTL_MS } from "./health
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_ATTEMPTS = 2; // 首次 + 1 次故障转移（§10.4 建议）
+// /reconcile 是后端同步长任务：handler 持集群级锁 `lock:reconcile`（初租 300s、30s 心跳续期至 90s，
+// notify.rs reconcile 入口）并在同一请求内同步跑 reconcile()。全局 10s 超时会把它误判失败并故障转移到
+// 第二实例——第二实例必然立刻撞 409（锁已被占），重试只放大冲突。故仅对此路由覆盖：
+// 长超时（默认 320s > 300s 初租 + 心跳余量）+ maxAttempts=1，绝不故障转移；其余快路径路由保持全局默认。
+const DEFAULT_RECONCILE_TIMEOUT_MS = 320_000;
 
 /**
  * 健康探测缓存（模块作用域 = CF Worker isolate 内跨请求复用）。
@@ -87,8 +92,19 @@ export async function handleFetch(request, env) {
     return text("no backends configured", 503);
   }
 
-  const timeoutMs = intFromEnv(env.LB_REQUEST_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
-  const maxAttempts = intFromEnv(env.LB_MAX_ATTEMPTS, DEFAULT_MAX_ATTEMPTS);
+  let timeoutMs = intFromEnv(env.LB_REQUEST_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
+  let maxAttempts = intFromEnv(env.LB_MAX_ATTEMPTS, DEFAULT_MAX_ATTEMPTS);
+
+  // Per-route 覆盖：/reconcile 是后端同步长任务（handler 持集群级锁 lock:reconcile，
+  // 初租 300s、30s 心跳续期，notify.rs reconcile 入口），并在同一请求内同步跑 reconcile()。
+  // 全局 10s 超时会把它误判失败并按 maxAttempts=2 故障转移到第二实例——第二实例必然立刻撞
+  // 409（锁已被占），重试只放大冲突、对 curl/cron 调度器是硬伤。故仅对此路由覆盖：
+  // 长超时（LB_RECONCILE_TIMEOUT_MS，默认 320s > 300s 初租 + 心跳余量）+ maxAttempts=1，
+  // 绝不故障转移；其余快路径（/webhook/tg 等）保持全局默认 10s/2 不变。
+  if (path === "/reconcile") {
+    timeoutMs = intFromEnv(env.LB_RECONCILE_TIMEOUT_MS, DEFAULT_RECONCILE_TIMEOUT_MS);
+    maxAttempts = 1; // 故障转移无意义：切到另一 origin 必然撞 lock:reconcile 409
+  }
 
   // 透传转发 + 有界故障转移（仅超时/5xx）。
   return forwardWithFailover(origins, request, {
