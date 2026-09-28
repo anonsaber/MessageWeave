@@ -48,7 +48,7 @@ Notes:
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `consent:ai:{chat_id}` | EX 3600 / 86_400 / 604_800 / 31_536_000 | `set_ai_consent` (state.rs:504; key at state.rs:506, `EX` at state.rs:512) | `ai_consent_until` (state.rs:518); cleared by `clear_ai_consent` (state.rs:527) |
+| `consent:ai:{chat_id}` | EX 3600 / 86_400 / 604_800 / 31_536_000 | `set_ai_consent` (state.rs:504; key at state.rs:506, `EX` at state.rs:511) | `ai_consent_until` (state.rs:518); cleared by `clear_ai_consent` (state.rs:527) |
 
 The stored value is an **absolute Unix expiry timestamp**, not a duration; the key's `EX`
 carries the same duration, so the key removes itself (state.rs:508-513).
@@ -359,10 +359,10 @@ endpoint.
 
 | Parameter | Default | Range / cap | Source |
 |---|---|---|---|
-| `jmap_timeout_ms` | 15_000 | 100..=300_000 | default state.rs:55; validated notify.rs:411 |
-| `telegram_timeout_ms` | 10_000 | 100..=300_000 | default state.rs:56; validated notify.rs:412 |
-| `llm_timeout_ms` | 30_000 | 100..=300_000 | default state.rs:57; validated notify.rs:413 |
-| `max_retries` | 3 | hard cap 5 | default state.rs:58; rejected at notify.rs:414; re-clamped at channel.rs:138 |
+| `jmap_timeout_ms` | 15_000 | 100..=300_000 | default state.rs:55; validated notify.rs:491 |
+| `telegram_timeout_ms` | 10_000 | 100..=300_000 | default state.rs:56; validated notify.rs:492 |
+| `llm_timeout_ms` | 30_000 | 100..=300_000 | default state.rs:57; validated notify.rs:493 |
+| `max_retries` | 3 | hard cap 5 | default state.rs:58; rejected at notify.rs:494; re-clamped at channel.rs:138 |
 
 There is **no** `LLM_MAX_RETRIES` environment variable; retry count lives in
 `config:outbound` and is bounded at 5 regardless of what is written.
