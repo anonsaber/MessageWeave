@@ -3,7 +3,7 @@
 > **This file is the single source of truth for verifiable facts.**
 > When any other document disagrees with this one, this one wins.
 >
-> **Verified against commit `2da11b9`.** Line numbers in this file were read from that
+> **Verified against commit `b2dbe7c`.** Line numbers in this file were read from that
 > commit with the working tree clean.
 >
 > **Maintenance responsibility.** Any change to the public API of `src/config.rs`,
