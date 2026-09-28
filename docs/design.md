@@ -436,6 +436,10 @@ message-weave/
 
 **验证**：静态检查代码不出现本地路径常量 / `std::fs` 非测试调用 / 文件日志后端；运行期通过容器 `/proc/mounts` 与 `docker inspect` 确认无本地卷挂载；部署检查清单见 deployment.md §8.2。
 
+### 7.6 远程联调面为何默认绝对关闭
+
+该面存在的唯一理由是缩短生产排障路径：在无法登录容器、只能靠外部请求观察系统时，需要有人能在不发版的前提下探到 JMAP/Telegram 连通性与当前业务配置。代价是它的入口软度必然高于三条写路径——除只读探测外还保留一次**真实出站发送**，且复用业务白名单而非独立白名单。因此设计选择是「默认关闭」而不是「默认开启、靠网关挡」：进程同时带 `--debug` 且设置了非空 `DEBUG_TOKEN` 时才会挂载这组路由（`SAF-DEBUG-GATE`）；缺一时路由在路由器里**根本不存在**，请求落到 axum 通用 `404`，而非「存在但 401」——后者会泄漏路由存在性。也不存在第三种状态：没有「未配置即开放」的回退，也没有任何配置项能把它设为默认开启。再叠一层位置约束：它不在网关的安全路由白名单内，即便后端开错，经平台入口也会被 fail-closed 拒掉，唯一可达路径是直连后端 origin。这四处——双因子挂载、404 而非 401、无默认开启回退、网关不可达——共同构成「暴露面默认为零」的架构决策。启用方式、逐端点状态码与部署确认清单见 deployment.md §2.1。
+
 ---
 
 ## 8. 错误处理与可观测性
@@ -705,7 +709,7 @@ src/ai.rs   # LlmClient（唯一实现）：summarize() 打 OpenAI 兼容 /chat/
 | 变量 | 类型 | 默认 | 用途 |
 |---|---|---|---|
 | `LLM_ENABLED` | bool | `true` | 总开关 |
-| `LLM_ALLOW_NET` | bool | `true` | 运行时出站许可；`LLM_ENABLED && LLM_ALLOW_NET` 同时为真才构造 `LlmClient`，否则用 `LlmClient::noop()`（`src/main.rs:109`） |
+| `LLM_ALLOW_NET` | bool | `true` | 运行时出站许可；`LLM_ENABLED && LLM_ALLOW_NET` 同时为真才构造 `LlmClient`，否则用 `LlmClient::noop()`（`src/main.rs:128`） |
 | `LLM_API_KEY` | string | 必填 | Bearer token；缺失即视为未启用 |
 | `LLM_BASE_URL` | URL | 必填 | 必须 `https`，否则 `AiError::InvalidEndpoint` |
 | `LLM_MODEL` | string | 必填 | 透传给 `/chat/completions` 的 `model` |

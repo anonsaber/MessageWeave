@@ -3,7 +3,7 @@
 > **This file is the single source of truth for verifiable facts.**
 > When any other document disagrees with this one, this one wins.
 >
-> **Verified against commit `c5bc7b8`.** Line numbers in this file were read from that
+> **Verified against commit `afa6cec`.** Line numbers in this file were read from that
 > commit with the working tree clean.
 >
 > **Maintenance responsibility.** Any change to the public API of `src/config.rs`,
@@ -71,11 +71,11 @@ Consent never auto-renews.
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `stalwart:jmap`, `stalwart:telegram` | Stream, no EX | `State::enqueue` (state.rs:241, `XADD` at state.rs:243); call sites notify.rs:123 (TG webhook) and notify.rs:772 (JMAP push); reconcile path via `claim_dedup_and_enqueue` (worker.rs:373) | `read_batch` over consumer group `stalwart-workers`, consumer `http-worker` (notify.rs:265-266, :280) |
-| `delivery:inflight:{stream}:{id}` | EX 60 | key built at notify.rs:315, `claim_dedup` at notify.rs:316 | `release_dedup` on completion (notify.rs:329) |
-| `delivery:committed:{stream}:{id}` | EX 604_800 | key built at notify.rs:294, `claim_dedup` at notify.rs:328 | `dedup_exists` before send (notify.rs:295) |
+| `stalwart:jmap`, `stalwart:telegram` | Stream, no EX | `State::enqueue` (state.rs:241, `XADD` at state.rs:243); call sites notify.rs:203 (TG webhook) and notify.rs:859 (JMAP push); reconcile path via `claim_dedup_and_enqueue` (worker.rs:373) | `read_batch` over consumer group `stalwart-workers`, consumer `http-worker` (notify.rs:360, :428) |
+| `delivery:inflight:{stream}:{id}` | EX 60 | key built at notify.rs:395, `claim_dedup` at notify.rs:396 | `release_dedup` on completion (notify.rs:409, 416, 425) |
+| `delivery:committed:{stream}:{id}` | EX 604_800 | key built at notify.rs:374, `claim_dedup` at notify.rs:408 | `dedup_exists` before send (notify.rs:375) |
 | `retry:{stream}:{id}` | EX 86_400 | `retry_or_dlq` Lua script (key state.rs:434, `INCR` state.rs:438, `EXPIRE` state.rs:439) | reclaim path |
-| `stalwart:jmap:dlq`, `stalwart:telegram:dlq` | Stream, no EX | Lua `XADD` at state.rs:441; name built at notify.rs:348, `max_attempts` 3 at notify.rs:349 | **nothing in code reads it** |
+| `stalwart:jmap:dlq`, `stalwart:telegram:dlq` | Stream, no EX | Lua `XADD` at state.rs:441; name built at notify.rs:428 (`max_attempts` 3, same call) | **nothing in code reads it** |
 
 There is no `delivery:pending:{stream}` key — "pending" refers to the Redis Streams
 pending-entries list (PEL), which Redis maintains internally.
@@ -96,9 +96,9 @@ back — replay is an operator action, not a service feature.
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `dedup:tg:{update_id}` | EX 86_400 | key at notify.rs:118, `claim_dedup` at notify.rs:119 | — |
-| `dedup:jmap:{account}:{email}` | EX 86_400 | key at notify.rs:767, `claim_dedup` at notify.rs:768; same key rebuilt at worker.rs:360 and claimed with `claim_dedup_and_enqueue` at worker.rs:373 | — |
-| `ratelimit:push-verify:{subscription}` | EX 30 | key at notify.rs:728, `claim_dedup` at notify.rs:729 | — |
+| `dedup:tg:{update_id}` | EX 86_400 | key at notify.rs:198, `claim_dedup` at notify.rs:199, `release_dedup` at :208 | — |
+| `dedup:jmap:{account}:{email}` | EX 86_400 | key at notify.rs:854, `claim_dedup` at notify.rs:855, `release_dedup` at :864; same key rebuilt at worker.rs:360 and claimed with `claim_dedup_and_enqueue` at worker.rs:373 | — |
+| `ratelimit:push-verify:{subscription}` | EX 30 | key at notify.rs:815, `claim_dedup` at notify.rs:816 (`push_verify_rate_limited` at :819) | — |
 | `state:jmap:since` | **No EX** | `set_reconcile_state` (state.rs:629; key at state.rs:632, `SET` without `EX`) | `get_reconcile_state` (state.rs:621) |
 
 `state:jmap:since` is the only state key that survives indefinitely without an explicit
@@ -109,12 +109,12 @@ re-baseline on the next restart.
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `lock:reconcile` | 300 | `acquire_lock` (notify.rs:159) | `renew_lock` heartbeat 90 (notify.rs:172) |
-| `lock:push-register:{sha256(callback_url)}` | 360 | `acquire_lock` (notify.rs:819) | `release_lock` (notify.rs:835, 907) |
+| `lock:reconcile` | 300 | `acquire_lock` (notify.rs:239) | `renew_lock` heartbeat 90 (notify.rs:252) |
+| `lock:push-register:{sha256(callback_url)}` | 360 | `acquire_lock` (notify.rs:906) | `release_lock` (notify.rs:922, 937, 950, 967, 984, 994) |
 
 **Why the registration lock is 360 s and not 300 s.** The lock must outlive the longest
 configured JMAP request timeout (300 s), otherwise a slow registration could admit a
-duplicate. Source comment, notify.rs:816:
+duplicate. Source comment, notify.rs:904-905:
 
 > The lock must outlive the configured 300s maximum JMAP request timeout; this prevents a
 > slow create from admitting a duplicate.
@@ -123,10 +123,10 @@ duplicate. Source comment, notify.rs:816:
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `push:subscription:{id}` | EX 300 (caller-supplied, min 1) | `remember_push_subscription` (state.rs:647, called at notify.rs:746) | `push_subscription_verified` (state.rs:663) |
+| `push:subscription:{id}` | EX 300 (caller-supplied, min 1) | `remember_push_subscription` (state.rs:639, called at notify.rs:833) | `push_subscription_verified` (state.rs:663) |
 | `push:subscription:id` | No EX | `remember_push_subscription_id` (state.rs:672) | current-subscription lookup |
-| `push:subscription:{id}:status` | 900 / 300 / 86_400 (min 1 enforced) | `set_push_subscription_status` (state.rs:679, key at state.rs:687); pending at notify.rs:873, verified at notify.rs:758, disabled at notify.rs:944 | **none** |
-| `push:registration:{sha256(callback_url)}` | EX 604_800 | `remember_push_subscription_for_callback` (state.rs:732, key at state.rs:739, `EX` at state.rs:742; called at notify.rs:890) | `get_push_subscription_for_callback` (state.rs:721); removed by `remove_push_subscription_for_callback` (state.rs:748) |
+| `push:subscription:{id}:status` | 900 / 300 / 86_400 (min 1 enforced) | `set_push_subscription_status` (state.rs:679, key at state.rs:687); pending at notify.rs:960, verified at notify.rs:845, disabled at notify.rs:1031 | **none** |
+| `push:registration:{sha256(callback_url)}` | EX 604_800 | `remember_push_subscription_for_callback` (state.rs:732, key at state.rs:739, `EX` at state.rs:742; called at notify.rs:977) | `get_push_subscription_for_callback` (state.rs:721); removed by `remove_push_subscription_for_callback` (state.rs:748) |
 | `push:orphan:{subscription_id}` | EX 604_800 | `record_push_orphan` (state.rs:712) | orphan sweep |
 
 **Two distinct keys that are frequently confused. Read this before editing either.**
@@ -171,13 +171,13 @@ Every error response uses one envelope shape:
 `Retry-After` has two emission sites, both in `notify.rs`, and the value is always the literal
 string `"30"`:
 
-- `error_response` (`notify.rs:316-324`, inserted at `:320`) sets it **only when its `retry`
-  flag is true**. The readiness failure path (`notify.rs:157`) passes `retry = true`, so `/ready`
+- `error_response` (`notify.rs:320-328`, inserted at `:324`) sets it **only when its `retry`
+  flag is true**. The readiness failure path (`notify.rs:161`) passes `retry = true`, so `/ready`
   is covered by that rule rather than by a special case.
-- `error_response_with_id` (`notify.rs:1076-1084`, inserted at `:1082`) sets it
+- `error_response_with_id` (`notify.rs:1087-1093`, inserted at `:1090`) sets it
   **unconditionally**. It is used only for the push register/disable failures
-  `push_state_unavailable` and `push_destroy_failed` (`notify.rs:941`, `:958`, `:975`,
-  `:1012`), which are always `503`.
+  `push_state_unavailable` and `push_destroy_failed` (`notify.rs:952`, `:969`, `:986`,
+  `:1023`), which are always `503`.
 
 `GET /api/status` is the exception that reports setup state with a non-envelope body.
 
@@ -185,7 +185,7 @@ string `"30"`:
 
 ## 3. Backend routes
 
-All registered in `router_with_worker_state_runtime_bootstrap_config` (notify.rs:1250-1277).
+All registered in `router_with_worker_state_runtime_bootstrap_config` (notify.rs:1275), with the routes wired at `notify.rs:1304-1318`.
 
 | Method | Path | Handler |
 |---|---|---|
@@ -206,6 +206,23 @@ All registered in `router_with_worker_state_runtime_bootstrap_config` (notify.rs
 | GET | `/api/status` | `setup_status` |
 | GET | `/`, `/assets/config.js`, `/assets/styles.css` | `index` / `web_config` |
 
+The remote-debug surface (`src/debug.rs:72-80`) is merged **only when the process is started
+with `--debug` and `DEBUG_TOKEN` is non-empty** (`SAF-DEBUG-GATE`, `src/main.rs:99-103`,
+`src/notify.rs:1320-1321`); otherwise none of these routes exist and requests fall through to
+axum's generic `404`, not a 401. All seven require `Authorization: Bearer <DEBUG_TOKEN>`,
+checked by `debug_authorized` (`src/debug.rs:45`), which delegates to the production
+`worker_authorized` so the comparison is constant time (`src/notify.rs:1135`).
+
+| Method | Path | Handler |
+|---|---|---|
+| GET | `/debug/ping` | `debug_ping` |
+| GET | `/debug/config` | `debug_config` |
+| GET | `/debug/redis` | `debug_redis` |
+| GET | `/debug/jmap` | `debug_jmap` |
+| GET | `/debug/telegram` | `debug_telegram` |
+| GET | `/debug/worker` | `debug_worker` |
+| POST | `/debug/notify` | `debug_notify` |
+
 Response conventions:
 
 - `GET /healthz` returns **200 unconditionally**. It is a liveness probe and must not be
@@ -215,7 +232,7 @@ Response conventions:
   completeness (`setup_missing` empty), Redis reachability, and two upstream probes —
   `GET {jmap_origin}/.well-known/jmap` with the configured Basic credentials, and
   `GET https://api.telegram.org/bot<token>/getMe`. Both probes share `PROBE_TIMEOUT` = 3000ms
-  (`notify.rs:69`) and run **in parallel** (`tokio::join!`, `notify.rs:143`), so the worst case
+  (`notify.rs:73`) and run **in parallel** (`tokio::join!`, `notify.rs:147`), so the worst case
   is a single timeout, about 3s. On success the body is a report whose `jmap`/`telegram` fields
   are real probe results. The probes are plain reusable functions (`probe_jmap_session`,
   `probe_telegram_get_me`) also used by the remote-debug path, so they must not be duplicated.
@@ -223,6 +240,13 @@ Response conventions:
   session URL unauthenticated would report not-ready forever and make ingress stop routing.
 - `GET /api/status` returns **503** with body `{"status":"configuration-setup","missing":[...]}`
   when a required environment variable is absent.
+- `/debug/*` returns **503** in exactly one place: `POST /debug/notify` when the business
+  config is not loaded or there is no outbound client — `service_unavailable` with
+  `Retry-After: 30` (`src/debug.rs:56-58`). The three probe endpoints instead report failure
+  **inside a 200 body** (`{"ok":false,"detail":...}`), so an unreachable upstream never looks
+  like an outage. `POST /debug/notify` also returns `403 chat_not_allowed` when the chat is
+  outside a *non-empty* allowlist (`src/debug.rs:232-235`) and `502 telegram_send_failed` on
+  a send failure (`src/debug.rs:64-66`).
 - Static assets are served with a strict CSP; see §7.
 
 ---
@@ -230,15 +254,15 @@ Response conventions:
 ## 4. Gateway vs backend route matrix
 
 > **Independently verified.** Source: `cloudflare-worker/src/backends.js` `SAFE_ROUTES`
-> (backends.js:9-24), 14 entries, alongside `ROUTE_METHODS` (index.js:40-55)
+> (backends.js:9-24), 14 entries, alongside `ROUTE_METHODS` (index.js:45-60)
 > which fixes one method set per path. The worker entry point is `src/index.js`
 > (wrangler.toml:20); `src/lb.js` performs forwarding and bounded failover (`SAF-LB-PASSTHRU`,
 > `C-NO-LONG-CONN`).
 
 The gate is **unconditional and fail-closed**. The worker reads no configuration switches at
-all: a path missing from `SAFE_ROUTES` returns **404** (index.js:72-73), a registered
-path with the wrong method returns **405** (index.js:76-77), and a missing or unparseable
-backend pool returns **503** rather than passing the request through (index.js:84-87).
+all: a path missing from `SAFE_ROUTES` returns **404** (index.js:77-78), a registered
+path with the wrong method returns **405** (index.js:80-83), and a missing or unparseable
+backend pool returns **503** rather than passing the request through (index.js:85-93).
 
 **Forwarded by the worker (14):**
 
@@ -247,25 +271,26 @@ backend pool returns **503** rather than passing the request through (index.js:8
 `/webhook/tg` · `/push/jmap` · `/api/push/register` · `/api/push/disable` · `/reconcile` ·
 `/ready`
 
-**Registered on the backend but NOT forwarded (4):**
+**Registered on the backend but NOT forwarded (5):**
 
 | Path | Why it is absent from the gateway |
 |---|---|
 | `GET, PUT /api/enabled` | Internal operational switch, not exposed through the public gateway |
 | `POST /api/bootstrap` | One-shot trust bootstrap; kept off the public path |
-| `POST /worker` | Operator-invoked worker trigger (Bearer-auth'd, `notify.rs:326`); not part of the public gateway path |
+| `POST /worker` | Operator-invoked worker trigger (Bearer-auth'd, `notify.rs:330`); not part of the public gateway path |
 | `GET /healthz` | Liveness is aggregated by the gateway itself |
+| `/debug/*` (7 routes) | Opt-in remote-debug surface (`SAF-DEBUG-GATE`); absent from `SAFE_ROUTES`, so it is reachable **only** by talking to the backend origin directly |
 
-Consequence: none of the four carries external business traffic, so no second ingress is
+Consequence: none of the five carries external business traffic, so no second ingress is
 needed in front of the backend instances. The SPA's first-boot flow still cannot drive
 `/api/bootstrap` through the worker — bootstrap must be performed against the backend origin
 directly, or the bootstrap path must be added to the gateway allowlist.
 
 `POST /api/push/register` and `POST /api/push/disable` **are** forwarded. Both are safe to
-proxy: the callback URL is supplied by the client in the request body (`notify.rs:851`,
-validated as a URL at :868), and every push subscription record is written to and read back
+proxy: the callback URL is supplied by the client in the request body (`notify.rs:874`,
+validated as a URL at :891), and every push subscription record is written to and read back
 from the shared Redis (`lock:push-register:{sha256(url)}`, `get_push_subscription_for_callback`
-at `notify.rs:894`), so it does not matter which backend instance the worker picks. Push
+at `notify.rs:917`), so it does not matter which backend instance the worker picks. Push
 registration therefore no longer requires hitting a specific backend address — see
 deployment.md §10.5.
 
@@ -279,18 +304,18 @@ Three distinct layers. They are not interchangeable.
 
 | Variable | Required | Default | Source |
 |---|---|---|---|
-| `REDIS_URL` | yes | — | read at main.rs:39 |
-| `CONFIG_ENCRYPTION_KEY` | yes | — | `encryption_key_from_env` at main.rs:46 |
-| `PORT` | no | `8080` | `unwrap_or(8080_u16)` at main.rs:33 |
+| `REDIS_URL` | yes | — | read at main.rs:40 |
+| `CONFIG_ENCRYPTION_KEY` | yes | — | `encryption_key_from_env` at main.rs:50 |
+| `PORT` | no | `8080` | `unwrap_or(8080_u16)` at main.rs:34 |
 | `RUN_MODE` | no | `webhook` | `unwrap_or_else` at config.rs:338 |
 
 `RUN_MODE` accepts only `webhook` or `reconcile`; anything else is rejected at boot
-(main.rs:71-78). Both modes currently route to the same no-op router; the distinction is
+(main.rs:78-81). Both modes currently route to the same no-op router; the distinction is
 load-bearing for future splits, not for behaviour today.
 
 **Missing a required variable does not crash the process.** It logs a warning and serves
 `router_configuration_setup`, which builds a router over `MemoryState` with empty tokens and
-a `NoopWorker` (notify.rs:1097-1109). The container stays up and answers requests while doing
+a `NoopWorker` (worker.rs:142-144). The container stays up and answers requests while doing
 no business work. This is a deliberate fail-closed-to-setup posture, and it is the single
 most likely cause of "the container is healthy but nothing happens".
 
@@ -346,7 +371,7 @@ There is **no** `LLM_MAX_RETRIES` environment variable; retry count lives in
 | `MAX_BASELINE_EMAILS` | 10_000 | worker.rs:249 |
 | `RECONCILE_BUDGET` | 20 s | worker.rs:250 |
 | `CHANGE_WINDOW_CAP` | 4_096 | worker.rs:306 |
-| Lock TTL / heartbeat | 300 s / 90 s | notify.rs:159 / 172 |
+| Lock TTL / heartbeat | 300 s / 90 s | notify.rs:239 / 252 |
 
 `max_changes` is a function parameter, not a constant.
 

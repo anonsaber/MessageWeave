@@ -76,6 +76,14 @@ Telegram `getMe`, 3s each) are reachable. Probe `/ready`, not `/healthz`, when d
 whether to route traffic — but `/ready` is the heavier probe (~3s worst case), so a monitor
 that must stay cheap should watch the gateway's aggregated `/healthz`.
 
+**Remote debug (opt-in, off by default).**
+`/debug/*` is an optional remote-debug surface: live JMAP and Telegram probes, the current
+business config, and a single Telegram send. It sits behind a two-factor gate — the process
+must be started with `--debug` **and** `DEBUG_TOKEN` must be set; miss either and the routes
+do not exist at all (requests fall through to a generic 404). Nothing under `/debug/*` is on
+the gateway allowlist, so it is reachable only on the backend origin itself. See
+`docs/deployment.md` §2.1.
+
 ## 4. Security boundary, in one sentence
 
 > All state lives in Redis; the process reads only two environment variables and writes

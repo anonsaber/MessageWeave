@@ -7,6 +7,10 @@
 > 三份文档职责分离，改动时请遵循 [§6 文档边界](#6-文档边界与引用关系)，避免内容重复堆砌与跨文档冲突。
 >
 > **跨文档引用一律用稳定 ID**（`C-` / `NG-` / `MOD-` / `FLOW-` / `REQ-` 等），**不用章节号（§x.y）**；定义点位置与一句话说明见 [§7 跨文档引用索引](#7-跨文档引用索引表)。
+>
+> **版本基线 v3（2026-09-26，本轮 ④+⑤）：代码 `afa6cec`，文档 `e502c40`。**
+> 本轮新增 `src/debug.rs` 远程联调面与 6 个 `*DEBUG*` ID（§2 第 19 条、§5 测试清单、§7 六行），文档侧同步落位
+> `docs/deployment.md` §2.1、`docs/reference.md` §3/§4、`README` 中英双版；各文档的行号锚点以该基线为准，代码变动后须同步重锚。
 
 ---
 
@@ -150,7 +154,7 @@
 | `README.md` / `README.zh-CN.md` | 面向最终用户：是什么 / 五分钟跑起来 / 配置入口 / 安全边界一句话 / 去哪读更多（英文版 / 中文版，内容须对等，顶部互链） | 用户可见行为或流程变更时 |
 | `docs/reference.md` | **可核对事实的唯一权威来源**：Redis 键与 TTL、错误 envelope 与错误码、后端路由与网关白名单矩阵、环境变量三层、出站与预算常量 | 公共 API 或 Redis 键名/TTL 变更时（**必更**） |
 | `docs/design.md` | 产品行为、架构、模块接口、状态机、数据流、错误处理、测试、实施阶段、渠道抽象（Channel/Notifier/MessageAdapter）、历史问题与决策归档（§11，产品/架构类，均已收口） | 行为/接口变更时 |
-| `docs/deployment.md` | 通用 HTTPS-only Docker、Debian、构建/运行时、Secrets、Redis（状态唯一载体）、Webhook/Push/对账短请求路由、**多实例 LB/HA（Worker 前置，§10）**、健康检查、CI、外部调度示例、已确认决策表（`Q-DEP-A`/`Q-DEP-B` 已决策归档） | 部署/发布变更时 |
+| `docs/deployment.md` | 通用 HTTPS-only Docker、Debian、构建/运行时、Secrets、Redis（状态唯一载体）、**可选远程联调面 `/debug/*`（§2.1，`SAF-DEBUG-GATE`）**、Webhook/Push/对账短请求路由、**多实例 LB/HA（Worker 前置，§10）**、健康检查、CI、外部调度示例、已确认决策表（`Q-DEP-A`/`Q-DEP-B` 已决策归档） | 部署/发布变更时 |
 | `docs/roadmap.md` | **只放缺口、阻塞与阶段目标**（取代 `docs/todo.md`，已删除） | 缺口或阻塞项增减时 |
 | `docs/retired.md` | **已废弃 / 未采用路线与虚构条目**：每条含「类型 / 原因 / 替代或现状」；记录 teloxide 未采用、FSM 未落地、幽灵文件与虚构键、已删文档。**只写结论与原因，不写当前事实** | 新增废弃项或删除文档时 |
 | `AGENTS.md`（本文件） | 目标、硬性安全边界、实现顺序、禁止事项、测试验收、文档引用关系、**跨文档引用索引（§7）** | 安全边界/流程变更时 |
@@ -249,10 +253,12 @@
 | `SAF-RECONCILE-LOCK` | docs/deployment.md §10.5 | `/reconcile` 不扇出，Redis 锁保证单实例执行，避免重复对账 | 安全 |
 | `MOD-STREAMS-GROUP` | docs/deployment.md §10.5 | 多实例用同一 Streams 消费组名，Redis 自动分摊（at-least-once 不重复处理） | 组件 |
 | `MOD-HEALTH-AGG` | docs/deployment.md §10.6 | Worker 聚合健康视图，报告各后端存活供外部监控 | 组件 |
-| `MOD-DEBUG` | src/debug.rs / AGENTS.md §2 | 远程联调只读表面：`--debug` + `DEBUG_TOKEN` 双因子开启后挂载 `/debug/*`，否则不挂载 | 组件 |
-| `SAF-DEBUG-GATE` | src/main.rs / src/debug.rs | 双因子门禁：启动带 `--debug` **且** `DEBUG_TOKEN` 非空才挂载路由；缺任一完全不挂载（请求落通用 `404`），默认绝对关闭 | 安全 |
-| `SAF-DEBUG-AUTH` | src/debug.rs | 挂载后 `/debug/*` 须 `Authorization: Bearer DEBUG_TOKEN` 常数时间比较，失败 `401` 且无副作用 | 安全 |
-| `REQ-DEBUG-ENDPOINTS` | src/debug.rs / AGENTS.md §2 | 端点契约：`GET /debug/ping`、`/config`、`/redis`、`/jmap`、`/telegram`、`/worker` 均只读；`POST /debug/notify` 走真实出站链路发一条测试消息；响应体不含 secret 原文 | 需求 |
+| `MOD-DEBUG` | src/debug.rs / docs/deployment.md §2.1 / docs/design.md §7.6 / docs/reference.md §3 | 远程联调只读表面：`--debug` + `DEBUG_TOKEN` 双因子开启后挂载 `/debug/*`，否则不挂载 | 组件 |
+| `SAF-DEBUG-GATE` | src/main.rs / src/debug.rs / docs/design.md §7.6 / docs/deployment.md §2.1 | 双因子门禁：启动带 `--debug` **且** `DEBUG_TOKEN` 非空才挂载路由；缺任一完全不挂载（请求落通用 `404`），默认绝对关闭 | 安全 |
+| `SAF-DEBUG-AUTH` | src/debug.rs / docs/deployment.md §2.1 | 挂载后 `/debug/*` 须 `Authorization: Bearer DEBUG_TOKEN` 常数时间比较，失败 `401` 且无副作用 | 安全 |
+| `REQ-DEBUG-ENDPOINTS` | src/debug.rs / docs/reference.md §3 / docs/deployment.md §2.1 | 端点契约：`GET /debug/ping`、`/config`、`/redis`、`/jmap`、`/telegram`、`/worker` 均只读；`POST /debug/notify` 走真实出站链路发一条测试消息；响应体不含 secret 原文（凭据字段只出 `*_configured` 布尔，非密文的身份与预算字段仍明文返回） | 需求 |
+| `SAF-DEBUG-ORIGIN-ONLY` | docs/deployment.md §2.1 / docs/reference.md §4 | `/debug/*` 不在网关 14 条安全路由内，Worker 一律 `404 route not forwarded`；只能直连后端 origin，公网不可达 | 安全 |
+| `SAF-DEBUG-ALLOWLIST` | src/debug.rs / docs/deployment.md §2.1 | `POST /debug/notify` 仅在 chat 白名单**非空**时校验 `chat_id`；白名单未配置（空）时不拦截，故启用本面须确认业务白名单已配置 | 安全 |
 | `NFR-HA-MULTI-INSTANCE` | docs/deployment.md §10.7 / §9.1 | 多实例高可用语义；双活或主备均可；Redis 单点故障不在方案范围（用户外部解决） | 非功能 |
 | `C-NO-DB` | docs/deployment.md §0 / §9.1 / AGENTS.md §2 | 生产不使用任何数据库（无 SQLite/Postgres/MySQL/嵌入式），Redis 为唯一状态存储；应用不连接第二个数据库 | 约束 |
 | `C-NO-LOCAL-WRITE` | docs/deployment.md §0 / §9.1 / AGENTS.md §2 | 禁止本地文件/目录写入（日志/数据/临时缓存/本地卷） | 约束 |

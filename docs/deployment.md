@@ -53,6 +53,45 @@
 
 （保留既有内容：debian:bookworm-slim 的运行基础、非 root 用户、时区、CA 证书等通用约定）
 
+### 2.1 可选远程联调面 `/debug/*`（`SAF-DEBUG-GATE`）
+
+生产入口默认**绝对关闭**：`/debug/*` 是一套只读探测 + 单条出站通知的远程联调面，只有部署者主动开启才会出现。
+
+**双因子启用条件（`SAF-DEBUG-GATE`，两者必须同时成立）**
+
+1. 进程命令行必须带 `--debug`（读取于 `src/main.rs:99`）。
+2. `DEBUG_TOKEN` 环境变量必须存在且非空（读取于 `src/main.rs:100-103`）。
+
+缺一即不挂载：`debug_router()` 本身会构造出全部 7 条路由（`src/debug.rs:72-80`），但主入口**只在双因子成立时才合并它**（`src/notify.rs:1320-1321`）。所以未开启时 `/debug/*` 路由根本不存在，请求走 axum 兜底返回普通 `404 not found`——**不是** 401，也不会泄露「此路径存在」。开启成功时打一条 WARN 日志标记该面已打开（`src/main.rs:107-109`，`SAF-LOG-PURITY`：只记开启状态，从不记录 token 值）。
+
+**鉴权**
+
+7 条路由全部要求 `Authorization: Bearer <DEBUG_TOKEN>`，统一走 `debug_authorized`（`src/debug.rs:45`），它委托生产同款 `worker_authorized`，因此令牌是**常数时间比较**（`src/notify.rs:1135`）。失败回 `401 unauthorized`，且不设 `Retry-After`（`src/debug.rs:52-54`）。
+
+**7 条路由与预期状态码**（注册于 `src/debug.rs:72-80`，路径为字面量，无常量抽取）
+
+| 路由 | 成功 | 失败 |
+|---|---|---|
+| `GET /debug/ping` | `200 {"ok":true}` | 401 |
+| `GET /debug/config` | `200` 见下段 | 401 |
+| `GET /debug/redis` | `200 {"reachable":true,"global_enabled":…}` | 401；Redis 探活失败**仍为 200** `{"reachable":false,"detail":"redis_probe_failed"}`，不返回 503 |
+| `GET /debug/jmap` | `200 {"ok":true}` | 401；探针失败**仍为 200** `{"ok":false,"detail":…}`（与 `/ready` 共用同一探针） |
+| `GET /debug/telegram` | `200 {"ok":true}` | 401；同上，探针失败返回 200 + `ok:false` |
+| `GET /debug/worker` | `200`（`revision`、`reconcile_cursor`、`outbound` 预算） | 401 |
+| `POST /debug/notify` | `200 {"ok":true,"result":{…}}` | 401；业务配置未加载或无出站客户端 → `503 service_unavailable` + `Retry-After: 30`（`src/debug.rs:56-58`）；`chat_id` 不在白名单 → `403 chat_not_allowed`（`src/debug.rs:60-62`）；Telegram 发送失败 → `502 telegram_send_failed`（`src/debug.rs:64-66`） |
+
+`/debug/config` 的响应字段（`src/debug.rs:110-148`）：恒有 `revision`、`setup_missing`、`business_configured`、`allowlist_size`；业务配置存在时再加 `jmap.{session_url,username,account_id}`、`telegram.{chat_id,webhook_secret_configured}`、`worker.{worker_token_configured,reconcile_token_configured}`、`llm.{enabled,allow_net,api_key_configured,base_url,model}`、`outbound.{jmap_timeout_ms,telegram_timeout_ms,llm_timeout_ms,max_retries}`；配置缺失时只回 `business_configured:false` + `allowlist_size`。
+
+方法不匹配先于鉴权判定（例如 `GET /debug/notify` 返回 `405`）。
+
+**三条约束，部署时务必确认**
+
+- **绝不回显凭据值**：`debug_config`（`src/debug.rs:94`）对每个 Secret 字段只输出 `*_configured` **布尔**——JMAP 密码、bot token、`worker_token`、`reconcile_token`、LLM `api_key` 一律不落响应体（`SAF-DEBUG-AUTH`）。注意这是「不含凭据」，不是「全脱敏」：**非密文的身份与预算字段是明文返回的**（JMAP session URL 与 username、Telegram `chat_id`、LLM `base_url`/`model`、各类超时与重试数），所以该面仍只能放在可信网络上。
+- **`/debug/notify` 受 chat 白名单约束，但空白名单不拦截**：它复用生产同一份白名单快照（`src/notify.rs:1141`），判定条件是「白名单**非空**且 `chat_id` 不在其中」才回 `403 chat_not_allowed`（`src/debug.rs:232-235`）。因此已配置白名单时无法绕过业务侧发送限制；若白名单未配置（为空）则此判定不生效，`chat_id` 可任意指定——所以启用本面时应确认业务白名单已真正配置。`text` 缺省为固定联调文案，并按 1024 字符截断（`src/debug.rs:240-245`）。
+- **不在 Worker 白名单内，只能直连 origin**：网关的 14 条安全路由（`cloudflare-worker/src/backends.js:9-24`）不含任何 `/debug/*`，Worker 对未白名单路径返回 `404 route not forwarded: /debug/...`（`cloudflare-worker/src/index.js:77-78`）。因此 `/debug/*` 只能通过直连后端 origin 访问；若必须经代理，请自行在代理层加鉴权，不要让公网可达。
+
+> **建议**：生产环境不开启。需要远程联调时临时开启、用一次性 token，联调结束立即移除 `--debug` 与 `DEBUG_TOKEN` 后重启；长期暴露面走 §5 的 Secret 管理流程单独审批。
+
 ---
 
 ## 3. Rust 多阶段构建与运行
@@ -113,6 +152,7 @@ HTTP 端口并以 `/healthz` 做 interval 30 秒、timeout 5 秒的健康检查�
 | `RECONCILE_TOKEN` | ✅ | `/reconcile` 的 `Authorization: Bearer <token>` 承载令牌（`SAF-AUTH-RECONCILE`）。因 `/reconcile` 路由**始终挂载**，此变量为**必填**（`SecretString`） |
 | `WORKER_TOKEN` | ✅ | `/worker` 的有界处理令牌；管理 API 兼容接受该 Bearer 值，SPA 使用短期 Redis admin session |
 | `TG_WEBHOOK_SECRET` | ✅ | `/webhook/tg` 校验请求头 `X-Telegram-Bot-Api-Secret-Token`（`SAF-AUTH-TG-WEBHOOK`）。须与 Telegram `setWebhook` 的 `secret_token` **完全一致**（`SecretString`） |
+| `--debug` + `DEBUG_TOKEN` | 可选，默认关闭 | 远程联调面 `/debug/*` 的**双因子开关**（`SAF-DEBUG-GATE`）：命令行必须带 `--debug` **且** `DEBUG_TOKEN` 非空才挂载 7 条路由，缺一即路由不存在、请求走通用 `404`。令牌为 `SecretString`，常数时间比较、不进日志（`SAF-LOG-PURITY`）。生产环境不配置，见 §2.1 |
 | Push registration/verification | 已接入，需显式注册 | `POST /api/push/register` 接受 HTTPS callback URL 并调用 `PushSubscription/set create`；相同 callback URL 重复请求幂等复用；`/push/jmap` 接收 Stalwart 生成的验证码并自动回写，Redis 保存订阅 ID 和短期验证状态 |
 | `LLM_*` | 可选 | OpenAI-compatible 环境变量（design.md `REQ-LLM-OPENAI-COMPAT`）；**仅当用户明确允许时才把邮件正文外发 AI**（`REQ-AI-EXTERNAL-CONSENT`） |
 | `ACCOUNT_ID` | 默认空 | **单账户**（`REQ-SINGLE-ACCOUNT`）：留空则取 session 主账户；多账户 = 部署多个 bot 实例（各自独立 token/配置），不做多账户单实例 |
@@ -209,7 +249,7 @@ GET  /ready          公开就绪探针；检查配置完整性 + Redis 可达�
 #### 6.3.1 用户侧调度示例（copy-paste 可用）
 
 端点：`POST https://<你的平台URL>/reconcile`。鉴权：`Authorization: Bearer <RECONCILE_TOKEN>`
-（`src/config.rs:356` 启动必填，服务端常数时间比较，`notify.rs:149-152`）。
+（`src/config.rs:356` 启动必填，服务端常数时间比较，`notify.rs:227-230`）。
 
 最小示例：
 
@@ -277,7 +317,7 @@ spec:
 - 调度间隔按 `NFR-RECONCILE-INTERVAL` 取 **5–10 分钟**即可。Push 是主路径，对账只是兜底。
 - 走 Worker 转发**无需特殊设置**：网关已为 `POST /reconcile` 单独覆盖超时与尝试次数——超时取
   `LB_RECONCILE_TIMEOUT_MS`（默认 `320000` ms，大于单飞锁租期 300 s + 心跳余量；锁续租逻辑见
-  `notify.rs:159`/`172`），且 `maxAttempts=1` **绝不故障转移**（故障转移只会让第二实例立刻返回
+  `notify.rs:239`/`252`），且 `maxAttempts=1` **绝不故障转移**（故障转移只会让第二实例立刻返回
   `409`）。其余快路径仍用全局 `LB_REQUEST_TIMEOUT_MS`（默认 `10000` ms）与 `LB_MAX_ATTEMPTS`
   （默认 `2`），不受影响。
 
@@ -447,7 +487,7 @@ Stalwart PushSub ────┼─▶ https://lb.<you>.workers.dev      ← 唯
 
 ### 10.4 路由与故障转移
 
-- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **14 条**（`backends.js:9-24` 的 `SAFE_ROUTES` + `index.js:40-55` 的 `ROUTE_METHODS`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`PUT /api/business-config`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 4 条不在 safelist**：`GET|PUT /api/enabled`（内部开关）、`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`POST /worker`（运维手工触发的 worker 端点，Bearer 鉴权）、`GET /healthz`（网关自行聚合，不转发）——**这 4 条都不承载外部业务流量，因此后端实例前不需要第二道入口**。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
+- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **14 条**（`backends.js:9-24` 的 `SAFE_ROUTES` + `index.js:45-60` 的 `ROUTE_METHODS`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`PUT /api/business-config`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 5 类不在 safelist**：`GET|PUT /api/enabled`（内部开关）、`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`POST /worker`（运维手工触发的 worker 端点，Bearer 鉴权）、`GET /healthz`（网关自行聚合，不转发）、`/debug/*`（7 条远程联调面，`SAF-DEBUG-GATE`，只能直连后端 origin，见 §2.1）——**这 5 类都不承载外部业务流量，因此后端实例前不需要第二道入口**。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
 - **健康聚合（`MOD-HEALTH-AGG`）**：Worker 自行承载 `GET /healthz`，按 TTL 缓存（默认 30s，`LB_HEALTH_TTL_MS` 可调）探测各后端 `/healthz`，返回 `{status, available, total, backends:[{origin,up,status}]}`；≥1 后端 up → 200，全 down → 503。`/ready` 透传给后端，做配置 + Redis + 出站只读探测（JMAP session、TG getMe，各 3s、并行，最坏约 3s），不触发业务副作用。
 - **故障转移（`forwardWithFailover`）**：每次请求最多 `min(LB_MAX_ATTEMPTS, origins.length)` 次尝试；**仅**超时（AbortError）或 5xx 触发换下一个 origin；4xx/2xx/3xx 直接返回；默认 `LB_MAX_ATTEMPTS=2`（首次 + 1 次故障转移）。**例外：`POST /reconcile` 固定 `maxAttempts=1`，绝不故障转移**——它持集群级单飞锁，切实例只会立刻撞 `409`；其单请求超时取 `LB_RECONCILE_TIMEOUT_MS`（默认 `320000` ms），其余路由不受影响。
 - **随机分摊**：起点 origin 按 `Math.random` 随机化，实现双活；单 origin 配置时退化为确定性。

@@ -70,6 +70,12 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 流量时，请探测 `/ready` 而不是 `/healthz`；但 `/ready` 是较重的探针（最坏约 3s），需要
 保持轻量的监控请看网关聚合的 `/healthz`。
 
+**远程联调面（可选，默认关闭）。**
+`/debug/*` 是一套可选的远程联调面：JMAP 与 Telegram 实时探针、当前业务配置，以及单条
+Telegram 发送。它由双因子开关控制——进程必须带 `--debug` **且** 已设置 `DEBUG_TOKEN`；
+任一缺失则这些路由完全不存在（请求落到通用 404）。`/debug/*` 不在网关白名单内，因此只能
+直连后端 origin 访问。见 `docs/deployment.md` §2.1。
+
 ## 4. 安全边界，一句话
 
 > 所有状态都在 Redis 里；进程只读两个环境变量，不写任何磁盘。
