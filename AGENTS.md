@@ -13,6 +13,12 @@
 > `docs/deployment.md` §2.1、`docs/reference.md` §3/§4、`README` 中英双版；⑥ 落地 `/search` 与两项可靠性修复，
 > `docs/design.md` §5.7、`docs/reference.md` §6.3/§6.4、`docs/roadmap.md` 代码缺口区同步更新。
 > 各文档的行号锚点以代码 `bfe0fd8` 为准，代码变动后须同步重锚。
+>
+> **改完文档或动了 `src/` 行号，先跑 `bash scripts/docs_check/run_all.sh`**（GATE-DOCS，4 个检查全 exit 0 才算过）：
+> `validate_docs.py`（代码块围栏/行内反引号/本地链接与锚点可达）、`check_tables.py`（表格列数一致，行内代码里的 `|` 不计）、
+> `audit_anchors.py`（`foo.rs:N` 行号锚点存在且非空行）、`check_sec_refs.py`（`§N.N` 交叉引用指向真实标题）。
+> **注意 `audit_anchors.py` 只证明锚点可达，不证明该行内容与所述一致**——它无法发现「指向了错行」的锚点，那需要人工读目标行。
+> 引「0 errors」时请区分这两种含义。校验器自身随仓库版本化，无需 `/tmp` 副本。
 
 ---
 
