@@ -34,13 +34,14 @@ Conventions used throughout:
 
 Notes:
 
-- `config:business:revision` is an **atomic Redis `INCR`**, not a read-modify-write. Hot reload
-  compares it: the refresh loop only rebuilds the worker when the remote revision exceeds the
-  cached local value, which is what keeps a single bad poll from turning into a hot retry loop
-  (notify.rs:627-650).
+- `config:business:revision` is an **atomic Redis `INCR`**, not a read-modify-write. Every
+  request-bearing entry point calls `refresh_business_config` (notify.rs:717), which only
+  rebuilds the worker when the remote revision exceeds the cached local value
+  (notify.rs:722-724) — that guard is what keeps a stale or malformed snapshot from turning
+  into a rebuild loop.
 - `config:admin_session` carries no TTL metadata beyond the literal `EX 900` passed at write
   time; the handler reports the same window in its response body as `expires_in: 900`
-  (notify.rs:700).
+  (notify.rs:787).
 - `config:enabled` is consulted as a gate; missing or `false` keeps business processing off.
 
 ### 1.2 AI consent
@@ -310,9 +311,16 @@ compatibility. Recognised names, unprefixed unless noted:
 The single prefixed name is `TELEGRAM_CHAT_ID`. Anything else documented as
 `TELEGRAM_BOT_TOKEN` or similar is a documentation error, not a supported variable.
 
-**Trust root.** The bootstrap one-shot token is the password component of `REDIS_URL`
-(main.rs:87-91). The Redis ACL credential is therefore simultaneously the application
-connection credential and the trust root for bootstrap.
+**Trust root.** The SPA admin credential is `CONFIG_ENCRYPTION_KEY` itself: read at startup
+(main.rs:49) and held as `admin_token` (main.rs:95), it is checked in constant time by
+`worker_authorized` (notify.rs:445; compare at notify.rs:1135) at the top of both
+`POST /api/bootstrap` (notify.rs:604) and `POST /api/admin/session` (notify.rs:774). It is
+only compared against the request bearer — never echoed, logged, or stored. The session
+issued by `/api/admin/session` is a freshly generated random 32-byte hex token
+(notify.rs:778-787), never the credential; only its digest is retained in Redis under
+`config:admin_session`. `REDIS_URL` is the Redis connection string alone: an ACL password in
+it, if any, authenticates the Redis connection and is not the credential for any HTTP
+endpoint.
 
 ---
 

@@ -74,8 +74,7 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 
 > 所有状态都在 Redis 里；进程只读两个环境变量，不写任何磁盘。
 
-有一条推论与部署直接相关：bootstrap 的一次性 token 就是 **`REDIS_URL` 的密码分量**。因此
-Redis ACL 凭据同时是应用连接凭据与 bootstrap 信任根——请单独保管并按单一值轮换。
+有一条推论与部署直接相关：SPA 管理凭据——也就是 bootstrap 的信任根——就是 `CONFIG_ENCRYPTION_KEY` 本身，即启动时提供的那个 32 字节 hex 值。它只做常数时间比较，绝不回显、记录或落盘。Redis ACL 密码（如有）只认证 Redis 连接本身，不是任何 HTTP 端点的认证凭据。
 
 ## 5. 去哪读更多
 

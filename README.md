@@ -81,9 +81,11 @@ that must stay cheap should watch the gateway's aggregated `/healthz`.
 > All state lives in Redis; the process reads only two environment variables and writes
 > nothing to disk.
 
-One corollary matters for setup: the bootstrap one-shot token is the **password component of
-`REDIS_URL`**. The Redis ACL credential is therefore both the application connection
-credential and the trust root for bootstrap — keep it private and rotate it as one value.
+One corollary matters for setup: the SPA admin credential — and therefore the bootstrap
+trust root — is `CONFIG_ENCRYPTION_KEY` itself, the single 32-byte hex value you supply at
+startup. It is only compared in constant time, and is never echoed, logged, or stored. The
+Redis ACL password, if you have one, authenticates the Redis connection alone and is not
+the credential for any HTTP endpoint.
 
 ## 5. Where to read more
 
