@@ -116,7 +116,7 @@ cd /home/okabe/Repo/messageweave && docker run --rm --user 1000:1000 \
   bash -lc 'export PATH=/usr/local/cargo/bin:$PATH; cargo fmt --all -- --check && cargo check --locked && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked 2>&1 | tail -12'
 ```
 
-**当前基线：62 passed / 0 failed / 1 ignored**（唯一 ignored：`real_server_tests::session_list_and_read_smoke`，需外部真实 JMAP 服务器）。
+**当前基线：61 passed / 0 failed / 1 ignored**（唯一 ignored：`real_server_tests::session_list_and_read_smoke`，需外部真实 JMAP 服务器）。
 
 **注意**：`docker run` 的 bash `-lc` 脚本必须用**单引号**包裹。用双引号会先在宿主机展开 `$PWD` / `$PATH`，容器内找不到 cargo。
 
@@ -207,7 +207,7 @@ Push callback 公网映射。
 | `C-REDIS-ONLY-STATE` | docs/deployment.md §0 | 状态仅外部 Redis，不用 SQLite/本地卷 | 部署约束 |
 | `C-REDIS-MANAGED-AOF` | docs/deployment.md §0 | Redis 用户托管 + 开启 AOF 持久化 | 部署约束 |
 | `C-PORT` | docs/deployment.md §0 | 通用 PORT 约定 | 部署约束 |
-| `NG-SERVER-MODE` | docs/deployment.md §1 | `RUN_MODE=server` 常驻，非目标 | 非目标 |
+| `NG-SERVER-MODE` | docs/deployment.md §1 | `RUN_MODE=server` 常驻，非目标（该变量已随 `Config::from_env()` 删除，代码中已无此标识符） | 非目标 |
 | `NG-POLLING-SSE` | docs/deployment.md §1 | EventSource/SSE 长连接，非目标 | 非目标 |
 | `NG-LONG-POLLING` | docs/deployment.md §1 | Telegram 长轮询，非目标 | 非目标 |
 | `NG-SQLITE-PERSIST` | docs/deployment.md §1 | SQLite 持久化，非目标 | 非目标 |

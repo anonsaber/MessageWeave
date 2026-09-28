@@ -55,9 +55,8 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 | `REDIS_URL` | 是 | — |
 | `CONFIG_ENCRYPTION_KEY` | 是 | — |
 | `PORT` | 否 | `8080` |
-| `RUN_MODE` | 否 | `webhook` |
 
-`RUN_MODE` 只接受 `webhook` 或 `reconcile`，但两种取值当前行为完全相同（共享同一套路由表），仅作前向占位，保持默认 `webhook` 即可。`.env.example` 只提供 2 个必需变量；其余是
+没有 `RUN_MODE`：遗留的环境变量解析器已删除，webhook 与 reconcile 流量共享同一套路由表（`POST /reconcile` 是独立端点）。`.env.example` 只提供 2 个必需变量；其余是
 文档化默认值。
 
 **业务配置 —— 存于 Redis，由浏览器写入。**

@@ -1,4 +1,4 @@
-// SPLIT-EVAL: 已评估暂缓拆分——仅略超软上限约 20 行，结构体定义、Redis 配置解析与遗留 from_env() 路径相互引用，拆出只增加跨文件跳转而不消除任何重复。
+// SPLIT-EVAL: 已评估暂缓拆分——仅略超软上限约 20 行，结构体定义与 Redis 配置解析路径相互引用，拆出只增加跨文件跳转而不消除任何重复。
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::error::BotError;
@@ -33,17 +33,8 @@ pub fn encryption_key_from_env() -> Result<[u8; 32], BotError> {
 /// Runtime-only settings. SecretString prevents accidental formatting/logging of credentials.
 /// C-AUTH-APP-BASIC and REQ-SINGLE-ACCOUNT are intentionally represented explicitly.
 pub struct Config {
-    // The listener binds from main.rs before Config exists, so the field is parsed
-    // here only for validation parity; main.rs reads PORT directly.
-    #[expect(
-        dead_code,
-        reason = "parsed in from_env() for validation parity; listener binds from main.rs"
-    )]
-    pub port: u16,
-    pub run_mode: String,
     pub telegram: TelegramConfig,
     pub jmap: JmapConfig,
-    pub redis_url: SecretString,
     pub account_id: Option<String>,
     pub llm: LlmConfig,
     pub auth: AuthSecrets,
@@ -221,11 +212,9 @@ pub(crate) fn validate_business_wire(wire: BusinessConfigWire) -> Result<(), Bot
 impl Config {
     /// Configuration-only startup used before Redis bootstrap. No business route can pass
     /// authentication with these empty sentinels; the process only serves SPA/bootstrap.
-    pub fn redis_only(redis_url: SecretString) -> Self {
+    pub fn redis_only() -> Self {
         let empty = || SecretString::new(String::new());
         Self {
-            port: 8080,
-            run_mode: "webhook".into(),
             telegram: TelegramConfig {
                 bot_token: empty(),
                 chat_allowlist: Vec::new(),
@@ -236,7 +225,6 @@ impl Config {
                 username: String::new(),
                 app_password: empty(),
             },
-            redis_url,
             account_id: None,
             llm: LlmConfig {
                 enabled: false,
@@ -256,10 +244,8 @@ impl Config {
 
     /// Builds the runtime adapter configuration from the Redis business namespace.
     /// This path is used after bootstrap and intentionally does not consult process env.
-    pub fn from_business(redis_url: SecretString, value: BusinessConfig) -> Self {
+    pub fn from_business(value: BusinessConfig) -> Self {
         Self {
-            port: 8080,
-            run_mode: "webhook".into(),
             telegram: TelegramConfig {
                 bot_token: value.bot_token,
                 chat_allowlist: value.chat_allowlist,
@@ -270,7 +256,6 @@ impl Config {
                 username: value.jmap_username,
                 app_password: value.jmap_password,
             },
-            redis_url,
             account_id: value.account_id,
             llm: LlmConfig {
                 enabled: value.llm_enabled,
@@ -288,104 +273,15 @@ impl Config {
         }
     }
 
-    pub fn from_business_json(
-        redis_url: SecretString,
-        value: serde_json::Value,
-    ) -> Result<Self, BotError> {
+    pub fn from_business_json(value: serde_json::Value) -> Result<Self, BotError> {
         let wire: BusinessConfigWire = serde_json::from_value(value)
             .map_err(|_| BotError::Config("invalid Redis business configuration".into()))?;
-        Self::from_business_value(redis_url, wire)
+        Self::from_business_value(wire)
     }
 
-    fn from_business_value(
-        redis_url: SecretString,
-        wire: BusinessConfigWire,
-    ) -> Result<Self, BotError> {
-        Ok(Self::from_business(redis_url, wire.try_into()?))
+    fn from_business_value(wire: BusinessConfigWire) -> Result<Self, BotError> {
+        Ok(Self::from_business(wire.try_into()?))
     }
-
-    /// 遗留兼容路径：从进程环境变量逐项组装完整配置（阶段0 口径）。
-    /// 当前生产启动仅需 `REDIS_URL` + `CONFIG_ENCRYPTION_KEY`（见 `src/main.rs`），
-    /// 业务字段改由 Redis 业务配置（`config:business`，`PUT /api/business-config` 热加载）托管；
-    /// 本函数仅当相关环境变量实际存在时作为引导路径使用，未声明废弃、未计划删除。
-    pub fn from_env() -> Result<Self, BotError> {
-        let port = std::env::var("PORT")
-            .unwrap_or_else(|_| "8080".into())
-            .parse()
-            .map_err(|_| BotError::Config("PORT must be a valid u16".into()))?;
-        let allowlist = std::env::var("CHAT_ALLOWLIST")
-            .or_else(|_| std::env::var("TELEGRAM_CHAT_ID"))
-            .unwrap_or_default()
-            .split(',')
-            .filter(|v| !v.trim().is_empty())
-            .map(|v| v.trim().parse::<i64>())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| BotError::Config("CHAT_ALLOWLIST must contain integer IDs".into()))?;
-        let enabled = env_bool("LLM_ENABLED", false)?;
-        let llm = LlmConfig {
-            enabled,
-            allow_net: env_bool("LLM_ALLOW_NET", false)?,
-            api_key: std::env::var("LLM_API_KEY").ok().map(SecretString::new),
-            base_url: std::env::var("LLM_BASE_URL").ok(),
-            model: std::env::var("LLM_MODEL").ok(),
-            summary_target_chars: std::env::var("LLM_SUMMARY_TARGET_CHARS")
-                .unwrap_or_else(|_| "300".into())
-                .parse()
-                .map_err(|_| {
-                    BotError::Config("LLM_SUMMARY_TARGET_CHARS must be an integer".into())
-                })?,
-        };
-        if enabled && (llm.api_key.is_none() || llm.base_url.is_none() || llm.model.is_none()) {
-            return Err(BotError::Config(
-                "LLM_ENABLED requires LLM_API_KEY, LLM_BASE_URL and LLM_MODEL".into(),
-            ));
-        }
-        Ok(Self {
-            port,
-            run_mode: std::env::var("RUN_MODE").unwrap_or_else(|_| "webhook".into()),
-            telegram: TelegramConfig {
-                bot_token: required_secret("BOT_TOKEN")?,
-                chat_allowlist: allowlist,
-                chat_id: std::env::var("TELEGRAM_CHAT_ID")
-                    .map_err(|_| BotError::Config("missing TELEGRAM_CHAT_ID".into()))?
-                    .parse()
-                    .map_err(|_| BotError::Config("TELEGRAM_CHAT_ID must be an integer".into()))?,
-            },
-            jmap: JmapConfig {
-                session_url: required_nonblank("JMAP_SESSION_URL")?,
-                username: required_nonblank("JMAP_USERNAME")?,
-                app_password: required_secret("JMAP_PASSWORD")?,
-            },
-            redis_url: required_secret("REDIS_URL")?,
-            account_id: std::env::var("ACCOUNT_ID").ok().filter(|v| !v.is_empty()),
-            llm,
-            auth: AuthSecrets {
-                reconcile_token: required_secret("RECONCILE_TOKEN")?,
-                telegram_webhook_secret: required_secret("TG_WEBHOOK_SECRET")?,
-            },
-            worker_token: required_secret("WORKER_TOKEN")?,
-        })
-    }
-
-    /// Exposes a secret only to the client adapter at the point of use; never log this value.
-    #[expect(
-        dead_code,
-        reason = "稳定ID+阶段0占位：JMAP adapter 后续使用密钥访问器"
-    )]
-    pub fn jmap_password(&self) -> &str {
-        self.jmap.app_password.expose_secret()
-    }
-}
-
-fn required_nonblank(name: &str) -> Result<String, BotError> {
-    let value = std::env::var(name).map_err(|_| BotError::Config(format!("missing {name}")))?;
-    validate_nonblank(name, value.as_str())?;
-    Ok(value)
-}
-
-fn required_secret(name: &str) -> Result<SecretString, BotError> {
-    let value = required_nonblank(name)?;
-    Ok(SecretString::new(value))
 }
 
 fn validate_nonblank(name: &str, value: &str) -> Result<(), BotError> {
@@ -395,28 +291,41 @@ fn validate_nonblank(name: &str, value: &str) -> Result<(), BotError> {
     Ok(())
 }
 
-fn env_bool(name: &str, default: bool) -> Result<bool, BotError> {
-    match std::env::var(name).ok().as_deref() {
-        None => Ok(default),
-        Some("true" | "1" | "yes") => Ok(true),
-        Some("false" | "0" | "no") => Ok(false),
-        Some(_) => Err(BotError::Config(format!("{name} must be boolean"))),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn blank_auth_secret_is_rejected_without_exposing_value() {
-        let error = required_secret("S1_TEST_AUTH_SECRET").expect_err("unset must fail");
-        assert!(error.to_string().contains("S1_TEST_AUTH_SECRET"));
-        assert!(!error.to_string().contains("secret"));
-        std::env::set_var("S1_TEST_AUTH_SECRET", " \t");
-        let error = required_secret("S1_TEST_AUTH_SECRET").expect_err("blank must fail");
-        assert!(error.to_string().contains("S1_TEST_AUTH_SECRET"));
-        std::env::remove_var("S1_TEST_AUTH_SECRET");
+        // 断言语义沿用原 required_secret 用例：错误信息点名字段，但绝不回显取值。
+        // required_secret 已随遗留 from_env 路径一并删除，改挂到 BusinessConfigWire
+        // 这条真实校验路径（validate_nonblank -> TryFrom<BusinessConfigWire>）。
+        const AUTH_SECRET_VALUE: &str = "s3cr3t-value-7f3a";
+        let wire = BusinessConfigWire {
+            bot_token: "bot".into(),
+            telegram_chat_id: 1,
+            chat_allowlist: vec![1],
+            telegram_webhook_secret: "hook".into(),
+            jmap_session_url: "https://example.invalid".into(),
+            jmap_username: "u".into(),
+            jmap_password: AUTH_SECRET_VALUE.into(),
+            account_id: None,
+            llm_enabled: false,
+            llm_allow_net: false,
+            llm_api_key: None,
+            llm_base_url: None,
+            llm_model: None,
+            reconcile_token: " \t".into(),
+            worker_token: "w".into(),
+        };
+        let error = match BusinessConfig::try_from(wire) {
+            Err(error) => error,
+            Ok(_) => panic!("blank secret must fail"),
+        };
+        let message = error.to_string();
+        assert!(message.contains("RECONCILE_TOKEN"));
+        assert!(!message.contains("secret"));
+        assert!(!message.contains(AUTH_SECRET_VALUE));
     }
 
     #[test]
@@ -480,42 +389,6 @@ mod tests {
                 error.to_string(),
                 format!("configuration error: missing or blank {name}")
             );
-        }
-    }
-
-    #[test]
-    fn startup_rejects_blank_auth_secret() {
-        for (name, value) in [
-            ("BOT_TOKEN", "bot"),
-            ("JMAP_SESSION_URL", "https://mail.invalid/.well-known/jmap"),
-            ("JMAP_USERNAME", "user"),
-            ("JMAP_PASSWORD", "password"),
-            ("REDIS_URL", "redis://invalid"),
-            ("TG_WEBHOOK_SECRET", "telegram"),
-            ("TELEGRAM_CHAT_ID", "123"),
-        ] {
-            std::env::set_var(name, value);
-        }
-        std::env::set_var("RECONCILE_TOKEN", " \t");
-        let error = match Config::from_env() {
-            Err(error) => error,
-            Ok(_) => panic!("blank auth secret must fail startup"),
-        };
-        assert_eq!(
-            error.to_string(),
-            "configuration error: missing or blank RECONCILE_TOKEN"
-        );
-        for name in [
-            "BOT_TOKEN",
-            "JMAP_SESSION_URL",
-            "JMAP_USERNAME",
-            "JMAP_PASSWORD",
-            "REDIS_URL",
-            "RECONCILE_TOKEN",
-            "TG_WEBHOOK_SECRET",
-            "TELEGRAM_CHAT_ID",
-        ] {
-            std::env::remove_var(name);
         }
     }
 }

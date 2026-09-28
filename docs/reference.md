@@ -325,21 +325,19 @@ deployment.md §10.5.
 
 Three distinct layers. They are not interchangeable.
 
-### 5.1 Boot-time (2 required, 3 optional with defaults)
+### 5.1 Boot-time (2 required, 2 optional with defaults)
 
 | Variable | Required | Default | Source |
 |---|---|---|---|
 | `REDIS_URL` | yes | — | read at main.rs:40 |
 | `CONFIG_ENCRYPTION_KEY` | yes | — | `encryption_key_from_env` at main.rs:50 |
-| `PORT` | no | `8080` | `unwrap_or(8080_u16)` at main.rs:34; parsed again at config.rs:312 on the legacy `from_env()` path (validation parity only, see the note at config.rs:37) |
-| `RUN_MODE` | no | `webhook` | `unwrap_or_else` at config.rs:345 |
-| `DEBUG_TOKEN` | no | — | `std::env::var` at main.rs:97, effective only when `--debug` is also passed (`SAF-DEBUG-GATE` / `SAF-DEBUG-ORIGIN-ONLY`) |
+| `PORT` | no | `8080` | `unwrap_or(8080_u16)` at main.rs:34. The listener binds it directly (main.rs:35-38); `Config` carries no port field |
+| `DEBUG_TOKEN` | no | — | `std::env::var` at main.rs:83, effective only when `--debug` is also passed (`SAF-DEBUG-GATE` / `SAF-DEBUG-ORIGIN-ONLY`) |
 
-`RUN_MODE` accepts only `webhook` or `reconcile`; anything else is rejected at boot
-(main.rs:78-82). Both modes currently route to the same no-op router; the distinction is
-load-bearing for future splits, not for behaviour today. Note the value is only read on
-the legacy env path (`config.rs:345`), so with the current two-variable production config
-it always resolves to the hardcoded default — setting it to `reconcile` has no effect.
+`RUN_MODE` **no longer exists**: the identifier was removed together with the legacy
+`Config::from_env()` environment parser (registration in `docs/retired.md`). Both webhook
+and reconcile traffic share one router and reconcile is a standalone `POST /reconcile`
+endpoint, so the variable never changed any runtime behaviour — there is now nothing to set.
 
 **Missing a required variable does not crash the process.** It logs a warning and serves
 `router_configuration_setup`, which builds a router over `MemoryState` with empty tokens and
@@ -354,25 +352,29 @@ successful write creates the configuration, later writes hot-reload it. The same
 also exposed as a one-shot `POST /api/bootstrap` against the backend origin for automation.
 The process never reads these from the environment in normal operation.
 
-### 5.3 Legacy compatibility (read but not required)
+### 5.3 No legacy environment path
 
-`config.rs` still reads an environment-shaped business configuration for backward
-compatibility. The full set of names it recognises (`from_env()`, `config.rs:311`),
-unprefixed unless noted:
+`Config::from_env()` and its helpers (`required_secret`, `required_nonblank`, `env_bool`) are
+**deleted** — `config.rs` performs no `std::env` read at all. The names below were the legacy
+env surface and are listed only so a stale deployment script can be recognised as stale
+(registration in `docs/retired.md`):
 
-`CONFIG_ENCRYPTION_KEY` · `PORT` · `REDIS_URL` · `CHAT_ALLOWLIST` · `TELEGRAM_CHAT_ID` ·
-`LLM_ENABLED` · `LLM_ALLOW_NET` · `LLM_API_KEY` · `LLM_BASE_URL` · `LLM_MODEL` ·
-`LLM_SUMMARY_TARGET_CHARS` · `RUN_MODE` · `BOT_TOKEN` · `JMAP_SESSION_URL` · `JMAP_USERNAME` ·
-`JMAP_PASSWORD` · `ACCOUNT_ID` · `RECONCILE_TOKEN` · `TG_WEBHOOK_SECRET` · `WORKER_TOKEN`
+`RUN_MODE` · `CHAT_ALLOWLIST` · `TELEGRAM_CHAT_ID` · `LLM_ENABLED` · `LLM_ALLOW_NET` ·
+`LLM_API_KEY` · `LLM_BASE_URL` · `LLM_MODEL` · `LLM_SUMMARY_TARGET_CHARS` · `BOT_TOKEN` ·
+`JMAP_SESSION_URL` · `JMAP_USERNAME` · `JMAP_PASSWORD` · `ACCOUNT_ID` · `RECONCILE_TOKEN` ·
+`TG_WEBHOOK_SECRET` · `WORKER_TOKEN`
 
-The `JMAP_*` family is exactly three names; `ACCOUNT_ID` is read here too, alongside the
-direct read the JMAP client performs when no `accountId` is present in the request.
+The `JMAP_*` family is exactly three names. In production the account id arrives as the
+`accountId` request-body field (notify.rs:1122) and is held on the client as
+`account_id` (src/domain/jmap/client.rs:14); the only remaining environment reads of these
+four names are inside the `#[ignore]` real-server smoke test at
+src/domain/jmap/client.rs:499-511, which is not part of the production configuration surface.
 
 The single prefixed name is `TELEGRAM_CHAT_ID`. Anything else documented as
 `TELEGRAM_BOT_TOKEN` or similar is a documentation error, not a supported variable.
 
 **Trust root.** The SPA admin credential is `CONFIG_ENCRYPTION_KEY` itself: read at startup
-(main.rs:49) and held as `admin_token` (main.rs:92), it is checked in constant time by
+(main.rs:49) and held as `admin_token` (main.rs:78), it is checked in constant time by
 `worker_authorized` (notify.rs:446; compare at notify.rs:1136) at the top of both
 `POST /api/bootstrap` (notify.rs:605) and `POST /api/admin/session` (notify.rs:775). It is
 only compared against the request bearer — never echoed, logged, or stored. The session

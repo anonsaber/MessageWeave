@@ -63,24 +63,10 @@ async fn main() -> Result<(), error::BotError> {
         axum::serve(listener, app).await?;
         return Ok(());
     }
-    // The Redis URL is the only bootstrap credential in the migration path. Until
-    // the bootstrap route is wired, retain the legacy parser solely to obtain it.
-    let bootstrap_config = match Config::from_env() {
-        Ok(config) => config,
-        Err(_) => Config::redis_only(secrecy::SecretString::new(redis_value.clone())),
-    };
-    let redis_url = bootstrap_config.redis_url.clone();
-    // RUN_MODE is intentionally explicit even while both modes share the stage-0
-    // no-op router; later stages attach webhook/reconcile side effects here.
-    match bootstrap_config.run_mode.as_str() {
-        "webhook" => tracing::info!("RUN_MODE=webhook"),
-        "reconcile" => tracing::info!("RUN_MODE=reconcile"),
-        mode => {
-            return Err(error::BotError::Config(format!(
-                "RUN_MODE must be webhook or reconcile, got {mode}"
-            )))
-        }
-    }
+    // REDIS_URL is the only bootstrap credential read from the environment; every
+    // business credential comes from Redis business config instead.
+    let redis_url = secrecy::SecretString::new(redis_value);
+    let bootstrap_config = Config::redis_only();
     tracing::info!(port, "starting webhook HTTP entrypoint");
     let redis =
         RedisState::connect_with_encryption(redis_url.expose_secret(), Some(encryption_key))
@@ -114,7 +100,7 @@ async fn main() -> Result<(), error::BotError> {
         .await
         .map_err(|_| error::BotError::Config("business config unavailable".into()))?
     {
-        Some(value) => Config::from_business_json(redis_url.clone(), value)?,
+        Some(value) => Config::from_business_json(value)?,
         None => bootstrap_config,
     };
     let outbound = worker_state

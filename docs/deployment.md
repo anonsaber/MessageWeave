@@ -40,7 +40,7 @@
 
 | ID | 非目标 | 说明 |
 |---|---|---|
-| **NG-SERVER-MODE** | `RUN_MODE=server` 常驻运行模式 | 早期 EventSource+长轮询 常驻设计，已删除 |
+| **NG-SERVER-MODE** | 常驻长连接运行模式（历史名 `RUN_MODE=server`） | 早期 EventSource+长轮询 常驻设计，已删除；`RUN_MODE` 变量本身也已随 `Config::from_env()` 一并删除，代码中已无该标识符 |
 | **NG-POLLING-SSE** | JMAP EventSource/SSE 长连接订阅 | 与 `C-NO-LONG-CONN` 冲突；实时通道只用 Push 回调 |
 | **NG-LONG-POLLING** | Telegram 长轮询运行模式 | 与 `C-NO-LONG-CONN` 冲突；只用 Webhook |
 | **NG-SQLITE-PERSIST** | SQLite 会话 / sinceState 本地持久化 | 状态只走外部 Redis（`C-REDIS-ONLY-STATE`） |
@@ -103,7 +103,7 @@
 
 ### 3.2 运行阶段（收敛为单端口）
 - `EXPOSE 8080`（遵循 `C-NO-TCP-EXPOSE`，不再暴露 9191 admin 端口）
-- `ENV PORT=8080`、`RUN_MODE=webhook`（默认）
+- `ENV PORT=8080`（可选，缺省即 8080；`REDIS_URL` 与 `CONFIG_ENCRYPTION_KEY` 必须由运行期注入，不写入镜像）
 - 健康检查走同一 HTTP 监听（见 §7），不依赖独立端口
 - **不声明 VOLUME**，无 `/app/data` 本地卷（`NG-LOCAL-VOLUME`）
 
@@ -135,11 +135,11 @@ HTTP 端口并以 `/healthz` 做 interval 30 秒、timeout 5 秒的健康检查�
 `/reconcile`、`/worker` 返回 503，不执行入队、ACK 或业务处理；SPA、`/api/status`、管理
 会话和配置 API 保持可用，打开后立即生效。
 
-> 迁移后生产环境仅需 `REDIS_URL` 与 `CONFIG_ENCRYPTION_KEY`；下表中的业务环境变量是历史阶段说明（走 `Config::from_env()` 环境变量引导路径时），**不应再注入生产容器**，表内 ✅ 也不代表当前生产必须配置。业务密钥通过受保护的 `/api/bootstrap` 或管理员 PUT 写入 Redis，并在成功后热重建客户端。
+> 迁移后生产环境仅需 `REDIS_URL` 与 `CONFIG_ENCRYPTION_KEY`。下表字段**已不再从环境变量读取**（`Config::from_env()` 及其助手 `required_secret`/`required_nonblank`/`env_bool` 已删除，`config.rs` 零 `std::env` 读取；登记见 `docs/retired.md`），全部经 Redis 业务配置由 `/api/bootstrap` 或管理员 PUT 写入并在成功后热重建客户端。表内 ✅ 指 **Redis 业务配置**的 fail-closed 必填（`validate_nonblank`，空白即拒绝），不代表需要注入生产容器。**不要把下表变量注入容器**：注入也不会被读取。
 
-（保留既有 Secrets 注入约定：禁入镜像、`secrecy` 包裹、日志屏蔽；新增运行模式相关变量）
+（保留既有 Secrets 注入约定：禁入镜像、`secrecy` 包裹、日志屏蔽）
 
-| 变量 | 必填 | 说明 |
+| Redis 业务配置字段 | 必填 | 说明 |
 |---|---|---|
 | `BOT_TOKEN` | ✅ | Telegram Bot Token |
 | `TELEGRAM_CHAT_ID` | ✅ | Worker 元数据通知目标 chat id（与入站白名单分离） |
@@ -148,13 +148,12 @@ HTTP 端口并以 `/healthz` 做 interval 30 秒、timeout 5 秒的健康检查�
 | `CHAT_ALLOWLIST` | ✅ | 聊天白名单（**硬约束 `SAF-CHAT-ALLOWLIST`**）：逗号分隔整数 chat id；处理任何事件前先校验，非白名单直接拒绝 |
 | `REDIS_URL` | ✅ | **外部 Redis（用户托管 + AOF）**（`C-REDIS-ONLY-STATE`/`C-REDIS-MANAGED-AOF`）：session / dedup / Streams / fuse / sinceState 全部在此；支持 `redis://` 与带默认 ACL 用户的 `rediss://default:<url-encoded-password>@host:6379/0`，Redis 进程不在此 compose 内 |
 | `PORT` | 默认 8080 | 单监听端口（`C-NO-TCP-EXPOSE`） |
-| `RUN_MODE` | 默认 `webhook` | `webhook` / `reconcile`（`NG-SERVER-MODE` 已删除）；**两种取值当前行为完全相同**（共享同一套路由表），仅作前向占位，保持默认即可 |
-| `RECONCILE_TOKEN` | ✅ | `/reconcile` 的 `Authorization: Bearer <token>` 承载令牌（`SAF-AUTH-RECONCILE`）。因 `/reconcile` 路由**始终挂载**，此变量为**必填**（`SecretString`） |
+| `RECONCILE_TOKEN` | ✅ | `/reconcile` 的 `Authorization: Bearer <token>` 承载令牌（`SAF-AUTH-RECONCILE`）。因 `/reconcile` 路由**始终挂载**，此字段为**必填**（`SecretString`） |
 | `WORKER_TOKEN` | ✅ | `/worker` 的有界处理令牌；管理 API 兼容接受该 Bearer 值，SPA 使用短期 Redis admin session |
 | `TG_WEBHOOK_SECRET` | ✅ | `/webhook/tg` 校验请求头 `X-Telegram-Bot-Api-Secret-Token`（`SAF-AUTH-TG-WEBHOOK`）。须与 Telegram `setWebhook` 的 `secret_token` **完全一致**（`SecretString`） |
 | `--debug` + `DEBUG_TOKEN` | 可选，默认关闭 | 远程联调面 `/debug/*` 的**双因子开关**（`SAF-DEBUG-GATE`）：命令行必须带 `--debug` **且** `DEBUG_TOKEN` 非空才挂载 7 条路由，缺一即路由不存在、请求走通用 `404`。令牌为 `SecretString`，常数时间比较、不进日志（`SAF-LOG-PURITY`）。生产环境不配置，见 §2.1 |
 | Push registration/verification | 已接入，需显式注册 | `POST /api/push/register` 接受 HTTPS callback URL 并调用 `PushSubscription/set create`；相同 callback URL 重复请求幂等复用；`/push/jmap` 接收 Stalwart 生成的验证码并自动回写，Redis 保存订阅 ID 和短期验证状态 |
-| `LLM_*` | 可选 | OpenAI-compatible 环境变量（design.md `REQ-LLM-OPENAI-COMPAT`）；**仅当用户明确允许时才把邮件正文外发 AI**（`REQ-AI-EXTERNAL-CONSENT`） |
+| `LLM_*` | 可选 | OpenAI-compatible 业务配置字段（`REQ-LLM-OPENAI-COMPAT`）；其中 `LLM_MAX_RETRIES` **不是**业务配置字段而是 Redis 运行参数（回落默认见 `docs/reference.md` §6.1）；**仅当用户明确允许时才把邮件正文外发 AI**（`REQ-AI-EXTERNAL-CONSENT`） |
 | `ACCOUNT_ID` | 默认空 | **单账户**（`REQ-SINGLE-ACCOUNT`）：留空则取 session 主账户；多账户 = 部署多个 bot 实例（各自独立 token/配置），不做多账户单实例 |
 
 AI 授权期限由用户选择（临时一次、今天、7天或直到撤销），Redis 仅保存 chat id、授权状态和带 TTL 的到期时间；不会保存正文或摘要。到期后摘要请求回到元数据模式并提示重新授权。
@@ -202,12 +201,7 @@ TLS 必须由 Cloudflare 或受信任反向代理终结；代理到容器的链�
 并应校验可信转发头后才允许 bootstrap。容器端口不得直接暴露公网。SPA 仅在当前页面
 内存保存 opaque admin session，不使用 localStorage、sessionStorage 或 Cookie 持久化。
 
-> 仅两种运行模式；无长连接（`C-NO-LONG-CONN`）。
-
-| RUN_MODE | 命令 | 说明 |
-|---|---|---|
-| `webhook`（默认） | `message-weave webhook`（或单一入口按 env 分派） | 单进程：TG Webhook handler + JMAP Push 回调 handler + Redis Streams worker + `/reconcile` + health |
-| `reconcile` | `message-weave reconcile` | 一次性对账补差后 exit，由外部调度器/容器任务触发 |
+> **单一运行形态**：进程只有单条服务命令 `./target/release/message-weave`，webhook handler、JMAP Push 回调、Redis Streams worker 与 `/reconcile` 同处一个进程；对账是一次性 HTTP 端点 `POST /reconcile`（由外部调度器/容器任务调用），**不是**独立子命令，也**没有** `RUN_MODE` 变量（该标识符已随 `Config::from_env()` 删除，见 `docs/retired.md`）。无长连接（`C-NO-LONG-CONN`）。
 
 ### 6.1 入口路由（单端口 `PORT`，全部经平台 HTTPS URL 入站）
 ```
@@ -249,7 +243,7 @@ GET  /ready          公开就绪探针；检查配置完整性 + Redis 可达�
 #### 6.3.1 用户侧调度示例（copy-paste 可用）
 
 端点：`POST https://<你的平台URL>/reconcile`。鉴权：`Authorization: Bearer <RECONCILE_TOKEN>`
-（`src/config.rs:357` 启动必填，服务端常数时间比较，`notify.rs:228-231`）。
+（`src/config.rs:147` fail-closed 必填，服务端常数时间比较，`notify.rs:228-231`）。
 
 最小示例：
 

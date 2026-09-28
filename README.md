@@ -52,18 +52,17 @@ read-only setup router over in-memory state instead. See §3.
 
 Three layers. They are not interchangeable.
 
-**Boot-time environment — 2 required, 2 optional.**
+**Boot-time environment — 2 required, 1 optional.**
 
 | Variable | Required | Default |
 |---|---|---|
 | `REDIS_URL` | yes | — |
 | `CONFIG_ENCRYPTION_KEY` | yes | — |
 | `PORT` | no | `8080` |
-| `RUN_MODE` | no | `webhook` |
 
-`RUN_MODE` accepts `webhook` or `reconcile`, but **both currently produce identical
-behavior** (the two modes share one router), so it is a forward placeholder: keep the
-default `webhook`. `.env.example` ships only the two required
+There is no `RUN_MODE`: the legacy environment parser was removed, and webhook plus
+reconcile traffic share one router (`POST /reconcile` is a standalone endpoint).
+`.env.example` ships only the two required
 variables; the rest are documented defaults.
 
 **Business configuration — Redis, written by the browser.**

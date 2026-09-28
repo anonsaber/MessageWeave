@@ -90,14 +90,14 @@
 | `CancellationToken` | 虚构类型 | 未使用；无优雅关闭、无信号处理（`src/` 零命中 `tokio::signal` / `ctrl_c`） | 无 |
 | `Preview` 类型 / 4000 字符长邮件保护 / `[继续查看原文]` 按钮 / `/llm-fallback` 按钮 | 虚构类型与 UI | 全部未实现；授权后把全文交给 LLM，失败即回退前 300 字符，无任何截断标注或按钮 | 无 |
 | `LlmErr`（5 变体） | 虚构枚举 | 真实是 `AiError`，仅 3 个变体（`InvalidEndpoint` / `Request` / `Response`） | 无 |
-| `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` / `LLM_TIMEOUT_SECS` / `LLM_MAX_RETRIES` 环境变量 | 虚构环境变量 | `src/` 零命中；真实有 6 个：`LLM_ENABLED` / `LLM_ALLOW_NET` / `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` / `LLM_SUMMARY_TARGET_CHARS`，加 `llm_timeout_ms` / `max_retries` 两个运行时参数 | 见 `docs/reference.md` AI 授权态一节 |
-| `llm.call` tracing span | 虚构观测点 | `src/` 中除 `main.rs`（7 个事件）外**零 tracing 事件、零 span**；LLM 调用无任何日志 | 无 |
+| `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` / `LLM_TIMEOUT_SECS` / `LLM_MAX_RETRIES` 环境变量 | 虚构环境变量 | `src/` 零命中（`LLM_MAX_RETRIES` 是 Redis 运行参数 `max_retries`，非环境变量）；真实业务配置字段有 6 个：`LLM_ENABLED` / `LLM_ALLOW_NET` / `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` / `LLM_SUMMARY_TARGET_CHARS`（后者的值在构造器内硬编码，未进入 wire），另有 `llm_timeout_ms` / `max_retries` 两个运行时参数 | 见 `docs/reference.md` AI 授权态一节 |
+| `llm.call` tracing span | 虚构观测点 | `src/` 中除 `main.rs`（5 个事件）外**零 tracing 事件、零 span**；LLM 调用无任何日志 | 无 |
 | 熔断器 / 半开态 / 熔断后 60s 冷却 / 规则兜底（Redis 共享计数） | 未实施设计 | 只有超时 + 重试；LLM 失败静默降级为前 300 字回退，无用户侧提示、无状态记录 | 无 |
 | 定时摘要 / 每日邮件摘要推送 | 未实施 | 未实现 | 无 |
 | 附件下载（`send_document` / `Blob/get` / 下载按钮） | 未实施 | JMAP 侧只读；邮件附件仅以 `has_attachment: bool` 形式出现 | 无 |
 | `/flag` / `/unseen` / 发信命令 | 未实施 | 当前识别 6 个意图（帮助 / 同意 / 摘要 / 搜索 / 普通消息 / 未识别）；其中 `/search` 已实现（`worker.rs:533`） | 无 |
 | `Identity` 概念 | 未实施 | 账号识别只依赖 `ACCOUNT_ID`，无身份层抽象 | 无 |
-| `run_mode.rs`（作为单独文件） | 虚构文件 | RUN_MODE 由 `config.rs:345` 读取、在 `src/main.rs:75` 校验取值；不存在 `validate_env_or_exit` 这类函数 | 无 |
+| `run_mode.rs`（作为单独文件） | 虚构文件 | 不存在该文件；`RUN_MODE` 曾由 `config.rs` 读取并在 `src/main.rs` 校验取值，**该变量与校验块现已一并删除**（见 §4）；从未存在 `validate_env_or_exit` 这类函数 | 无 |
 | docker-compose `message-weave health --addr` 示例 | 虚构命令 | 应用无 CLI 子命令；健康检查端点是 `GET /healthz` 与 `GET /ready` | 见 `docs/deployment.md` 的 Health-check 表 |
 | 早期设计辩论问题（消息格式 / 长邮件阈值 / 附件策略 / Identity / 监控 / LLM 供应商 / 熔断等 17 条） | 已由代码回答 | 均已被实现的代码给出答案，不再属于待确认项 | 见 `docs/design.md` 的「已由代码回答的早期问题」一节 |
 
@@ -110,7 +110,30 @@
 
 ---
 
-## 4. 如何重启其中一条
+## 4. 已删除的兼容路径（代码曾存在、现已删除）
+
+与前两节不同：下列条目**曾经真实存在于代码**，既非虚构也非"未采用"。它们属于早期为兼容
+环境变量部署形态而保留的解析层，现已整体删除——项目早期无需任何兼容性承诺，删除比保留更便宜。
+删除后 `src/config.rs` 不含任何 `std::env` 读取：进程启动只读 2 个凭据加监听端口，其余业务字段
+全部走 Redis 业务配置（`/api/bootstrap` 或管理员 PUT → `validate_nonblank` fail-closed）。
+
+| 条目 | 类型 | 删除原因 | 现状 |
+|---|---|---|---|
+| 原 `src/config.rs` 的 `Config::from_env()`（第 311 行） | 已删除函数 | 完整的 20 项环境变量解析器。凭据迁移到 Redis 业务配置后它成为唯一的兼容层，且已无任何调用方 | 启动期改由 `main.rs` 直读：`PORT`(:31)、`REDIS_URL`(:40)、`CONFIG_ENCRYPTION_KEY`(:49)、`DEBUG_TOKEN`(:83)；业务字段由 `BusinessConfigWire` 承载 |
+| `required_secret` / `required_nonblank` / `env_bool` | 已删除助手函数 | 仅被上述解析器调用，随其一并删除 | 必填语义改由 `validate_nonblank` 在 Redis 业务配置路径承担（8 处调用） |
+| `RUN_MODE` 变量 + `Config.run_mode` 字段 + 启动校验块 | 已删除标识符 | 两种取值从未改变任何运行时行为：webhook 与 reconcile 共享同一套路由表，`POST /reconcile` 是独立端点。该变量只额外制造了一个必须被文档解释的分支 | 全仓零命中；`NG-SERVER-MODE` 作为设计非目标保留在 `docs/charter.md` |
+| `jmap_password()` 安全访问器 | 已删除方法 | 为 `SecretString` 字段提供不泄密的读取入口，仅在 env 解析路径中有意义 | `jmap_password` 作为业务配置**字段名**保留（`BusinessConfigWire` / `BusinessConfig`），字段本身即 `SecretString` |
+| `Config.port` / `Config.redis_url` 字段 | 已删除字段 | `port` 在两个构造器里硬编码 `8080`，而监听绑定直接从环境变量取值——字段值可与真实监听端口静默不一致，且全仓零读取方；`redis_url` 同样零读取 | `Config` 收窄为 6 字段：`telegram` / `jmap` / `account_id` / `llm` / `auth` / `worker_token`，与 `BusinessConfig` 同构 |
+| 两个构造器的 `redis_url` 参数 | 已删除参数 | 唯一读者（原 main.rs 第 72 行）在上一轮改造中被移除 | `redis_only()` 与 `from_business(value)`；包装器 `from_business_json` / `from_business_value` 同步去掉首参 |
+| 19 个遗留环境变量名 | 已删除读取 | 见上；这些名字在代码中已无任何读取方 | 名单见 `docs/reference.md` §5.3；语义见 `docs/design.md` §7.1 |
+
+> 注意 `LLM_MAX_RETRIES` 与 `LLM_SUMMARY_TARGET_CHARS` 的区别：前者从来不是环境变量
+> （Redis 运行参数 `max_retries`，回落默认见 `docs/reference.md` §6.1），后者是常量
+> （两个构造器内硬编码 300，未进入业务配置 wire）。
+
+---
+
+## 5. 如何重启其中一条
 
 1. 先在 `docs/roadmap.md` 登记为缺口并归属阶段。
 2. 若涉及 Redis 键、TTL、HTTP 路由或默认值，同轮更新 `docs/reference.md`。

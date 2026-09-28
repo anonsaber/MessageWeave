@@ -310,8 +310,8 @@ message-weave/
 ├── Dockerfile                    # debian:bookworm-slim + ca-certificates + tini（C-DEBIAN-SLIM）
 ├── hoststack.yaml                # 网关编排清单，非应用代码
 ├── src/
-│   ├── main.rs                   # tokio main：校验 RUN_MODE 后启动 webhook HTTP 入口（两模式共用同一入口，无 CLI 子命令）
-│   ├── config.rs                 # 环境变量解析（ARCH-CONFIG-ENV：std::env，非 figment/TOML）
+│   ├── main.rs                   # tokio main：读 PORT/REDIS_URL/CONFIG_ENCRYPTION_KEY 后启动 webhook HTTP 入口（单入口，无 CLI 子命令）
+│   ├── config.rs                 # Redis 业务配置反序列化（serde → BusinessConfigWire → Config）；CONFIG_ENCRYPTION_KEY 解析
 │   ├── error.rs                  # BotError 统一错误（见 §8.1）
 │   ├── domain.rs                 # 领域层根（渠道中立，见 §5.2）
 │   ├── domain/jmap.rs            # JmapBackend trait + MockBackend（契约测试不联网）
@@ -338,7 +338,7 @@ message-weave/
 
 | 模块 | 依赖 | 输出 | 可测性 | 现状 |
 |---|---|---|---|---|
-| `config` | 标准库 `env`（`ARCH-CONFIG-ENV`） | `Config` 结构 | 纯函数，易测 | 已实现（手工 `from_env`，无 figment） |
+| `config` | secrecy；ring（`session_digest` SHA-256） | `Config` 结构（6 字段，全部有真实读取方） | 纯函数，易测 | 已实现（Redis 业务配置 serde 反序列化 + `validate_nonblank` fail-closed；启动期 env 由 `main.rs` 直读，无 figment/TOML） |
 | `error` | — | `BotError`（§8.1，4 个变体） | 单测 | 已实现 |
 | `domain` + `domain::jmap::client` | **jmap-client 0.4.2** | JMAP 只读语义；`client` = 真实只读 adapter（`MOD-JMAP-CLIENT`） | mock JMAP 响应 + `#[ignore]` 真机测试 | 代码已实现，待真实 Stalwart 端到端验证（`cargo test -- --ignored jmap::`） |
 | `state` | redis 0.27 | Redis 读写：配置/开关/会话/TTL 键（`C-REDIS-ONLY-STATE`） | Redis mock | 已实现 |
@@ -366,14 +366,19 @@ message-weave/
 > 使用新配置，失败保留旧实例。该迁移替代下述阶段0环境变量清单，阶段0列表仅作为历史
 > 兼容说明。
 
-> **实际实现**（`ARCH-CONFIG-ENV`）：阶段0 起配置**只从环境变量读取**，由 `config::Config::from_env()` 手工解析（`std::env::var`），**不使用 figment、不使用 TOML 配置文件**。缺失必填项即启动失败；布尔值接受 `true/1/yes` 与 `false/0/no`。
+> **实际实现**（`ARCH-CONFIG-ENV`）：进程启动只读 **2 个**进程级凭据加监听端口（`src/main.rs:31` / `:40` / `:49`，
+> 另加可选 `DEBUG_TOKEN` 于 `:83`），直接 `std::env::var`，**不使用 figment、不使用 TOML/配置文件**。
+> **业务配置不再从环境变量读取**：下表字段全部经 Redis 业务配置由 `config` 层以 serde 反序列化装载，
+> 并经 `validate_business_wire` / `validate_nonblank` 做 fail-closed 校验。
+> 历史上存在的 `Config::from_env()` 完整 env 解析路径**已删除**（登记见 `docs/retired.md`），
+> 因此**当前代码对下表变量名零读取**；`RUN_MODE` 变量本身也已整体删除（代码中已无该标识符），
+> `webhook` 与 `reconcile` 本就共享同一套路由表，`NG-SERVER-MODE` 作为设计非目标保留在 `docs/charter.md` §8。
 
-> ⚠️ **下表是 `Config::from_env()` 遗留/引导路径的完整变量表**（阶段0 口径，保留作兼容参考）。**当前生产部署只需要 `REDIS_URL` + `CONFIG_ENCRYPTION_KEY` 两个启动变量**（`src/main.rs`）；其余业务字段已迁移到 Redis 业务配置（`PUT /api/business-config` 热加载，`C-REDIS-ONLY-STATE`）。表中的「必填」仅指**走环境变量引导路径时**必填，不代表当前生产必须配置。
+> ⚠️ **下表是业务配置字段的完整变量表**（变量名沿用原环境变量命名，便于与部署文档对照，但**代码中已无任何读取方**）。**当前生产部署只需要 `REDIS_URL` + `CONFIG_ENCRYPTION_KEY` 两个启动变量**（`src/main.rs`）；其余业务字段全部经 Redis 业务配置由 `PUT /api/business-config` 写入（`C-REDIS-ONLY-STATE`）。表中「必填」指**Redis 业务配置**的 fail-closed 约束（`validate_nonblank`，空白即拒绝），不再是环境变量引导路径的必填。
 
 | 变量 | 必填 | 默认 | 说明 |
 |---|---|---|---|
 | `PORT` | 否 | `8080` | 单监听端口（`C-NO-TCP-EXPOSE`） |
-| `RUN_MODE` | 否 | `webhook` | `webhook` / `reconcile`（`NG-SERVER-MODE` 已删除）；**两种取值当前不改变任何运行时行为**（两模式共享同一套路由表），仅作前向占位 |
 | `BOT_TOKEN` | 是 | — | Telegram Bot Token（`SecretString`） |
 | `TG_WEBHOOK_SECRET` | 是 | — | `/webhook/tg` 鉴权：请求头 `X-Telegram-Bot-Api-Secret-Token`（`SAF-AUTH-TG-WEBHOOK`；`SecretString`） |
 | `CHAT_ALLOWLIST` | 是 | — | 逗号分隔整数 chat id；**白名单硬约束**（`SAF-CHAT-ALLOWLIST`） |
@@ -387,16 +392,16 @@ message-weave/
 | `LLM_ENABLED` | 否 | `false` | 关闭时不校验 `LLM_*`（`REQ-LLM-OPENAI-COMPAT`） |
 | `LLM_ALLOW_NET` | 否 | `false` | AI 出网开关（`REQ-AI-EXTERNAL-CONSENT`） |
 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | `LLM_ENABLED=true` 时必填 | — | OpenAI-compatible |
-| `LLM_MAX_RETRIES` | 否（环境变量路径**不读取**） | — | 熔断阈值（`REQ-AI-FUSE`）。当前经 Redis 运行参数管理（`OutboundConfig.max_retries`，回落默认见 `docs/reference.md` §6.1）；`Config::from_env()` **不读取**此变量 |
-| `LLM_SUMMARY_TARGET_CHARS` | 否 | `300` | 摘要目标字数（`REQ-LONG-EMAIL`） |
+| `LLM_MAX_RETRIES` | 否 | — | 熔断阈值（`REQ-AI-FUSE`）。**非**环境变量：经 Redis 运行参数管理（`OutboundConfig.max_retries`，回落默认见 `docs/reference.md` §6.1） |
+| `LLM_SUMMARY_TARGET_CHARS` | 否（**常量**） | `300` | 摘要目标字数（`REQ-LONG-EMAIL`）。**非**可配置项：`config` 层在两个构造器内硬编码为 300，未进入业务配置 wire |
 
-> 当前 `config.rs` 通过环境变量和 Redis 业务配置提供上述字段（含 `TelegramConfig` / `JmapConfig` / `LlmConfig`）。未来若引入 TOML/figment 需另立决策；当前文档不假设配置文件存在。
+> 当前 `config.rs` 从 Redis 业务配置提供上述字段（含 `TelegramConfig` / `JmapConfig` / `LlmConfig`）；进程级启动变量由 `src/main.rs` 直读，不经过 `config` 层。未来若引入 TOML/figment 需另立决策；当前文档不假设配置文件存在。
 > **入口鉴权密钥（`TG_WEBHOOK_SECRET`/`RECONCILE_TOKEN`）在业务配置完成后必须有效**（fail-closed，`SAF-AUTH-*`）。JMAP Push 的验证码由 Stalwart 在订阅创建后动态生成，不属于业务配置。启动引导变量缺失时服务进入配置引导模式并保持 SPA 可访问；不会因为缺少启动变量而伪造业务成功，也不会绕过入口鉴权。
 > **JMAP session URL 归一化（`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）**：`JMAP_SESSION_URL` 既接受**服务基地址**（`https://mail.example.com`）也接受**完整 session URL**（`https://mail.example.com/.well-known/jmap`）。代码在调用 `jmap_client::Client::connect` **之前统一归一化为 origin/base**——`jmap-client` 会自动追加 `/.well-known/jmap`，故**不会出现重复路径**（如 `…/.well-known/jmap/.well-known/jmap`）。约束：**仅 HTTPS**（http 拒绝）；**禁止 URL 内嵌用户名/密码**（凭据只经 `JMAP_USERNAME`/`JMAP_PASSWORD`，`C-AUTH-APP-BASIC`）；拒绝危险 query。（状态：D-G1-1 **代码已实现，待真实 `cargo test -- --ignored jmap::` 验证**。）
 
 ### 7.2 密钥管理
-- **禁止**把 token/密码写入仓库或任何配置文件（本项目配置走环境变量，`ARCH-CONFIG-ENV`）。
-- 环境变量由 `config` 层直接读取（`std::env::var`，`ARCH-CONFIG-ENV`）；缺失必填项即启动失败（**无** `${VAR}` 插值/figment）。
+- **禁止**把 token/密码写入仓库或任何配置文件（本项目配置不进仓库，`ARCH-CONFIG-ENV`）。
+- 启动期只读 2 个进程级变量（`REDIS_URL`、`CONFIG_ENCRYPTION_KEY`，由 `src/main.rs` 直接 `std::env::var`；缺任一即降级到只读 setup 模式）；业务配置从 Redis 经 `config` 层反序列化（**无** `${VAR}` 插值/figment/配置文件，`ARCH-CONFIG-ENV`）。
 - 运行期用 `secrecy::SecretString` 包裹，`Debug` 实现打 `***`。
 - 日志过滤：`tracing` 字段层屏蔽 `Authorization`/`password`/`token`。
 - 运行期 secret 注入方式（env / `*_FILE` / 编排器 secret）见 deployment.md（`C-NO-SECRET-IN-IMAGE`）。
@@ -493,7 +498,7 @@ pub enum BotError {
 
 ### 8.3 可观测性
 - `tracing`（直接依赖）+ `tracing-subscriber`（fmt + EnvFilter）。
-- `tracing`（直接依赖）+ `tracing-subscriber`（fmt + EnvFilter）。**当前只记录启动期事件**：`src/main.rs` 共 7 处 `info!`/`warn!`（`RUN_MODE` 取值横幅×2、启动变量缺失降级到 setup 模式、启动横幅、debug 端点开启、JMAP 服务不可用降级×2）。请求级事件（Push 回调、Reconcile 拉取、渠道推送、LLM 耗时）**尚未实现**——`src/` 里除 `main.rs` 外没有任何 tracing 调用，也没有命名 span（无 `#[instrument]` / `span!`）。
+- `tracing`（直接依赖）+ `tracing-subscriber`（fmt + EnvFilter）。**当前只记录启动期事件**：`src/main.rs` 共 5 处 `info!`/`warn!`（启动变量缺失降级到 setup 模式、启动横幅、debug 端点开启、JMAP 服务不可用降级×2）。请求级事件（Push 回调、Reconcile 拉取、渠道推送、LLM 耗时）**尚未实现**——`src/` 里除 `main.rs` 外没有任何 tracing 调用，也没有命名 span（无 `#[instrument]` / `span!`）。
 - 指标（可选 `metrics` crate）：Push 回调到达数、去重命中率、Redis Streams 积压深度（pending）、DLQ 条数、对账补差条数、JMAP 请求延迟、推送失败率。**当前未接入任何指标后端**（`metrics` 不在 `Cargo.toml`）。
 - 优雅退出：**当前未实现**——`src/` 里没有信号处理（无 `tokio::signal` / `ctrl_c`），也没有 Streams pending 条目的 flush 逻辑；容器停机即终止进程。Redis 侧 `C-NO-STATEFUL-RECOVERY` 保证重启后从 Redis 重建，不依赖进程内状态。
 - **可靠性目标与策略**（Streams ACK/retry、幂等去重、Push 重试、对账恢复、指标/告警、**≥99.9% 通知可用性及边界**）见 deployment.md §6.4/§6.5（`NFR-NOTIFY-SLA`）。
@@ -559,7 +564,14 @@ pub enum BotError {
 3. `cargo test` 通过（含路由/配置最小测试）。
 4. 上述三条**在 Debian `rust:1-slim-bookworm` 容器内**执行通过（`C-DEBIAN-SLIM`）。
 5. 配置读取为 env-only（无 figment/TOML）；`SecretString` 包裹秘密且 `Debug` 不泄密；`JMAP_PASSWORD` 安全访问器保留。
-6. `RUN_MODE` **不**参与路由分派：`webhook` 与 `reconcile` 共享同一套路由表，`reconcile` 作为独立 HTTP 端点 `POST /reconcile` 提供。`RUN_MODE` 仅在启动时读取并校验取值（`src/main.rs:75`，只接受 `webhook`/`reconcile`），**当前不影响任何运行时行为**，留待后续阶段在此挂载差异化副作用（见 §12.2 的运行模式说明）。
+6. `RUN_MODE` **不**参与路由分派：`webhook` 与 `reconcile` 共享同一套路由表，`reconcile` 作为独立 HTTP 端点 `POST /reconcile` 提供。`RUN_MODE` 仅在启动时读取并校验取值，**当前不影响任何运行时行为**，留待后续阶段在此挂载差异化副作用（见 §12.2 的运行模式说明）。
+
+> **阶段0 之后已演进的判据（当前口径，取代上述第 5、6 条的具体实现描述）**：
+> - 配置读取收窄为 **2 个进程级变量**（`REDIS_URL`、`CONFIG_ENCRYPTION_KEY`）由 `src/main.rs` 直读；
+>   业务配置改由 Redis 经 `config` 层反序列化，`Config::from_env()` 与全部遗留 env 解析器已删除（§7.1）。
+> - `RUN_MODE` **变量本身已删除**，代码中已无该标识符（登记见 `docs/retired.md`）；第 6 条的
+>   「不参与路由分派」结论仍成立，但已无需变量承载。
+> - `JMAP_PASSWORD` 的**安全访问器** `jmap_password()` 已删除；`jmap_password` 作为业务配置字段名保留。
 7. `.gitignore` 存在（排除 `target/` 等；**不**擅自初始化 git）。
 8. 所有新增代码有引用稳定 ID 的必要注释；单 `.rs` ≤ 500 行。
 
@@ -585,7 +597,7 @@ pub enum BotError {
 
 > 前置：`GATE-P0` 全项通过（`BOUND-STAGE1`）。
 
-- 依赖 `jmap-client 0.4.2`（**已引入**，`ARCH-DEPS-STAGE1`；版本/features 以 `Cargo.toml` 为准，**禁用 WebSocket feature**）；`config.rs` 复用既有 env 骨架（**非** `bot.example.toml`，见 `ARCH-CONFIG-ENV`）。
+- 依赖 `jmap-client 0.4.2`（**已引入**，`ARCH-DEPS-STAGE1`；版本/features 以 `Cargo.toml` 为准，**禁用 WebSocket feature**）；`config.rs` 复用既有 Redis 业务配置骨架（**非** `bot.example.toml`，见 `ARCH-CONFIG-ENV`）。
 - `domain::jmap::client` = 真实只读 adapter（`MOD-JMAP-CLIENT`，**G1/D-G1-1 代码已实现，待真实 `cargo test -- --ignored jmap::` 验证；未实际运行前不得声称真机通过**）：已实现 = 包装 `Client::connect`（Basic 认证 `C-AUTH-APP-BASIC`）、**URL 归一化**（`JMAP_SESSION_URL` 接受服务基地址或完整 `…/.well-known/jmap`，归一化为 origin/base 后传入，避免重复路径；仅 HTTPS、禁内嵌凭据与 query，`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）、**account 选择**：`ACCOUNT_ID` 留空取 session 主账户、显式值校验后使用（`REQ-SINGLE-ACCOUNT`）。
 - `domain::jmap::JmapService::list_folders / list_emails / read_email`（query/get；`list_emails` 含 `limit` 边界；`received_at` 解析；`read_email` 多 part 拼接见 `REQ-JMAP-RAW-MULTIPART`）。
 - **R1 入口鉴权已就绪**：`/reconcile`/`/webhook/tg`/`/push/jmap` 及 `/api/push/register` 鉴权（`SAF-AUTH-*`）已落地并通过单测；后续改动不得放宽或绕过鉴权。
@@ -720,7 +732,10 @@ src/ai.rs   # LlmClient（唯一实现）：summarize() 打 OpenAI 兼容 /chat/
 **不存在** `src/domain/llm/` 目录，也不存在其中的 `mod.rs` / `client.rs` / `config.rs` / `policy.rs` / `fallback.rs` / `audit.rs`——熔断、规则回退、审计 span 全部未实现（见 §12.4–12.7）。
 调用方只有 `worker.rs` 的 `MetadataWorker`（已授权摘要）和 `notify.rs`（新邮件通知）。
 
-### 12.2 环境变量（当前实现）
+### 12.2 LLM 变量清单（当前实现）
+
+> 下表 `LLM_*` 名称**已不是环境变量**：`Config::from_env()` 删除后代码对它们零读取，
+> 全部经 Redis 业务配置装载（§7.1）。表中「默认」为 `config` 层构造器内的回落值。
 | 变量 | 类型 | 默认 | 用途 |
 |---|---|---|---|
 | `LLM_ENABLED` | bool | `false` | 总开关；默认关闭，未启用时不校验 `LLM_API_KEY`/`LLM_BASE_URL`/`LLM_MODEL` |
