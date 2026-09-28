@@ -59,8 +59,8 @@
 
 **双因子启用条件（`SAF-DEBUG-GATE`，两者必须同时成立）**
 
-1. 进程命令行必须带 `--debug`（读取于 `src/main.rs:99`）。
-2. `DEBUG_TOKEN` 环境变量必须存在且非空（读取于 `src/main.rs:100-103`）。
+1. 进程命令行必须带 `--debug`（读取于 `src/main.rs:96`）。
+2. `DEBUG_TOKEN` 环境变量必须存在且非空（读取于 `src/main.rs:97-100`）。
 
 缺一即不挂载：`debug_router()` 本身会构造出全部 7 条路由（`src/debug.rs:72-80`），但主入口**只在双因子成立时才合并它**（`src/notify.rs:1320-1321`）。所以未开启时 `/debug/*` 路由根本不存在，请求走 axum 兜底返回普通 `404 not found`——**不是** 401，也不会泄露「此路径存在」。开启成功时打一条 WARN 日志标记该面已打开（`src/main.rs:107-109`，`SAF-LOG-PURITY`：只记开启状态，从不记录 token 值）。
 
@@ -148,7 +148,7 @@ HTTP 端口并以 `/healthz` 做 interval 30 秒、timeout 5 秒的健康检查�
 | `CHAT_ALLOWLIST` | ✅ | 聊天白名单（**硬约束 `SAF-CHAT-ALLOWLIST`**）：逗号分隔整数 chat id；处理任何事件前先校验，非白名单直接拒绝 |
 | `REDIS_URL` | ✅ | **外部 Redis（用户托管 + AOF）**（`C-REDIS-ONLY-STATE`/`C-REDIS-MANAGED-AOF`）：session / dedup / Streams / fuse / sinceState 全部在此；支持 `redis://` 与带默认 ACL 用户的 `rediss://default:<url-encoded-password>@host:6379/0`，Redis 进程不在此 compose 内 |
 | `PORT` | 默认 8080 | 单监听端口（`C-NO-TCP-EXPOSE`） |
-| `RUN_MODE` | 默认 `webhook` | `webhook` / `reconcile` 二选一（`NG-SERVER-MODE` 已删除） |
+| `RUN_MODE` | 默认 `webhook` | `webhook` / `reconcile`（`NG-SERVER-MODE` 已删除）；**两种取值当前行为完全相同**（共享同一套路由表），仅作前向占位，保持默认即可 |
 | `RECONCILE_TOKEN` | ✅ | `/reconcile` 的 `Authorization: Bearer <token>` 承载令牌（`SAF-AUTH-RECONCILE`）。因 `/reconcile` 路由**始终挂载**，此变量为**必填**（`SecretString`） |
 | `WORKER_TOKEN` | ✅ | `/worker` 的有界处理令牌；管理 API 兼容接受该 Bearer 值，SPA 使用短期 Redis admin session |
 | `TG_WEBHOOK_SECRET` | ✅ | `/webhook/tg` 校验请求头 `X-Telegram-Bot-Api-Secret-Token`（`SAF-AUTH-TG-WEBHOOK`）。须与 Telegram `setWebhook` 的 `secret_token` **完全一致**（`SecretString`） |

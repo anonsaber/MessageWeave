@@ -61,7 +61,9 @@ Three layers. They are not interchangeable.
 | `PORT` | no | `8080` |
 | `RUN_MODE` | no | `webhook` |
 
-`RUN_MODE` accepts `webhook` or `reconcile`. `.env.example` ships only the two required
+`RUN_MODE` accepts `webhook` or `reconcile`, but **both currently produce identical
+behavior** (the two modes share one router), so it is a forward placeholder: keep the
+default `webhook`. `.env.example` ships only the two required
 variables; the rest are documented defaults.
 
 **Business configuration — Redis, written by the browser.**

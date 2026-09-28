@@ -211,7 +211,7 @@ All registered in `router_with_worker_state_runtime_bootstrap_config` (notify.rs
 | GET | `/`, `/assets/config.js`, `/assets/styles.css` | `index` / `web_config` |
 
 The remote-debug surface (`src/debug.rs:72-80`) is merged **only when the process is started
-with `--debug` and `DEBUG_TOKEN` is non-empty** (`SAF-DEBUG-GATE`, `src/main.rs:99-103`,
+with `--debug` and `DEBUG_TOKEN` is non-empty** (`SAF-DEBUG-GATE`, `src/main.rs:96-100`,
 `src/notify.rs:1320-1321`); otherwise none of these routes exist and requests fall through to
 axum's generic `404`, not a 401. All seven require `Authorization: Bearer <DEBUG_TOKEN>`,
 checked by `debug_authorized` (`src/debug.rs:45`), which delegates to the production
@@ -315,7 +315,9 @@ Three distinct layers. They are not interchangeable.
 
 `RUN_MODE` accepts only `webhook` or `reconcile`; anything else is rejected at boot
 (main.rs:78-81). Both modes currently route to the same no-op router; the distinction is
-load-bearing for future splits, not for behaviour today.
+load-bearing for future splits, not for behaviour today. Note the value is only read on
+the legacy env path (`config.rs:338`), so with the current two-variable production config
+it always resolves to the hardcoded default — setting it to `reconcile` has no effect.
 
 **Missing a required variable does not crash the process.** It logs a warning and serves
 `router_configuration_setup`, which builds a router over `MemoryState` with empty tokens and
@@ -341,7 +343,7 @@ The single prefixed name is `TELEGRAM_CHAT_ID`. Anything else documented as
 `TELEGRAM_BOT_TOKEN` or similar is a documentation error, not a supported variable.
 
 **Trust root.** The SPA admin credential is `CONFIG_ENCRYPTION_KEY` itself: read at startup
-(main.rs:49) and held as `admin_token` (main.rs:95), it is checked in constant time by
+(main.rs:49) and held as `admin_token` (main.rs:92), it is checked in constant time by
 `worker_authorized` (notify.rs:445; compare at notify.rs:1135) at the top of both
 `POST /api/bootstrap` (notify.rs:604) and `POST /api/admin/session` (notify.rs:774). It is
 only compared against the request bearer — never echoed, logged, or stored. The session

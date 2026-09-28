@@ -82,7 +82,7 @@
 ---
 
 | `src/domain/llm/` 整个模块族 | 虚构模块树 | `domain/` 下只有 `jmap.rs` 与 `jmap/client.rs`；LLM 只有 `src/ai.rs` 一个文件（`LlmClient`） | 无 |
-| `ai::config` / `ai::fallback` / `ai::policy` / `ai::audit` | 虚构模块 | LLM 配置在 `config.rs::LlmConfig`，运行时参数在 `state.rs::RuntimeConfig`，无 policy/audit 概念 | 无 |
+| `ai::config` / `ai::fallback` / `ai::policy` / `ai::audit` | 虚构模块 | LLM 配置在 `config.rs::LlmConfig`，运行时参数在 `state.rs::OutboundConfig`（经 `RuntimeConfigProvider` 下发），无 policy/audit 概念 | 无 |
 | `channel/mod.rs` | 虚构文件 | 渠道层就是 `src/channel.rs`，不是 `channel/` 目录 | 无 |
 | `notify::push_handler` / `notify::worker` / `notify::reconcile` 作为模块路径 | 虚构模块路径 | 这些是 `src/notify.rs` 内的自由函数（`jmap_push` / `worker` / `reconcile`），不是模块路径 | 无 |
 | `mod_dedup` / `mod_streams` / `mod_sincestate` | 虚构模块名 | `state.rs` / `notify.rs` 都是平铺文件，无子模块；去重与 Streams 逻辑以自由函数存在 | 无 |
@@ -90,14 +90,14 @@
 | `CancellationToken` | 虚构类型 | 未使用；无优雅关闭、无信号处理（`src/` 零命中 `tokio::signal` / `ctrl_c`） | 无 |
 | `Preview` 类型 / 4000 字符长邮件保护 / `[继续查看原文]` 按钮 / `/llm-fallback` 按钮 | 虚构类型与 UI | 全部未实现；授权后把全文交给 LLM，失败即回退前 300 字符，无任何截断标注或按钮 | 无 |
 | `LlmErr`（5 变体） | 虚构枚举 | 真实是 `AiError`，仅 3 个变体（`InvalidEndpoint` / `Request` / `Response`） | 无 |
-| `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` / `LLM_TIMEOUT_SECS` / `LLM_MAX_RETRIES` 环境变量 | 虚构环境变量 | `src/` 零命中；真实只有 `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` / `LLM_SUMMARY_TARGET_CHARS` 四个环境变量，加 `llm_timeout_ms` / `max_retries` 两个运行时参数 | 见 `docs/reference.md` AI 授权态一节 |
-| `llm.call` tracing span | 虚构观测点 | `src/` 中除 `main.rs`（6 个事件）外**零 tracing 事件、零 span**；LLM 调用无任何日志 | 无 |
+| `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` / `LLM_TIMEOUT_SECS` / `LLM_MAX_RETRIES` 环境变量 | 虚构环境变量 | `src/` 零命中；真实有 6 个：`LLM_ENABLED` / `LLM_ALLOW_NET` / `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` / `LLM_SUMMARY_TARGET_CHARS`，加 `llm_timeout_ms` / `max_retries` 两个运行时参数 | 见 `docs/reference.md` AI 授权态一节 |
+| `llm.call` tracing span | 虚构观测点 | `src/` 中除 `main.rs`（7 个事件）外**零 tracing 事件、零 span**；LLM 调用无任何日志 | 无 |
 | 熔断器 / 半开态 / 熔断后 60s 冷却 / 规则兜底（Redis 共享计数） | 未实施设计 | 只有超时 + 重试；LLM 失败静默降级为前 300 字回退，无用户侧提示、无状态记录 | 无 |
 | 定时摘要 / 每日邮件摘要推送 | 未实施 | 未实现 | 无 |
 | 附件下载（`send_document` / `Blob/get` / 下载按钮） | 未实施 | JMAP 侧只读；邮件附件仅以 `has_attachment: bool` 形式出现 | 无 |
-| `/flag` / `/unseen` / 发信命令 | 未实施 | 当前只识别 5 个意图（帮助 / 同意 / 摘要 / 普通消息 / 未识别） | 无 |
+| `/flag` / `/unseen` / 发信命令 | 未实施 | 当前识别 6 个意图（帮助 / 同意 / 摘要 / 搜索 / 普通消息 / 未识别）；其中 `/search` 已实现（`worker.rs:517`） | 无 |
 | `Identity` 概念 | 未实施 | 账号识别只依赖 `ACCOUNT_ID`，无身份层抽象 | 无 |
-| `run_mode.rs`（作为单独文件） | 虚构文件 | RUN_MODE 校验内联在 `main.rs::validate_env_or_exit` | 无 |
+| `run_mode.rs`（作为单独文件） | 虚构文件 | RUN_MODE 由 `config.rs:338` 读取、在 `src/main.rs:75` 校验取值；不存在 `validate_env_or_exit` 这类函数 | 无 |
 | docker-compose `message-weave health --addr` 示例 | 虚构命令 | 应用无 CLI 子命令；健康检查端点是 `GET /healthz` 与 `GET /ready` | 见 `docs/deployment.md` 的 Health-check 表 |
 | 早期设计辩论问题（消息格式 / 长邮件阈值 / 附件策略 / Identity / 监控 / LLM 供应商 / 熔断等 17 条） | 已由代码回答 | 均已被实现的代码给出答案，不再属于待确认项 | 见 `docs/design.md` 的「已由代码回答的早期问题」一节 |
 

@@ -32,6 +32,12 @@ pub fn encryption_key_from_env() -> Result<[u8; 32], BotError> {
 /// Runtime-only settings. SecretString prevents accidental formatting/logging of credentials.
 /// C-AUTH-APP-BASIC and REQ-SINGLE-ACCOUNT are intentionally represented explicitly.
 pub struct Config {
+    // The listener binds from main.rs before Config exists, so the field is parsed
+    // here only for validation parity; main.rs reads PORT directly.
+    #[expect(
+        dead_code,
+        reason = "parsed in from_env() for validation parity; listener binds from main.rs"
+    )]
     pub port: u16,
     pub run_mode: String,
     pub telegram: TelegramConfig,

@@ -347,7 +347,7 @@ message-weave/
 | `notify` | axum；redis | HTTP 鉴权、全局开关、`/push/jmap` 入队、`Email/changes` 对账和游标提交 | webhook 校验失败路径覆盖 403 | 已覆盖真实对账路径；仍需真实 Stalwart 环境做端到端验收 |
 | `web` | axum | `/config` 静态页 + `include_str!` 嵌入 + CSP | 前端由 `web/config.test.mjs` 覆盖 | 已实现 |
 
-> 注：「现状」列是**模块级**口径（模块已落地），不代表行为完备。行为级缺口不在本表内：见 `docs/roadmap.md`「代码缺口」（2 条：多实例重复投递残余窗口、`SAF-DEBUG-ALLOWLIST`）。`worker` 模块的 `/search` 路径已随 `bfe0fd8` 落地。
+> 注：「现状」列是**模块级**口径（模块已落地），不代表行为完备。行为级缺口不在本表内：`docs/roadmap.md`「代码缺口」中 `/search`、Telegram 429 退避、多实例重复投递窗口均已实现，仅剩 1 条按产品决策保留不改（`SAF-DEBUG-ALLOWLIST`）。`worker` 模块的 `/search` 路径已随 `bfe0fd8` 落地。
 
 ---
 
@@ -371,7 +371,7 @@ message-weave/
 | 变量 | 必填 | 默认 | 说明 |
 |---|---|---|---|
 | `PORT` | 否 | `8080` | 单监听端口（`C-NO-TCP-EXPOSE`） |
-| `RUN_MODE` | 否 | `webhook` | `webhook` / `reconcile`（`NG-SERVER-MODE` 已删除） |
+| `RUN_MODE` | 否 | `webhook` | `webhook` / `reconcile`（`NG-SERVER-MODE` 已删除）；**两种取值当前不改变任何运行时行为**（两模式共享同一套路由表），仅作前向占位 |
 | `BOT_TOKEN` | 是 | — | Telegram Bot Token（`SecretString`） |
 | `TG_WEBHOOK_SECRET` | 是 | — | `/webhook/tg` 鉴权：请求头 `X-Telegram-Bot-Api-Secret-Token`（`SAF-AUTH-TG-WEBHOOK`；`SecretString`） |
 | `CHAT_ALLOWLIST` | 是 | — | 逗号分隔整数 chat id；**白名单硬约束**（`SAF-CHAT-ALLOWLIST`） |
@@ -491,7 +491,7 @@ pub enum BotError {
 
 ### 8.3 可观测性
 - `tracing`（直接依赖）+ `tracing-subscriber`（fmt + EnvFilter）。
-- `tracing`（直接依赖）+ `tracing-subscriber`（fmt + EnvFilter）。**当前只记录启动期事件**：`src/main.rs` 共 6 处 `info!`/`warn!`（RUN_MODE、加密密钥缺失、Redis URL 缺失、JMAP 连接不可用降级、启动横幅等）。请求级事件（Push 回调、Reconcile 拉取、渠道推送、LLM 耗时）**尚未实现**——`src/` 里除 `main.rs` 外没有任何 tracing 调用，也没有命名 span（无 `#[instrument]` / `span!`）。
+- `tracing`（直接依赖）+ `tracing-subscriber`（fmt + EnvFilter）。**当前只记录启动期事件**：`src/main.rs` 共 7 处 `info!`/`warn!`（`RUN_MODE` 取值横幅×2、启动变量缺失降级到 setup 模式、启动横幅、debug 端点开启、JMAP 服务不可用降级×2）。请求级事件（Push 回调、Reconcile 拉取、渠道推送、LLM 耗时）**尚未实现**——`src/` 里除 `main.rs` 外没有任何 tracing 调用，也没有命名 span（无 `#[instrument]` / `span!`）。
 - 指标（可选 `metrics` crate）：Push 回调到达数、去重命中率、Redis Streams 积压深度（pending）、DLQ 条数、对账补差条数、JMAP 请求延迟、推送失败率。**当前未接入任何指标后端**（`metrics` 不在 `Cargo.toml`）。
 - 优雅退出：**当前未实现**——`src/` 里没有信号处理（无 `tokio::signal` / `ctrl_c`），也没有 Streams pending 条目的 flush 逻辑；容器停机即终止进程。Redis 侧 `C-NO-STATEFUL-RECOVERY` 保证重启后从 Redis 重建，不依赖进程内状态。
 - **可靠性目标与策略**（Streams ACK/retry、幂等去重、Push 重试、对账恢复、指标/告警、**≥99.9% 通知可用性及边界**）见 deployment.md §6.4/§6.5（`NFR-NOTIFY-SLA`）。
@@ -551,13 +551,13 @@ pub enum BotError {
 - axum 采用 **0.8**（`ARCH-AXUM-08`）；如后续审核决定调整版本，以 Cargo.toml 为准并同步本节。
 - 当前不实现 SSE/WebSocket/长轮询/SQLite/本地卷（`C-NO-LONG-CONN`/`NG-SQLITE-PERSIST`/`NG-LOCAL-VOLUME`）；入口鉴权（`R1`/`SAF-AUTH-*`）作为 fail-closed 硬门禁落地，鉴权之后的 Push、Streams worker 和 `/reconcile` 业务路径已实现。
 
-**阶段0 P0 门禁（`GATE-P0`）——已通过（冻结基线 45 passed / 0 failed / 1 ignored，见 `docs/roadmap.md` 头部）。以下为当时的判据，保留作历史记录：**
+**阶段0 P0 门禁（`GATE-P0`）——已通过。首次冻结时为 45 passed / 0 failed / 1 ignored，此后随 ④–⑥ 轮实现持续增长，当前基线以 `docs/roadmap.md` 头部为准。以下为阶段0 当时的判据，保留作历史记录：**
 1. `cargo fmt --check` 通过（无格式差异）。
 2. `cargo clippy --all-targets -- -D warnings` 通过（零告警；禁 crate 级 `allow`）。
 3. `cargo test` 通过（含路由/配置最小测试）。
 4. 上述三条**在 Debian `rust:1-slim-bookworm` 容器内**执行通过（`C-DEBIAN-SLIM`）。
 5. 配置读取为 env-only（无 figment/TOML）；`SecretString` 包裹秘密且 `Debug` 不泄密；`JMAP_PASSWORD` 安全访问器保留。
-6. `RUN_MODE` 被实际消费（当前为 `webhook` 入口的单一路由表，无副作用；`reconcile` 作为独立 HTTP 端点 `POST /reconcile` 提供，不通过 `RUN_MODE` 分派，见 `src/main.rs::validate_env_or_exit`）。
+6. `RUN_MODE` **不**参与路由分派：`webhook` 与 `reconcile` 共享同一套路由表，`reconcile` 作为独立 HTTP 端点 `POST /reconcile` 提供。`RUN_MODE` 仅在启动时读取并校验取值（`src/main.rs:75`，只接受 `webhook`/`reconcile`），**当前不影响任何运行时行为**，留待后续阶段在此挂载差异化副作用（见 §12.2 的运行模式说明）。
 7. `.gitignore` 存在（排除 `target/` 等；**不**擅自初始化 git）。
 8. 所有新增代码有引用稳定 ID 的必要注释；单 `.rs` ≤ 500 行。
 
@@ -689,7 +689,7 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 - **多发件身份**（Q12）：`Identity` 未使用，单账户（`REQ-SINGLE-ACCOUNT`）。
 - **unsafe**（Q13）：`src/` 中没有 `unsafe`，但也没有加 `#![forbid(unsafe_code)]`。
 - **监控**（Q15）：实现为 `/healthz` + `/ready` 两个 HTTP 探针，不引入 Prometheus/Exporter；运行平台配置见 deployment.md。
-- **LLM 提供方 / 网出许可**（Q25、Q26、Q30）：`LLM_BASE_URL` 由部署方指定（只校验 https），`LLM_ALLOW_NET` 默认 `true`；`LLM_ENABLED=false` 时直接走 `LlmClient::noop()`，不探测（见 §12.2）。
+- **LLM 提供方 / 网出许可**（Q25、Q26、Q30）：`LLM_BASE_URL` 由部署方指定（只校验 https）；`LLM_ENABLED` 与 `LLM_ALLOW_NET` **默认均为 `false`**，二者须同时为真才构造客户端，否则 `llm` 字段为 `None`（`Option<Arc<LlmClient>>`，仓库内不存在 `noop()` 实现），不探测（见 §12.2）。
 - **熔断冷却 / 阈值**（Q27）：不适用——熔断本身未实现（见 §12.4）。
 
 部署/平台类决策已无未决项：`Q-DEP-A`（平台 URL / 域名与证书由谁配置，由部署环境在发布时确定）与 `Q-DEP-B`（外部 Cron 用哪个调度器，不限定实现）均已决策，归档到 `docs/deployment.md` 的已确认决策一节，不在本文重复。
@@ -714,20 +714,20 @@ LLM 相关代码只有**一个文件**：
 ```
 src/ai.rs   # LlmClient（唯一实现）：summarize() 打 OpenAI 兼容 /chat/completions
 ```
-配置装载在 `src/config.rs` 的 `LlmConfig`，运行时参数在 `src/state.rs` 的 `RuntimeConfig`。
+配置装载在 `src/config.rs` 的 `LlmConfig`，运行时参数在 `src/state.rs` 的 `OutboundConfig`（经 `RuntimeConfigProvider` 下发）。
 **不存在** `src/domain/llm/` 目录，也不存在其中的 `mod.rs` / `client.rs` / `config.rs` / `policy.rs` / `fallback.rs` / `audit.rs`——熔断、规则回退、审计 span 全部未实现（见 §12.4–12.7）。
 调用方只有 `worker.rs` 的 `MetadataWorker`（已授权摘要）和 `notify.rs`（新邮件通知）。
 
 ### 12.2 环境变量（当前实现）
 | 变量 | 类型 | 默认 | 用途 |
 |---|---|---|---|
-| `LLM_ENABLED` | bool | `true` | 总开关 |
-| `LLM_ALLOW_NET` | bool | `true` | 运行时出站许可；`LLM_ENABLED && LLM_ALLOW_NET` 同时为真才构造 `LlmClient`，否则用 `LlmClient::noop()`（`src/main.rs:128`） |
-| `LLM_API_KEY` | string | 必填 | Bearer token；缺失即视为未启用 |
-| `LLM_BASE_URL` | URL | 必填 | 必须 `https`，否则 `AiError::InvalidEndpoint` |
-| `LLM_MODEL` | string | 必填 | 透传给 `/chat/completions` 的 `model` |
+| `LLM_ENABLED` | bool | `false` | 总开关；默认关闭，未启用时不校验 `LLM_API_KEY`/`LLM_BASE_URL`/`LLM_MODEL` |
+| `LLM_ALLOW_NET` | bool | `false` | 运行时出站许可；`LLM_ENABLED && LLM_ALLOW_NET` 同时为真才构造 `LlmClient`，否则 `llm` 字段为 `None`（`src/main.rs:125`） |
+| `LLM_API_KEY` | string | 可省略 | Bearer token；仅 `LLM_ENABLED=true` 时必填 |
+| `LLM_BASE_URL` | URL | 可省略 | 仅启用时必填，且必须 `https`，否则 `AiError::InvalidEndpoint` |
+| `LLM_MODEL` | string | 可省略 | 仅启用时必填；透传给 `/chat/completions` 的 `model` |
 | `LLM_SUMMARY_TARGET_CHARS` | int | `1024` | `LlmClient::max_chars`，对返回摘要文本做字符截断（**代码侧确有截断**） |
-| `max_retries`（运行参数） | int | `3` | 由 `RuntimeConfig` 下发，硬上限 5；LLM 与 Telegram 出站共用 |
+| `max_retries`（运行参数） | int | `3` | 由 `OutboundConfig` 下发（`RuntimeConfigProvider`），硬上限 5；LLM 与 Telegram 出站共用 |
 | `llm_timeout_ms`（运行参数） | int | `30000` | 硬下限 100ms |
 
 **不存在** `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` / `LLM_TIMEOUT_SECS` / `LLM_MAX_RETRIES`：请求体只有 `model` / `messages` / `max_tokens`（= `max_chars * 2`），没有 temperature，也没有独立于 `llm_timeout_ms` 的超时开关。API key 只从配置读，不入源码、不打日志（`SAF-LOG-PURITY`），运行期 secret 注入方式见 deployment.md（`C-NO-SECRET-IN-IMAGE`）。

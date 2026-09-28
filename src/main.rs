@@ -81,10 +81,7 @@ async fn main() -> Result<(), error::BotError> {
             )))
         }
     }
-    tracing::info!(
-        port = bootstrap_config.port,
-        "starting webhook HTTP entrypoint"
-    );
+    tracing::info!(port, "starting webhook HTTP entrypoint");
     let redis =
         RedisState::connect_with_encryption(redis_url.expose_secret(), Some(encryption_key))
             .await?;
