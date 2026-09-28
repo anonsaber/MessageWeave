@@ -60,6 +60,47 @@ impl Default for OutboundConfig {
     }
 }
 
+/// Legacy single-event ceiling. It is the floor the derived ceiling must clear
+/// and the fallback when the outbound config cannot be read.
+const SINGLE_EVENT_CEILING_FLOOR_MS: u64 = 300_000;
+
+/// Safety factor on the derived ceiling. Retries insert sleeps between
+/// attempts, and the ceiling bounds a window that must not be exceeded while
+/// the owning consumer is still alive.
+const SINGLE_EVENT_CEILING_SAFETY: u64 = 2;
+
+/// Upper bound on the XAUTOCLAIM idle window: a misconfigured timeout must not
+/// push multi-instance recovery out by days. Six hours keeps a crashed batch
+/// recoverable within the same working day.
+const RECLAIM_IDLE_THRESHOLD_CAP_MS: u64 = 6 * 60 * 60 * 1000;
+
+/// Worst-case wall clock for one event: every outbound call can burn its full
+/// timeout once per attempt and `send_text` retries up to `max_retries` more
+/// times, so the ceiling is
+/// `(max_retries + 1) * (jmap + telegram + llm) * SAFETY`, floored at the
+/// legacy constant so a zeroed-out config cannot shrink the window.
+fn single_event_ceiling_ms(config: &OutboundConfig) -> u64 {
+    let attempts = config.max_retries as u64 + 1;
+    let per_attempt = config
+        .jmap_timeout_ms
+        .saturating_add(config.telegram_timeout_ms)
+        .saturating_add(config.llm_timeout_ms);
+    per_attempt
+        .saturating_mul(attempts)
+        .saturating_mul(SINGLE_EVENT_CEILING_SAFETY)
+        .max(SINGLE_EVENT_CEILING_FLOOR_MS)
+}
+
+/// Idle window handed to `XAUTOCLAIM`: the worst-case *batch* duration, since a
+/// worker processes up to `count` events sequentially. Floored through
+/// `single_event_ceiling_ms` and capped so a bad config cannot stretch
+/// recovery into days. Only duplicate-on-multi-instance is at stake, never loss.
+fn reclaim_idle_threshold_ms(config: &OutboundConfig, count: usize) -> u64 {
+    (count.max(1) as u64)
+        .saturating_mul(single_event_ceiling_ms(config))
+        .min(RECLAIM_IDLE_THRESHOLD_CAP_MS)
+}
+
 #[async_trait]
 pub trait ReliableState: Send + Sync {
     /// Atomic SET NX EX claim for Telegram update or `(account,email)` dedup key.
@@ -360,13 +401,18 @@ impl ReliableState for RedisState {
             .await;
         // Recover messages left in the consumer group's PEL after a crash or
         // restart before reading new entries. The idle window has to clear the
-        // worst-case *batch* duration (a worker processes up to `count` events
-        // sequentially, each bounded by the ~300s single-event ceiling), else a
+        // worst-case *batch* duration: a worker processes up to `count` events
+        // sequentially, each bounded by the single-event ceiling derived from
+        // the live outbound config. If the window is shorter than that, a
         // second instance reclaims events that are still being processed and
         // delivers them twice (建议-6). Single-instance deployments are
         // unaffected; only duplicate-on-multi-instance is at stake, never loss.
-        const SINGLE_EVENT_CEILING_MS: u64 = 300_000;
-        let idle_threshold_ms = count.max(1) as u64 * SINGLE_EVENT_CEILING_MS;
+        let idle_threshold_ms = match self.get_outbound_config().await {
+            Ok(config) => reclaim_idle_threshold_ms(&config, count),
+            // A Redis error here must not break the delivery loop: fall back to
+            // the legacy constant instead of propagating the failure.
+            Err(_) => count.max(1) as u64 * SINGLE_EVENT_CEILING_FLOOR_MS,
+        };
         let reclaimed: redis::streams::StreamAutoClaimReply = redis::cmd("XAUTOCLAIM")
             .arg(stream)
             .arg(group)
@@ -1344,6 +1390,57 @@ mod tests {
         assert!(client.is_ok());
         let client = redis::Client::open("redis://default:p%40ss%3Aword@example.invalid:6379/0");
         assert!(client.is_ok());
+    }
+
+    #[test]
+    fn reclaim_idle_threshold_is_derived_from_runtime_config() {
+        // (15s + 10s + 30s) * (3 + 1) attempts * 2 safety = 440s per event.
+        let default = OutboundConfig::default();
+        assert_eq!(single_event_ceiling_ms(&default), 440_000);
+        assert!(reclaim_idle_threshold_ms(&default, 1) >= SINGLE_EVENT_CEILING_FLOOR_MS);
+        assert!(reclaim_idle_threshold_ms(&default, 16) > reclaim_idle_threshold_ms(&default, 8));
+
+        let slow = OutboundConfig {
+            jmap_timeout_ms: 60_000,
+            telegram_timeout_ms: 60_000,
+            llm_timeout_ms: 60_000,
+            max_retries: 4,
+        };
+        assert!(reclaim_idle_threshold_ms(&slow, 1) > reclaim_idle_threshold_ms(&default, 1));
+    }
+
+    #[test]
+    fn reclaim_idle_threshold_is_floored_and_capped() {
+        let zeroed = OutboundConfig {
+            jmap_timeout_ms: 0,
+            telegram_timeout_ms: 0,
+            llm_timeout_ms: 0,
+            max_retries: 0,
+        };
+        assert_eq!(
+            single_event_ceiling_ms(&zeroed),
+            SINGLE_EVENT_CEILING_FLOOR_MS
+        );
+
+        let absurd = OutboundConfig {
+            jmap_timeout_ms: 3_600_000,
+            telegram_timeout_ms: 3_600_000,
+            llm_timeout_ms: 3_600_000,
+            max_retries: 5,
+        };
+        assert_eq!(
+            reclaim_idle_threshold_ms(&absurd, 64),
+            RECLAIM_IDLE_THRESHOLD_CAP_MS
+        );
+    }
+
+    #[test]
+    fn reclaim_idle_threshold_ignores_empty_batches() {
+        let default = OutboundConfig::default();
+        assert_eq!(
+            reclaim_idle_threshold_ms(&default, 0),
+            single_event_ceiling_ms(&default)
+        );
     }
 
     #[test]
