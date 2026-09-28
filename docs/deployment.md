@@ -75,6 +75,7 @@
 - 非 root 用户运行（保留既有约定）
 - **公网 HTTPS 入口（`C-HTTPS-URL` 已确认）**：运维在平台上给 bot 配一个公网 HTTPS URL（如 `https://bot.example.com`），平台 ingress/反代把 `https://…/webhook/tg`、`/push/jmap`、`/reconcile` 路由到容器 `PORT`。**bot 自身不申请证书、不监听 443**；证书由平台/反代管理（`C-HTTPS-INBOUND`）。
 - 需要在 Stalwart 与 Telegram 两侧使用这个公网 URL：Telegram `setWebhook` 指向 `/webhook/tg`；管理员调用 `POST /api/push/register` 并提交该 URL 的 `/push/jmap` 路径，后端负责执行 `PushSubscription/set create`。服务不会自动猜测平台公网域名。
+- **出站 egress 是 `/ready` 的硬依赖**：就绪探针向配置的 JMAP session host 与 `api.telegram.org:443` 发起只读 `GET`。该 egress 不通时 `/ready` 会长期 `503`，即使配置与 Redis 都正常。若 egress 必须经 HTTP(S) 代理则**无法使用**：应用内 `reqwest` 以 `default-features = false` 编译（`Cargo.toml:12`），未启用 `proxy` feature，**不解析 `HTTPS_PROXY`/`HTTP_PROXY`**；这种情况下请用网关聚合的 `/healthz`（无条件 200）作为存活监控，`/ready` 仅作人工排查。
 - **多实例 LB/HA 时登记的是 Worker URL 而非各后端 URL**（`C-LB-SINGLE-REG-URL`，§10）：Telegram / Stalwart / Cron 只认 Worker 的稳定域名；后端平台入口不对外登记。
 - Secrets 运行期注入（环境变量/容器平台 secret），见 §5（同文件内章节链接）
 
@@ -121,7 +122,7 @@ AI 授权期限由用户选择（临时一次、今天、7天或直到撤销）�
 > 业务鉴权变量由 Redis `config:business` 管理，不再要求作为启动环境变量。缺少 `REDIS_URL` 或非法/缺失 `CONFIG_ENCRYPTION_KEY` 时服务仍监听并提供 SPA、`/api/status` 与探针，状态为 `configuration-setup`，不会伪造持久化成功；配置恢复后再启用业务入口鉴权。
 > 示例占位见仓库根目录 [`.env.example`](../.env.example)（仅占位符，**严禁**放入真实密钥）。
 
-> **配置管理页面**：服务根路径 `/` 提供嵌入 Rust 二进制的 SPA。输入 Redis URL 的 ACL 密码后，`POST /api/admin/session` 签发 900 秒 admin session；页面只在内存中保存 opaque session。运行参数通过 `/api/config` 读取和保存；完整业务配置通过 `PUT /api/business-config` 替换并热加载。业务配置 API 不提供 GET，密钥不会回显；每次完整替换都需重新输入必填密钥。配置保存在外部 Redis（`C-REDIS-ONLY-STATE`），静态资源编译时随二进制打包，无运行期本地文件。
+> **配置管理页面**：服务根路径 `/` 提供嵌入 Rust 二进制的 SPA。输入 `CONFIG_ENCRYPTION_KEY` 后，`POST /api/admin/session` 签发 900 秒 admin session；页面只在内存中保存 opaque session。运行参数通过 `/api/config` 读取和保存；完整业务配置通过 `PUT /api/business-config` 替换并热加载。业务配置 API 不提供 GET，密钥不会回显；每次完整替换都需重新输入必填密钥。配置保存在外部 Redis（`C-REDIS-ONLY-STATE`），静态资源编译时随二进制打包，无运行期本地文件。
 
 ---
 
@@ -130,16 +131,18 @@ AI 授权期限由用户选择（临时一次、今天、7天或直到撤销）�
 ### 6.0 Redis-only 配置迁移与 bootstrap 威胁模型（`C-REDIS-ONLY-STATE`）
 
 生产进程接受 `REDIS_URL` 与唯一额外启动密钥 `CONFIG_ENCRYPTION_KEY`（32 字节随机
-高熵 hex，仅应用运行时持有）；其中 Redis ACL 认证是唯一 bootstrap 信任根；业务
-密钥和运行参数不再从环境变量读取。空 Redis 仅提供配置页面及一次性的 bootstrap
-会话：请求必须以 Redis ACL 密码作为 Bearer 凭据，服务端只做常数时间比较，绝不在
-响应、日志或配置值中回显该密码。bootstrap 使用原子 `SET NX` 写入完整业务配置，
-竞争请求只有一个成功；无密码 Redis 或认证失败时拒绝初始化。
+高熵 hex，仅应用运行时持有）；bootstrap 与 admin 会话的认证凭据即 `CONFIG_ENCRYPTION_KEY`
+本身；业务密钥和运行参数不再从环境变量读取。空 Redis 仅提供配置页面及一次性的 bootstrap
+会话：请求必须以 `CONFIG_ENCRYPTION_KEY` 作为 Bearer 凭据，服务端只做常数时间比较，绝不在
+响应、日志或配置值中回显该密钥。bootstrap 使用原子 `SET NX` 写入完整业务配置，
+竞争请求只有一个成功；**ACL 密码缺失不再阻塞初始化**（TLS-only 托管 Redis 场景可用），
+仅 `CONFIG_ENCRYPTION_KEY` 缺失或鉴权失败时拒绝。
 
-该 ACL 身份必须具备 `config:business`、`config:outbound` 及 admin-session 键的读写权限，
-因为它同时是应用 Redis 连接凭据与空库 bootstrap 根信任。bootstrap 完成后公网业务配置
-接口只接受 900 秒 admin session；持有 ACL 密码者仍等同根信任，必须按生产 Redis 凭据
-同等级保护，不得把该身份误配置为禁止配置键访问。
+该 ACL 身份是应用自身的 Redis 连接凭据，仍必须具备 `config:business`、
+`config:outbound` 及 `config:admin_session` 键的读写权限（bootstrap 与管理员 PUT 均经此
+连接写入），不得误配置为禁止配置键访问；但它不再是任何 HTTP 认证的信任根——业务配置
+明文受 `CONFIG_ENCRYPTION_KEY` 做 AES-256-GCM 加密保护，仅持有 ACL 密码读取到的也是
+密文。bootstrap 完成后公网业务配置接口只接受 900 秒 admin session。
 
 成功 bootstrap 后，后续配置读写只能使用 Redis 中保存的管理员会话（短 TTL，注销
 或配置更新时失效）；业务端点使用 Redis 配置中下发的独立令牌。管理员会话只保存
@@ -172,7 +175,7 @@ TLS 必须由 Cloudflare 或受信任反向代理终结；代理到容器的链�
 GET  /                  业务配置与运行参数管理 SPA
 GET  /assets/config.js  SPA 脚本；GET /assets/styles.css  SPA 样式
 GET  /api/status              公开启动状态；只返回 ready/mode/missing 环境变量名
-POST /api/admin/session       Bearer Redis ACL 密码；成功返回 900 秒 admin session
+POST /api/admin/session       Bearer CONFIG_ENCRYPTION_KEY；成功返回 900 秒 admin session
 POST /api/admin/session/revoke Bearer admin session；成功返回 204
 GET|PUT /api/config           Bearer admin session 或 WORKER_TOKEN；Redis 错误返回 503
 PUT /api/business-config      Bearer admin session 或 WORKER_TOKEN；完整替换，成功返回 204
@@ -183,11 +186,11 @@ POST /push/jmap       Stalwart Push 回调 → [鉴权 SAF-AUTH-JMAP-PUSH: Body 
 POST /reconcile      外部 HTTPS Cron 触发 → [鉴权 SAF-AUTH-RECONCILE: Authorization: Bearer RECONCILE_TOKEN]
                       → 对账补差 FLOW-RECONCILE
 GET  /healthz        liveness（ARCH-HEALTHZ：进程存活；公开探针 SAF-PROBE-PUBLIC，无鉴权、无敏感信息）
-GET  /ready          公开就绪探针；检查配置完整性与 Redis 可访问性，就绪返回 200+就绪报告 JSON，未就绪返回 503+标准错误 envelope（无鉴权、无敏感信息）
+GET  /ready          公开就绪探针；检查配置完整性 + Redis 可达性 + 出站只读探测（JMAP `/.well-known/jmap` 带 Basic 认证、Telegram getMe，各 3s），四者全过返回 200+就绪报告 JSON，任一失败返回 503+标准错误 envelope（无鉴权、无敏感信息）
 ```
 `/reconcile` 使用 Redis owner-token 单飞锁并在长任务期间续租；每次最多处理 100 页、10,000 封基线邮件或 20 秒。已完成入队的 changes 页会提交最新游标；冷启动基线超出预算时把基线状态与位置编码后持久化，下一次从断点继续，不从头扫描，也不会提前跳过未列举邮件。
 > **写入口鉴权（fail-closed，`SAF-AUTH-*`）**：Webhook、Push、Reconcile 以及 Push 注册接口都必须先通过鉴权，**失败返回 `401` 且不产生副作用**；比较使用常数时间（`subtle`，防时序侧信道）。secret 未配置 → 启动失败，**无"缺省放行"**。
-> **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz`、`/ready` 仅返回健康状态、**不含敏感信息**。`/healthz` 只表示进程存活；`/ready` 检查配置完整性与 Redis 可访问性，不发起 JMAP/Telegram 请求，也不触发邮件同步或其他副作用。
+> **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz`、`/ready` 仅返回健康状态、**不含敏感信息**。`/healthz` 只表示进程存活；`/ready` 检查配置完整性与 Redis 可访问性，并发起只读出站探测（JMAP `/.well-known/jmap` 带 Basic 认证 与 Telegram getMe，各 3s、并行）；不触发邮件同步等业务副作用。
 > **"公网 HTTPS 入口"是什么**（`C-HTTPS-URL`）：平台给 bot 一个公网 HTTPS 域名，外部（Telegram / Stalwart / 调度器）通过它访问上面这些路径；容器只处理明文 HTTP，TLS 由平台终止。运维只需在平台上配置域名/证书并确保 4 条路径可达。
 
 ### 6.2 Redis Streams / worker（MOD-STREAMS）
@@ -203,6 +206,80 @@ GET  /ready          公开就绪探针；检查配置完整性与 Redis 可访�
 - 对账逻辑：用 `sinceState` 调 `Email/changes` 拉增量 → 与已处理 email_id 求差 → 补发通知 → 推进 `sinceState`。
 - **Redis 丢失恢复**：sinceState 存 Redis（`MOD-SINCESTATE`，AOF 持久化 `C-REDIS-MANAGED-AOF`）；即便 Redis 全丢，对账扫描 JMAP（`Email/query` 最近 N 封 + changes）也能重建游标并补发——**事实源在 JMAP，Redis 只是加速层**。
 
+#### 6.3.1 用户侧调度示例（copy-paste 可用）
+
+端点：`POST https://<你的平台URL>/reconcile`。鉴权：`Authorization: Bearer <RECONCILE_TOKEN>`
+（`src/config.rs:356` 启动必填，服务端常数时间比较，`notify.rs:149-152`）。
+
+最小示例：
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -X POST https://<你的平台URL>/reconcile \
+  -H "Authorization: Bearer $RECONCILE_TOKEN" \
+  --max-time 60
+```
+
+调度器任选其一（均为外部，容器不自建定时器）：
+
+```cron
+# 系统 crontab，每 5 分钟
+*/5 * * * * curl -fsS -m 60 -X POST https://<你的平台URL>/reconcile -H "Authorization: Bearer $RECONCILE_TOKEN" >/dev/null
+```
+
+```yaml
+# Kubernetes CronJob，每 5 分钟
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: messageweave-reconcile
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: reconcile
+              image: curlimages/curl:8
+              # 用 shell 启动，才能展开 $RECONCILE_TOKEN；直接 exec curl 时 $(…) 不会被替换
+              command: ["/bin/sh", "-c"]
+              args:
+                - 'curl -fsS -m 60 -X POST "https://<你的平台URL>/reconcile" -H "Authorization: Bearer $RECONCILE_TOKEN"'
+              env:
+                - name: RECONCILE_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: messageweave
+                      key: reconcile-token
+```
+
+**期望状态码**
+
+| 状态码 | 含义 | 调度器怎么办 |
+|---|---|---|
+| `204` | 成功，游标已推进（无响应体） | 正常，不做任何处理 |
+| `401` | `RECONCILE_TOKEN` 缺失或错误 | 不要重试；检查凭据 |
+| `409` | 单飞锁被占用，另有实例正在对账 | 不要重试；等下一个调度周期 |
+| `503` | 业务开关关闭，或 JMAP/Redis 故障 | 按 `Retry-After: 30` 头重试，或等下一个周期 |
+
+失败响应体统一为 `{"error": <code>, "request_id": <实例 owner id>}`，可直接落日志。
+
+**重试建议**
+
+- 对账逻辑本身是幂等的：重复调用只会重复走 `Email/changes` 增量并二次去重入队（`MOD-DEDUP`
+  兜底），不会重复通知。所以对 `503` 可以放心重试。
+- `204` 与 `409` 都是正常结果，不要把它们当失败重试——尤其别对 `409` 做紧密循环重试。
+- 调度间隔按 `NFR-RECONCILE-INTERVAL` 取 **5–10 分钟**即可。Push 是主路径，对账只是兜底。
+- 走 Worker 转发时注意：网关默认单请求超时 10 s、最多 2 次尝试（`index.js:29-30`），而
+  单飞锁租期是 300 s（对账持锁心跳每 30 s 续租至 90 s，`notify.rs:159`/`172`）。一次完整
+  对账可能超出网关转发窗口——若确实经 Worker 调度，请把 `LB_REQUEST_TIMEOUT_MS` 调到
+  大于锁租期，或让调度器直接打到后端 origin。
+
 ### 6.4 可靠性策略（Reliability）
 
 > 目标：**至少 99.9% 通知可用性**（`NFR-NOTIFY-SLA`），允许少量延迟（不追求秒级保证）。下述机制共同保证"不丢、少重、可恢复"。
@@ -213,7 +290,7 @@ GET  /ready          公开就绪探针；检查配置完整性与 Redis 可访�
 | **幂等去重** | `MOD-DEDUP` | 以 `(account, email_id)` 为幂等键，`SET NX`（TTL 覆盖重投窗口）。重复投递直接跳过，保证 at-least-once 下**不重复通知**。TG 侧同理用 `update_id` |
 | **Push 重试** | `FLOW-NEW-MAIL` | `/push/jmap` 校验/入队后**立即 2xx**；若入队失败（Redis 抖动）返回非 2xx，让 Stalwart 按自身策略重试；配合对账兜底 |
 | **对账恢复** | `FLOW-RECONCILE` | 外部 Cron 每 5–10 分钟调用 `/reconcile`；从 Redis 恢复 `state:jmap:since`，按 `Email/changes` 补差，入队成功后推进游标，失败返回 `503` |
-| **运行监控 / 告警** | Uptime Kuma | 使用 HTTP(s) Monitor 检查 `/healthz`（进程存活）和 `/ready`（配置/Redis 就绪），分别期望 200；对 503、超时、TLS/DNS/路由故障告警。应用不引入 Prometheus、Exporter 或额外指标端口。 |
+| **运行监控 / 告警** | Uptime Kuma | 使用 HTTP(s) Monitor 检查 `/healthz`（进程存活，无条件 200）和 `/ready`（配置 / Redis / 上游可达就绪），分别期望 200；对 503、超时、TLS/DNS/路由故障告警。`/ready` 最坏约 3s（两个 3s 探针并行），探针超时设 ≥10s。应用不引入 Prometheus、Exporter 或额外指标端口。 |
 
 ### 6.5 99.9% 可用性目标与边界（NFR-NOTIFY-SLA）
 
@@ -227,9 +304,9 @@ GET  /ready          公开就绪探针；检查配置完整性与 Redis 可访�
 ## 7. 健康检查（通用 HTTP 约定）
 
 - `GET /healthz` → liveness（`ARCH-HEALTHZ`；进程存活，长期语义）
-- `GET /ready` → 基础就绪探针（`ARCH-READY-BASELINE`）：检查配置完整性与 Redis 可访问性；就绪 `200`（就绪报告 JSON），不就绪 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`）；**不代表** Redis/JMAP/TG 依赖已通过端到端检查。Uptime Kuma 按状态码（期望 200）监控，不受响应体变化影响。
+- `GET /ready` → 端到端就绪探针（`ARCH-READY-BASELINE`）：检查配置完整性 + Redis 可达性 + 出站只读探测（`GET {jmap_origin}/.well-known/jmap` 带 Basic 认证、`GET https://api.telegram.org/bot<token>/getMe`，各 3s 超时、**并行**（`tokio::join!`），最坏约 3s）；四者全过 `200`（就绪报告 JSON 含真实 `jmap`/`telegram` 字段），任一失败 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`）。因此**LB / ingress 的探针超时必须 > 3s（建议 ≥10s）**。Uptime Kuma 按状态码（期望 200）监控，不受响应体变化影响。
 - 两者均为**公开探针**（`SAF-PROBE-PUBLIC`）：无鉴权、仅返回健康状态、**不含敏感信息**。
-- `/ready` 已检查配置完整性与 Redis 可访问性，但不代表 JMAP/Telegram 已完成真实端到端验收；编排与 Uptime Kuma 可用它做基础就绪探测。
+- `/ready` 已对 JMAP session 与 Telegram getMe 做**真实出站探测**（3s/个），但不覆盖真实消息投递验收；编排与 Uptime Kuma 可用它做端到端就绪探测，注意其最坏约 3s，LB 探测超时需 > 3s（见上）。
 - Docker `HEALTHCHECK` 指向同一监听端口（app 内置 `health` 子命令或 wget 同端口），**不依赖独立端口**（`C-NO-TCP-EXPOSE`）
 - 仅保留通用平台映射（compose `HEALTHCHECK`、k8s probe）；不写 Cloud Run/Fly 等特指内容（`NG-SERVERLESS-BIND`）
 
@@ -274,7 +351,7 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 | 端点 | 语义 | 用途 |
 |---|---|---|
 | `GET /healthz` | 无条件 200 | 存活探测（进程还活着） |
-| `GET /ready` | 配置与 Redis 就绪前 503 | 就绪探测、负载均衡摘除、Uptime Kuma |
+| `GET /ready` | 配置、Redis 或上游探针失败时 503 | 就绪探测、负载均衡摘除、Uptime Kuma |
 | `GET /api/status` | 缺必需环境变量时 503 + `{"status":"configuration-setup","missing":[...]}` | 排查"起来了但没干活" |
 
 > **由平台 ingress 探测 `/ready`。**镜像内没有 curl/wget、也没有 CLI 子命令，不要依赖容器内
@@ -311,8 +388,8 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 | `C-AUTH-APP-BASIC` | Stalwart 认证 = **App Password + Basic**（不用主密码、不用 OAuth） |
 | `REQ-AI-EXTERNAL-CONSENT` | **仅当用户明确允许时**才把邮件正文发往外部 AI（默认不外发） |
 | `C-REDIS-MANAGED-AOF` | Redis 由**用户托管**并**开启 AOF 持久化**（Bot 不自建/不管理 Redis） |
-| `C-HTTPS-URL` | **公网 HTTPS 入口由平台提供**（平台给 bot 一个 HTTPS URL；bot 不持证书、不监听 443） |
-| `NFR-RECONCILE-INTERVAL` | **外部 Cron 定期 HTTPS POST `/reconcile`，建议 5–10 分钟**；容器不自建定时器 |
+| `C-HTTPS-URL` | **公网 HTTPS 入口由平台提供**（平台给 bot 一个 HTTPS URL；bot 不持证书、不监听 443）；`Q-DEP-A` 已决策：具体平台 URL / 域名与证书配置方（平台自动证书 or 自管反代二选一）由部署环境在发布时确定，仓库文档化两条路径与 4 条路径的可达性验证方式，不替部署方做选择 |
+| `NFR-RECONCILE-INTERVAL` | **外部 Cron 定期 HTTPS POST `/reconcile`，建议 5–10 分钟**；容器不自建定时器；`Q-DEP-B` 已决策：调度器不限定实现，任意 shell / cron / K8s CronJob / CI scheduled 均可，用户侧示例见 §6.3.1 |
 | `NFR-NOTIFY-SLA` | **允许少量通知延迟；通知可用性目标 ≥ 99.9%**（边界见 §6.5） |
 | `ARCH-LB-WORKER` | **多实例高可用**：免费 Cloudflare Worker 作为**唯一对外入口 + 故障转移**，后端为 2+ 个不同 serverless 平台的同镜像实例，共享同一 Redis（详见 §10） |
 | `SAF-LB-PASSTHRU` | 信任模型 = **透传（A）**：Worker 不改写鉴权信息，**后端必须继续 fail-closed 校验**（小平台无防火墙/ACL，"后端不对公网暴露"不可行） |
@@ -325,13 +402,10 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 | `SAF-LOG-PURITY` | **日志与 Redis 写入不得包含**：密钥、邮件正文、AI 请求/响应、附件内容；仅允许结构化事件、计数、时间戳、脱敏摘要 |
 | `C-NO-STATEFUL-RECOVERY` | **禁止依赖进程内状态做生产恢复**：重启恢复一律走 Redis + JMAP 对账（`FLOW-RECONCILE`）；进程内缓存仅为性能优化，丢失必须安全可重入 |
 
-### 9.2 仍需确认（部署相关，仅此）
-
-| # | 待确认 | 关联 ID |
-|---|---|---|
-| **Q-DEP-A** | 平台 URL / 域名与证书由谁配置（平台自动证书 or 自管反代），以及 4 条路径的可达性验证方式 | `C-HTTPS-URL` |
-| **Q-DEP-B** | 外部调度器具体选型（系统 crontab / k8s CronJob / CI scheduled / 第三方 cron）—— 仅影响运维方式，不改变架构 | `NFR-RECONCILE-INTERVAL` |
-
+> **最后一项待确认已清空**：`Q-DEP-A`（平台 URL / 域名与证书配置方）与 `Q-DEP-B`（外部调度器选型）
+> 均已决策，分别合并进本表的 `C-HTTPS-URL` 与 `NFR-RECONCILE-INTERVAL` 行。两项都是上线时的运维选择，
+> 不影响代码结构、不影响门禁；`docs/roadmap.md` 已不再保留「决策待定」块。
+>
 > 其余产品/架构问题见 design.md；不再有平台特定部署问题（`NG-SERVERLESS-BIND`）。
 
 ---
@@ -372,8 +446,8 @@ Stalwart PushSub ────┼─▶ https://lb.<you>.workers.dev      ← 唯
 
 ### 10.4 路由与故障转移
 
-- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 `GET /`、SPA 静态资源、`GET /api/status`、`GET|PUT /api/config`、`PUT /api/business-config`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`POST /webhook/tg`、`POST /push/jmap`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。**`POST /api/push/register` 不在 safelist 内**（Worker 对其返回 404），Push 注册必须按 §10.5 直接访问某个后端实例地址，不能走 Worker 域名。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
-- **健康聚合（`MOD-HEALTH-AGG`）**：Worker 自行承载 `GET /healthz`，按 TTL 缓存（默认 30s，`LB_HEALTH_TTL_MS` 可调）探测各后端 `/healthz`，返回 `{status, available, total, backends:[{origin,up,status}]}`；≥1 后端 up → 200，全 down → 503。`/ready` 透传给后端，检查后端配置与 Redis 基础就绪，但不触发 JMAP/Telegram 副作用。
+- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **14 条**（`backends.js:9-24` 的 `SAFE_ROUTES` + `index.js:40-55` 的 `ROUTE_METHODS`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`PUT /api/business-config`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 4 条不在 safelist**：`GET|PUT /api/enabled`（内部开关）、`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`POST /worker`（运维手工触发的 worker 端点，Bearer 鉴权）、`GET /healthz`（网关自行聚合，不转发）——**这 4 条都不承载外部业务流量，因此后端实例前不需要第二道入口**。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
+- **健康聚合（`MOD-HEALTH-AGG`）**：Worker 自行承载 `GET /healthz`，按 TTL 缓存（默认 30s，`LB_HEALTH_TTL_MS` 可调）探测各后端 `/healthz`，返回 `{status, available, total, backends:[{origin,up,status}]}`；≥1 后端 up → 200，全 down → 503。`/ready` 透传给后端，做配置 + Redis + 出站只读探测（JMAP session、TG getMe，各 3s、并行，最坏约 3s），不触发业务副作用。
 - **故障转移（`forwardWithFailover`）**：每次请求最多 `min(LB_MAX_ATTEMPTS, origins.length)` 次尝试；**仅**超时（AbortError）或 5xx 触发换下一个 origin；4xx/2xx/3xx 直接返回；默认 `LB_MAX_ATTEMPTS=2`（首次 + 1 次故障转移）。
 - **随机分摊**：起点 origin 按 `Math.random` 随机化，实现双活；单 origin 配置时退化为确定性。
 - **全失败兜底**：返回 `503 All Backends Unavailable`，交由 Telegram / Stalwart 自动重投（**不丢消息**）。
@@ -388,6 +462,7 @@ Stalwart PushSub ────┼─▶ https://lb.<you>.workers.dev      ← 唯
 |---|---|---|
 | `/webhook/tg` | 可安全重复（`update_id` 去重） | Worker 选一实例；重试安全 |
 | `/push/jmap` | 可安全重复（`(account,email_id)` 去重） | Worker 选一实例 |
+| `POST /api/push/register` | 幂等（相同 callback URL 复用） | 已进 safelist，可走 Worker 域名；callback URL 由调用方提供、订阅记录全存共享 Redis，落到哪个后端实例都不影响 |
 | `/reconcile` | ❌ **不可扇出** | **Redis 锁**（`SAF-RECONCILE-LOCK`）保证**同一时刻仅一个实例执行**，避免重复对账 |
 | Streams worker | 用**相同消费组名**（`MOD-STREAMS-GROUP`） | Redis `XREADGROUP` **自动分摊**给多实例；at-least-once 下同一消息不会重复处理 |
 

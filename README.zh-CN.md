@@ -65,8 +65,10 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 项配置。正常运行中进程从不从环境变量读取业务密钥。
 
 **健康检查。**
-`GET /healthz` 无条件返回 200——它是存活探测，不是就绪探测。`GET /ready` 在配置与 Redis
-可用之前返回 503。判断是否可路由流量时，请探测 `/ready` 而不是 `/healthz`。
+`GET /healthz` 无条件返回 200——它是存活探测，不是就绪探测。`GET /ready` 在配置、Redis 与
+两条上游（JMAP session `GET`、Telegram `getMe`，各 3s）可达之前返回 503。判断是否可路由
+流量时，请探测 `/ready` 而不是 `/healthz`；但 `/ready` 是较重的探针（最坏约 3s），需要
+保持轻量的监控请看网关聚合的 `/healthz`。
 
 ## 4. 安全边界，一句话
 

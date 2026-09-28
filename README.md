@@ -71,8 +71,10 @@ secrets from the environment in normal operation.
 
 **Health.**
 `GET /healthz` returns 200 unconditionally — it is liveness, not readiness. `GET /ready`
-returns 503 until configuration and Redis are available. Probe `/ready`, not `/healthz`,
-when deciding whether to route traffic.
+returns 503 until configuration, Redis, and both upstreams (a JMAP session `GET` and
+Telegram `getMe`, 3s each) are reachable. Probe `/ready`, not `/healthz`, when deciding
+whether to route traffic — but `/ready` is the heavier probe (~3s worst case), so a monitor
+that must stay cheap should watch the gateway's aggregated `/healthz`.
 
 ## 4. Security boundary, in one sentence
 

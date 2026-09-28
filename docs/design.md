@@ -18,17 +18,17 @@
 1. [任务与范围](#1-任务与范围)
 2. [jmap-client 能力分析](#2-jmap-client-能力分析)
 3. [认证与邮箱操作适配](#3-认证与邮箱操作适配)
-4. [Telegram Rust 框架选型](#4-telegram-rust-框架选型)
+4. [Telegram 渠道实现选型](#4-telegram-渠道实现选型)
 5. [整体架构与数据流](#5-整体架构与数据流)
 6. [模块划分](#6-模块划分)
 7. [配置与安全](#7-配置与安全)
 8. [错误处理与可观测性](#8-错误处理与可观测性)
 9. [测试策略](#9-测试策略)
 10. [分阶段实施计划](#10-分阶段实施计划)
-11. [待确认问题（产品/架构类）](#11-待确认问题产品架构类)
+11. [历史问题与决策归档（产品/架构类，均已有结论）](#11-历史问题与决策归档产品架构类均已有结论)
 12. [AI 辅助能力：架构、确认门槛、失败回退](#12-ai-辅助能力架构确认门槛失败回退)
 
-> 部署/平台类决策已确认（单账户、App Password+Basic、Redis 托管+AOF、平台 HTTPS URL、外部 Cron）并收敛；**无未完成代码缺口**，仅余 `Q-DEP-A`/`Q-DEP-B` 两项上线时的运维选择，见 `docs/roadmap.md`。
+> 部署/平台类决策已确认（单账户、App Password+Basic、Redis 托管+AOF、平台 HTTPS URL、外部 Cron）并**全部收敛归档**（含 `Q-DEP-A`/`Q-DEP-B`，见 `docs/deployment.md` 的已确认决策一节）；**未完成的代码缺口见 `docs/roadmap.md`**。
 
 ---
 
@@ -233,7 +233,7 @@ Telegram 渠道用 `src/channel.rs` 的 `reqwest` 自研实现（`ARCH-DEPS-STAG
 - 启动时：
   1. 加载配置（`config::Config`）。
   2. 构造 `JmapService`（`Client::connect` 完成 session 解析、account_id 缓存、mailbox role→id 映射预热）；sinceState 从外部 Redis 恢复（`MOD-SINCESTATE`）。
-  3. 启动 **HTTP 入口**（axum，单端口 `PORT`）：`/webhook/tg`、`/push/jmap`、`/reconcile`、`/healthz`、`/ready`；其中三条写路径先经 `SAF-AUTH-*` 入口鉴权（fail-closed，§7.3），`/healthz`、`/ready` 为公开轻量探针（`SAF-PROBE-PUBLIC`），不代表外部依赖已完成端到端验收。
+  3. 启动 **HTTP 入口**（axum，单端口 `PORT`）：`/webhook/tg`、`/push/jmap`、`/reconcile`、`/healthz`、`/ready`；其中三条写路径先经 `SAF-AUTH-*` 入口鉴权（fail-closed，§7.3），`/healthz`、`/ready` 为公开探针（`SAF-PROBE-PUBLIC`）；`/ready` 已做端到端探测（配置 + Redis + 出站只读探测 JMAP session `GET` 与 TG `getMe`，各 3s、并行，最坏约 3s）。
   4. 启动 **Redis Streams worker**（后台 task）消费 Push 事件 → `Email/changes` → 通知 → 发往 TG → 推进 sinceState → XACK。
   5. **不持有任何长连接、不自建定时器**（`C-NO-LONG-CONN`）；对账由**外部 HTTPS Cron** 触发 `/reconcile`（`FLOW-RECONCILE`）。
 - 通知发送与命令处理共享 `Arc<JmapService>`，内部 `tokio::sync::RwLock` 保护可变缓存；跨请求状态一律落外部 Redis（`C-REDIS-ONLY-STATE`）。
@@ -334,6 +334,8 @@ message-weave/
 | `notify` | axum；redis | HTTP 鉴权、全局开关、`/push/jmap` 入队、`Email/changes` 对账和游标提交 | webhook 校验失败路径覆盖 403 | 已覆盖真实对账路径；仍需真实 Stalwart 环境做端到端验收 |
 | `web` | axum | `/config` 静态页 + `include_str!` 嵌入 + CSP | 前端由 `web/config.test.mjs` 覆盖 | 已实现 |
 
+> 注：「现状」列是**模块级**口径（模块已落地），不代表行为完备。行为级缺口不在本表内：见 `docs/roadmap.md`「代码缺口」（3 条）与本文件 §10 的未排期待办。
+
 ---
 
 ## 7. 配置与安全
@@ -341,12 +343,13 @@ message-weave/
 ### 7.1 历史配置读取（已迁移至 Redis）
 
 > **迁移目标（`C-REDIS-ONLY-STATE`）**：生产启动环境仅保留 `REDIS_URL`。空 Redis
-> 的首次配置必须通过 Redis ACL 密码认证的一次性 bootstrap/admin 会话完成；不得
-> 提供未鉴权写入口。ACL 密码仅用于常数时间 bootstrap 校验，不回显、不记录、不写入
-> 业务配置。bootstrap 成功后管理员会话哈希及 TTL 保存在 Redis，重启可恢复；业务
-> token 从 Redis 在启动时装载，密钥 GET 永不回显；bootstrap/管理员 PUT 成功后先构建并原子
-> 替换客户端，后续请求即时使用新配置，失败保留旧实例。该迁移替代下述阶段0环境变量清单，
-> 阶段0列表仅作为历史兼容说明。
+> 的首次配置必须通过 `CONFIG_ENCRYPTION_KEY` 认证的一次性 bootstrap/admin 会话完成；
+> 不得提供未鉴权写入口。该密钥仅用于常数时间比较，不回显、不记录、不写入业务配置；
+> Redis ACL 密码只承担 Redis 连接本身，不再是任何 HTTP 认证凭据。bootstrap 成功后
+> 管理员会话哈希及 TTL 保存在 Redis，重启可恢复；业务 token 从 Redis 在启动时装载，
+> 密钥 GET 永不回显；bootstrap/管理员 PUT 成功后先构建并原子替换客户端，后续请求即时
+> 使用新配置，失败保留旧实例。该迁移替代下述阶段0环境变量清单，阶段0列表仅作为历史
+> 兼容说明。
 
 > **实际实现**（`ARCH-CONFIG-ENV`）：阶段0 起配置**只从环境变量读取**，由 `config::Config::from_env()` 手工解析（`std::env::var`），**不使用 figment、不使用 TOML 配置文件**。缺失必填项即启动失败；布尔值接受 `true/1/yes` 与 `false/0/no`。
 
@@ -391,7 +394,7 @@ message-weave/
   比较使用**常数时间**算法（`subtle`，防时序侧信道）；校验失败一律 `401` 且**在鉴权通过前不产生任何副作用/状态变更**。业务配置完成后，Webhook、Push、Reconcile 和 Push 注册接口的凭证必须有效；启动引导变量缺失时进入配置引导模式，不绕过鉴权（§7.1）。
 - **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz`（`ARCH-HEALTHZ`）与 `/ready` 为**公开探针**——无鉴权、只返回健康状态、**不含任何敏感信息**（不回显配置/密钥/内部错误细节）。
   - `/healthz` = liveness（进程存活），语义长期稳定。
-  - `/ready` 检查配置完整性与 Redis 可访问性；未就绪返回 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`），就绪返回 `200` 与就绪报告（`{"status":"ready","configured":...,...}`）；不执行 JMAP/Telegram 请求，也不触发邮件同步等业务副作用。
+  - `/ready` 做端到端探测：配置完整性 + Redis 可达性 + 出站只读探测（`GET {jmap_origin}/.well-known/jmap`，带配置的 Basic 认证；`GET https://api.telegram.org/bot<token>/getMe`；各 `PROBE_TIMEOUT` = 3000ms、**并行**（`tokio::join!`），最坏约 3s）；四者全过 `200` 与就绪报告（`{"status":"ready","configured":...,"jmap":...,"telegram":...}`，其中 `jmap`/`telegram` 是真实探针结果），任一失败 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`）。探针只读、只读配置状态，**不**触发邮件同步等业务副作用，也**不**回显 token 或第三方响应内容；`refresh_business_config` 仅读 Redis，无状态写入。因此 `/ready` 要求到 JMAP host 与 `api.telegram.org:443` 的出站 egress 可达（若该 egress 需要代理则 `/ready` 不可用，见 deployment.md）。
 - **chat 白名单（硬约束 `SAF-CHAT-ALLOWLIST`）**：`CHAT_ALLOWLIST` 是**必填**配置；任何入站事件（TG 命令 / 回调触发的动作）在**做任何 JMAP 调用、AI 调用或状态变更之前**，必须先校验 `chat.id ∈ CHAT_ALLOWLIST`，不在白名单则**直接拒绝并终止**（防止 token 泄露后被任意人调用）。阶段0 已完成 `CHAT_ALLOWLIST` 解析骨架；强制拒绝逻辑已随 Telegram 渠道接入落地（`src/notify.rs` 的 `telegram_webhook` 在任何 JMAP/AI/状态操作之前先校验白名单，拒绝即终止）。
 - **命令最小化**：只暴露必要命令；发邮件等写操作必须二次确认（当前未实现发信，见 §10.3）。
 - **速率**：出站侧未建本地令牌桶；Telegram 出站发送按 Redis 运行参数 `max_retries`（默认 3、上限 5）重试；当前仅对 Push 验证码写入做 Redis 限流（`ratelimit:push-verify:*`）。Telegram 服务端 30 msg/s 限制下的 429 不做专门的自动退避处理。
@@ -399,7 +402,7 @@ message-weave/
 ### 7.3.1 配置管理 API
 - `GET /` 提供嵌入 Rust 二进制的 SPA；`/assets/config.js` 与 `/assets/styles.css` 提供页面资源。服务不在运行时读取或写入本地文件（`C-NO-LOCAL-WRITE`）。
 - `GET /api/status` 公开返回 `{ "ready": boolean, "mode": "configured" | "configuration-setup", "missing": string[] }`，只列缺少的环境变量名称。缺少 `REDIS_URL` 或 `CONFIG_ENCRYPTION_KEY` 时，SPA 只显示配置引导状态与缺失变量；服务状态确认 ready=true 后才显示管理会话授权区。
-- `POST /api/admin/session` 接受 `Authorization: Bearer <REDIS_URL ACL password>`，返回 `{ "session": "<opaque>", "expires_in": 900 }`；admin session 仅存 Redis 中的摘要并在 900 秒后过期。`POST /api/admin/session/revoke` 撤销当前 session，成功返回 `204`。
+- `POST /api/admin/session` 接受 `Authorization: Bearer <CONFIG_ENCRYPTION_KEY>`，返回 `{ "session": "<opaque>", "expires_in": 900 }`；admin session 仅存 Redis 中的摘要并在 900 秒后过期。`POST /api/admin/session/revoke` 撤销当前 session，成功返回 `204`。
 - 管理页面仅在 JavaScript 内存中保存 session。请求设置 `credentials: omit`、`cache: no-store`，不使用 Cookie、localStorage 或 sessionStorage。管理 API 接受有效 admin session；兼容路径也接受 `WORKER_TOKEN`。Worker 原样透传鉴权头（`SAF-LB-PASSTHRU`）。
 - `GET /api/config` 与 `PUT /api/config` 只读取和写入非敏感运行参数：
   ```json
@@ -509,7 +512,7 @@ pub enum BotError {
   - 分析结果不落盘：处理后无新增磁盘/Redis 写入路径；
   - AI 3 次失败 → 熔断确认 → 回退带"AI 不可用"徽标。
   - **入口鉴权（`SAF-AUTH-*`）**：`/reconcile`、`/webhook/tg`、`/push/jmap` 在**缺少或错误的**凭证下返回 `401`，并断言鉴权失败时**无副作用**（无 Redis 写入、无 JMAP/AI 调用）；正确凭证放行。
-  - **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz` 返回 `200` 表示进程存活；`/ready` 以 `200/503` 表示配置与 Redis 是否就绪——就绪返回就绪报告 JSON，不就绪返回标准错误 envelope（`service_unavailable` + `Retry-After: 30`）；响应体不含敏感信息。Uptime Kuma 按状态码（`/ready` 期望 200）监控，不受响应体变化影响。
+  - **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz` 返回 `200` 表示进程存活；`/ready` 以 `200/503` 表示就绪——检查配置完整性 + Redis 可达性 + 出站只读探测（`GET {jmap_origin}/.well-known/jmap` 带 Basic 认证、`GET https://api.telegram.org/bot<token>/getMe`，各 3s、并行，最坏约 3s），任一失败返回标准错误 envelope（`service_unavailable` + `Retry-After: 30`），全过返回就绪报告 JSON；响应体不含敏感信息。Uptime Kuma 按状态码（`/ready` 期望 200）监控，不受响应体变化影响。
   - **渠道解耦**：领域模块（`src/domain.rs` / `src/ai.rs` / `src/worker.rs`）的公开接口不出现任何渠道 SDK 类型；渠道装配集中在 `src/channel.rs`。
   - **JMAP session URL（`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）**：基地址与完整 `…/.well-known/jmap` 两种输入**均接受且归一化结果一致**，传给 `Client::connect` 的 URL **不含重复 `/.well-known/jmap`**；`http://` 被拒绝；**内嵌凭据（`https://user:pass@host`）被拒绝**；危险 query 被拒绝。
   - **JMAP 多 part 原文（`REQ-JMAP-RAW-MULTIPART`）**：`read_email` 对多 part 正文按 `text_body` 顺序拼接"有 `part_id` 且有 `bodyValue`"的部分；构造"无可用部分"用例断言返回**明确错误**（非空串）。
@@ -522,7 +525,7 @@ pub enum BotError {
 
 ### 10.0 阶段 0：脚手架与 HTTPS 入口骨架（已完成，`GATE-P0` 已过）
 
-> **当前实际边界**：单端口 axum 入口提供 `/webhook/tg`、`/push/jmap`、`/reconcile`、`/healthz`、`/ready`。三条写路径的入口鉴权已 fail-closed 落地（`R1`/`SAF-AUTH-*`）；`/reconcile` 已使用 JMAP `Email/changes` 分页、Redis `state:jmap:since` 和 Redis 单飞锁，只有全部事件入队成功后才推进游标；`/healthz` 为 liveness，`/ready` 仍是轻量探针，不代表 Redis/JMAP 依赖已完成业务验收。
+> **当前实际边界**：单端口 axum 入口提供 `/webhook/tg`、`/push/jmap`、`/reconcile`、`/healthz`、`/ready`。三条写路径的入口鉴权已 fail-closed 落地（`R1`/`SAF-AUTH-*`）；`/reconcile` 已使用 JMAP `Email/changes` 分页、Redis `state:jmap:since` 和 Redis 单飞锁，只有全部事件入队成功后才推进游标；`/healthz` 为 liveness，`/ready` 做端到端探测（配置 + Redis + 出站只读探测，最坏约 3s），但不覆盖真实消息投递验收。
 
 - **实际依赖**（Cargo.toml 现状，`ARCH-DEPS-STAGE0`/`ARCH-DEPS-STAGE1` + `ARCH-DEPS-STAGE4`）：`axum 0.8`（单一 HTTPS 入口）、`async-trait`、`secrecy`、`subtle`（常数时间鉴权比较）、`serde`、`serde_json`、`thiserror`、`tokio`、`tracing`、`tracing-subscriber`、`url`（`JMAP_SESSION_URL` 归一化解析）、`jmap-client =0.4.2`（`default-features = false, features = ["async","rustls"]`）、`redis 0.27`（Redis XPING/PING 活性探测，`ARCH-STATE-REDIS`）、`reqwest 0.13`（JMAP/TG HTTP 客户端）；dev-dependencies：`tower 0.5`（路由测试）。`teloxide` 未引入（`ARCH-DEPS-STAGE4`）：Telegram 渠道在 `src/channel.rs` 用 reqwest 自研实现。
 - **尚未引入**（文档不得声称已用）：`teloxide` 等任何 Telegram Bot 框架（Telegram 出站由 `src/channel.rs` 用 `reqwest` 直发，评估记录见 `docs/retired.md`）。**未使用 figment**：配置为手工 `std::env` 解析（`ARCH-CONFIG-ENV`，§7.1）。
@@ -542,8 +545,8 @@ pub enum BotError {
 8. 所有新增代码有引用稳定 ID 的必要注释；单 `.rs` ≤ 500 行。
 
 **运行监控（`GATE-UPTIME-KUMA`）：**
-- 使用 Uptime Kuma HTTP(s) Monitor 检查 `/healthz`（进程存活）和 `/ready`（配置/Redis 就绪），分别期望 HTTP 200；`/ready` 不就绪时返回 `503` 与标准错误 envelope（`service_unavailable` + `Retry-After: 30`），Uptime Kuma 仍按状态码判定，不受响应体变化影响。
-- `/healthz` 保持纯 liveness；`/ready` 不执行 JMAP/Telegram 请求或业务副作用。
+- 使用 Uptime Kuma HTTP(s) Monitor 检查 `/healthz`（进程存活）和 `/ready`（配置 / Redis / 上游可达就绪），分别期望 HTTP 200；`/ready` 最坏约 3s，探针超时需设 ≥10s；`/ready` 不就绪时返回 `503` 与标准错误 envelope（`service_unavailable` + `Retry-After: 30`），Uptime Kuma 仍按状态码判定，不受响应体变化影响。
+- `/healthz` 是纯 liveness（无条件 `200`）；`/ready` 检查配置完整性 + Redis 可达性 + 出站只读探测（JMAP session `GET`、TG `getMe`，各 3s、并行，最坏约 3s），探针只读、不回显 token 或第三方响应、不触发业务副作用，报告体不含敏感信息；由于 `/ready` 是最重的一环（可能 3s），平台侧应优先使用网关聚合的 `/healthz` 作为存活探测，避免高频出站请求。
 - 不引入 Prometheus、Exporter 或额外指标端口；真实 Stalwart/Telegram 端到端链路仍需单独联调。
 
 **生产红线（贯穿所有阶段）**：
@@ -628,7 +631,6 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 
 **已知边界（当前实现仍存在，见 `docs/roadmap.md`）**
 
-- Redis 错误映射：`read_batch` 与 `retry_or_dlq` 在 Redis 出错时仍可能返回 `Ok(())`，消费循环因此不会因单次失败而退出；这类故障只能靠 Redis 侧告警发现。
 - 多实例重复投递窗口：XAUTOCLAIM 空闲阈值已由固定 300s 改为「批大小 × 单条上限 300s」；单实例不受影响，仅当单条事件处理耗时接近 300s 上限时，多实例部署下另一实例仍可能提前认领，导致**重复投递（仅重复，不丢）**。
 
 **审计意见 → 收口（2026-09-26）**
@@ -643,9 +645,9 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 
 ---
 
-## 11. 待确认问题（产品/架构类）
+## 11. 历史问题与决策归档（产品/架构类，均已有结论）
 
-> ⚠️ 部署/平台类决策已确认（单账户 / App Password+Basic / Redis 托管+AOF / 平台 HTTPS URL / 外部 Cron 对账），仅余 `Q-DEP-A`/`Q-DEP-B` 两项上线时的运维选择（不阻塞代码），见 `docs/roadmap.md`。
+> ⚠️ 部署/平台类决策已**全部确认**（单账户 / App Password+Basic / Redis 托管+AOF / 平台 HTTPS URL / 外部 Cron 对账 / `Q-DEP-A` 平台 URL 与证书配置方 / `Q-DEP-B` 调度器选型），已归档到 `docs/deployment.md` 的已确认决策一节，不在本文重复。
 
 ### 11.1 认证方式（已确认）
 - **已确认**：**App Password + Basic**（`C-AUTH-APP-BASIC`）。不用主密码、不用 OAuth2 Bearer（无 OIDC 需求）。
@@ -673,7 +675,7 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 - **LLM 提供方 / 网出许可**（Q25、Q26、Q30）：`LLM_BASE_URL` 由部署方指定（只校验 https），`LLM_ALLOW_NET` 默认 `true`；`LLM_ENABLED=false` 时直接走 `LlmClient::noop()`，不探测（见 §12.2）。
 - **熔断冷却 / 阈值**（Q27）：不适用——熔断本身未实现（见 §12.4）。
 
-仍真正未决的只有两项，且都是上线时的运维选择，已收敛到 `docs/roadmap.md` 的「决策待定」，不在本文重复：`Q-DEP-A`（平台 URL / 域名与证书由谁配置）、`Q-DEP-B`（外部 Cron 用哪个调度器）。
+部署/平台类决策已无未决项：`Q-DEP-A`（平台 URL / 域名与证书由谁配置，由部署环境在发布时确定）与 `Q-DEP-B`（外部 Cron 用哪个调度器，不限定实现）均已决策，归档到 `docs/deployment.md` 的已确认决策一节，不在本文重复。
 
 ---
 

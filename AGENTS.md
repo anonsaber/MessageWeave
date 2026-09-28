@@ -41,7 +41,7 @@
 12. **状态仅外部 Redis（用户托管 + AOF）**：会话/去重/Redis Streams/熔断计数/sinceState 一律走外部 Redis（`C-REDIS-ONLY-STATE`/`C-REDIS-MANAGED-AOF`），禁止 SQLite/本地卷作持久层（`NG-SQLITE-PERSIST`/`NG-LOCAL-VOLUME`）；Redis 丢失由 JMAP 对账 `FLOW-RECONCILE` 重建 sinceState，**事实源在 JMAP**。
 13. **正文仅在用户明确允许后才外发 AI**（`REQ-AI-EXTERNAL-CONSENT`）：默认不外发；发送前须用户显式同意（与第 2 条叠加）。
 14. **单账户**（`REQ-SINGLE-ACCOUNT`）：一个实例只接一个 Stalwart 账户；多账户 = 多个 bot 实例，不做多账户单实例。
-15. **三入口鉴权 fail-closed（硬约束 `SAF-AUTH-RECONCILE`/`SAF-AUTH-TG-WEBHOOK`/`SAF-AUTH-JMAP-PUSH`）**：三条写路径必须先鉴权——`/reconcile` 校验 `Authorization: Bearer RECONCILE_TOKEN`、`/webhook/tg` 校验 `X-Telegram-Bot-Api-Secret-Token == TG_WEBHOOK_SECRET`、`/push/jmap` 校验请求体 `pushSubscriptionId` + `verificationCode`——按 `pushSubscriptionId` 查 Redis 短期验证状态（值存 `session_digest` 摘要，见 `src/notify.rs` `jmap_push`），状态缺失或摘要不符即拒绝；`/reconcile`、`/webhook/tg` 的凭证比较用**常数时间**（`subtle`），失败 `401` 且**在鉴权通过前不得产生任何副作用**；三密钥必填，缺失即启动失败，**禁止任何"未配置则放行"降级**。`/healthz`（`ARCH-HEALTHZ`）与 `/ready` 为**公开探针**（`SAF-PROBE-PUBLIC`：无鉴权、仅健康状态、不含敏感信息）；**`/ready` 已做基础探测**（`ARCH-READY-BASELINE`）：配置完整性 + Redis 可达性，不就绪返 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`；Uptime Kuma 按状态码 200/503 监控，不受响应体影响）；**仍不做** JMAP session / TG getMe 等端到端探测（余下范围见 `GATE-READY-DEPS`）——**禁止**声称 `/ready` 已验证端到端依赖。
+15. **三入口鉴权 fail-closed（硬约束 `SAF-AUTH-RECONCILE`/`SAF-AUTH-TG-WEBHOOK`/`SAF-AUTH-JMAP-PUSH`）**：三条写路径必须先鉴权——`/reconcile` 校验 `Authorization: Bearer RECONCILE_TOKEN`、`/webhook/tg` 校验 `X-Telegram-Bot-Api-Secret-Token == TG_WEBHOOK_SECRET`、`/push/jmap` 校验请求体 `pushSubscriptionId` + `verificationCode`——按 `pushSubscriptionId` 查 Redis 短期验证状态（值存 `session_digest` 摘要，见 `src/notify.rs` `jmap_push`），状态缺失或摘要不符即拒绝；`/reconcile`、`/webhook/tg` 的凭证比较用**常数时间**（`subtle`），失败 `401` 且**在鉴权通过前不得产生任何副作用**；三密钥必填，缺失即启动失败，**禁止任何"未配置则放行"降级**。`/healthz`（`ARCH-HEALTHZ`）与 `/ready` 为**公开探针**（`SAF-PROBE-PUBLIC`：无鉴权、仅健康状态、不含敏感信息）；**`/ready` 已做端到端探测**（`ARCH-READY-BASELINE`）：配置完整性 + Redis 可达性 + 出站只读探测（JMAP session `GET` / TG `getMe`，各 `PROBE_TIMEOUT`=3000ms、并行执行，最坏约 3s），任一失败返 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`；Uptime Kuma 按状态码 200/503 监控，不受响应体影响）；出站探测要求 egress 可达 JMAP host 与 `api.telegram.org:443`（bot token 仅用于拼 URL，不日志/不回显）——**禁止再声称 `/ready` 只做基础探测**。
 16. **多实例高可用（`ARCH-LB-WORKER`）**：允许同一镜像跨多个 serverless 平台实例化、前置免费 Cloudflare Worker 做唯一入口与故障转移（`C-LB-SINGLE-REG-URL`），共享同一 Redis（`C-REDIS-ONLY-STATE`）。**信任模型为透传（`SAF-LB-PASSTHRU`）——后端鉴权不可省**（小平台无防火墙/ACL，后端入口可能被公网直连）；多实例**必须共享同一组 `SAF-AUTH-*` secret**（`C-LB-SHARED-SECRETS`）。`/reconcile` **禁止多实例并发**，用 Redis 锁单实例执行（`SAF-RECONCILE-LOCK`）；Streams 用**同一消费组**分摊（`MOD-STREAMS-GROUP`）；Worker 可提供**聚合健康视图**（`MOD-HEALTH-AGG`）。**Redis 单点故障不在本方案范围**（`NFR-HA-MULTI-INSTANCE`，用户外部解决）。业务代码无需为 LB 改动。详见 deployment.md §10。
 17. **生产红线（无数据库 / 无本地写入 / 标准输出日志，`C-NO-DB` / `C-NO-LOCAL-WRITE` / `C-LOG-STDOUT-ONLY` / `SAF-LOG-PURITY` / `C-NO-STATEFUL-RECOVERY`）**：
     - **不使用任何数据库**（`C-NO-DB`）：无 SQLite / Postgres / MySQL / 嵌入式数据库；Redis 是唯一生产状态存储（`C-REDIS-ONLY-STATE`）。应用**不自建、不连接第二个数据库实例**。
@@ -73,7 +73,7 @@
 阶段 0  脚手架 + HTTPS 入口骨架（已完成，待过 P0 门禁 GATE-P0）
         —— 交付：cargo 工程 + 模块骨架(main/config/error/domain/channel/notify)
            + 单端口 axum 路由占位(/webhook/tg /push/jmap /reconcile /healthz /ready)
-           + /healthz=liveness；/ready 阶段0 交付为占位 200，现已演进为基础探测（ARCH-READY-BASELINE：配置完整性 + Redis 可达性，不就绪→503；仍不做端到端探测，余下见 GATE-READY-DEPS）
+           + /healthz=liveness；/ready 阶段0 交付为占位 200，现已演进为端到端探测（ARCH-READY-BASELINE：配置完整性 + Redis 可达性 + 出站只读探测 JMAP session GET / TG getMe，各 3000ms，不就绪→503）
            + env 配置骨架 + 最小测试；实际依赖：axum 0.8 / serde / serde_json / thiserror / secrecy / subtle / url / tokio / tracing；jmap-client =0.4.2（default-features=false, features=["async","rustls"]）
            + 入口鉴权已落地：/reconcile(Bearer) /webhook/tg(secret 头) /push/jmap(verificationCode)，fail-closed SAF-AUTH-*
 阶段 1  JMAP 只读（`jmap-client` 0.4.2 **已引入**，`ARCH-DEPS-STAGE1`；R1 入口鉴权已在阶段0 落地，不重复实现）
@@ -131,7 +131,7 @@
   - **AI 3 次失败**：触发熔断 → 弹确认 → 回退带"AI 不可用"徽标；`LLM_ENABLED=false` 全走回退。
   - 正文转义、sinceState 存 Redis + 模拟 Redis 删除后由对账 `FLOW-RECONCILE` 恢复、通知去重。
   - **入口鉴权（`SAF-AUTH-*`）**：`/reconcile`/`/webhook/tg`/`/push/jmap` 在缺失或错误凭证下返回 `401` 且**无副作用**（无 Redis 写入、无 JMAP/AI 调用）；正确凭证放行。
-  - **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz` 返回 `200`；`/ready` 已做基础探测（`ARCH-READY-BASELINE`：配置完整性 + Redis 可达性，不就绪返 `503`）——测试**可以**断言 `/ready` 在基础依赖不就绪时返回 `503`，但**不得**断言其已执行 JMAP session / TG getMe 等端到端探测（余下范围 `GATE-READY-DEPS`）；两者响应体均不含敏感信息。
+  - **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz` 返回 `200`；`/ready` 做端到端探测（`ARCH-READY-BASELINE`：配置完整性 + Redis 可达性 + 出站只读探测 JMAP session `GET` / TG `getMe`，各 3000ms，任一失败返 `503`）——测试**可以**断言 `/ready` 在配置 / Redis / 上游探针失败时返回 `503`；两个探针（`probe_jmap_session` / `probe_telegram_get_me`）是可复用纯函数，④ 远程 debug 直接调用，**不要另写一套**；两者响应体均不含敏感信息。
   - **JMAP 只读 adapter（`MOD-JMAP-CLIENT`/`GATE-G1-JMAP-READONLY`）**：mock 测试覆盖 session/account 选择（`ACCOUNT_ID` 空→主账户、显式值校验）、**URL 归一化**（`JMAP_SESSION_URL` 基地址与完整 `…/.well-known/jmap` 两种输入结果一致、无重复路径、`http://` 拒绝、内嵌凭据拒绝，`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）、`list_folders`/`list_emails`（`limit` 边界）/`read_email`（多 part 拼接与"无可用部分"明确错误，`REQ-JMAP-RAW-MULTIPART`）、`received_at` 解析；真机测试用 `#[ignore]` 标记、经环境变量驱动（运行：`cargo test -- --ignored jmap::`；仅编译：`cargo test --no-run`），**缺环境时清晰跳过且不泄密**，CI 默认不跑真机用例。**G1/D-G1-1 代码已实现，待真实 `cargo test -- --ignored jmap::` 验证；未实际运行 `--ignored` 前不得声称"真机通过"。**
 - 领域/渠道解耦测试：领域模块（`src/domain.rs` / `src/ai.rs` / `src/worker.rs`）的公开接口不出现任何渠道 SDK 类型（编译期检查）；`JmapBackend` 的 `MockBackend` 可驱动全部 JMAP 领域流程（不联网）。
 - 文件行数抽查：>500 行的 `.rs` 文件在 PR 说明中可见（软性，不自动 fail）。
@@ -147,8 +147,8 @@
 |---|---|---|
 | `README.md` / `README.zh-CN.md` | 面向最终用户：是什么 / 五分钟跑起来 / 配置入口 / 安全边界一句话 / 去哪读更多（英文版 / 中文版，内容须对等，顶部互链） | 用户可见行为或流程变更时 |
 | `docs/reference.md` | **可核对事实的唯一权威来源**：Redis 键与 TTL、错误 envelope 与错误码、后端路由与网关白名单矩阵、环境变量三层、出站与预算常量 | 公共 API 或 Redis 键名/TTL 变更时（**必更**） |
-| `docs/design.md` | 产品行为、架构、模块接口、状态机、数据流、错误处理、测试、实施阶段、渠道抽象（Channel/Notifier/MessageAdapter）、产品/架构类待确认问题 | 行为/接口变更时 |
-| `docs/deployment.md` | 通用 HTTPS-only Docker、Debian、构建/运行时、Secrets、Redis（状态唯一载体）、Webhook/Push/对账短请求路由、**多实例 LB/HA（Worker 前置，§10）**、健康检查、CI、2 项待确认（`Q-DEP-A` 平台 URL/域名与证书配置 / `Q-DEP-B` 外部调度器选型） | 部署/发布变更时 |
+| `docs/design.md` | 产品行为、架构、模块接口、状态机、数据流、错误处理、测试、实施阶段、渠道抽象（Channel/Notifier/MessageAdapter）、历史问题与决策归档（§11，产品/架构类，均已收口） | 行为/接口变更时 |
+| `docs/deployment.md` | 通用 HTTPS-only Docker、Debian、构建/运行时、Secrets、Redis（状态唯一载体）、Webhook/Push/对账短请求路由、**多实例 LB/HA（Worker 前置，§10）**、健康检查、CI、外部调度示例、已确认决策表（`Q-DEP-A`/`Q-DEP-B` 已决策归档） | 部署/发布变更时 |
 | `docs/roadmap.md` | **只放缺口、阻塞与阶段目标**（取代 `docs/todo.md`，已删除） | 缺口或阻塞项增减时 |
 | `docs/retired.md` | **已废弃 / 未采用路线与虚构条目**：每条含「类型 / 原因 / 替代或现状」；记录 teloxide 未采用、FSM 未落地、幽灵文件与虚构键、已删文档。**只写结论与原因，不写当前事实** | 新增废弃项或删除文档时 |
 | `AGENTS.md`（本文件） | 目标、硬性安全边界、实现顺序、禁止事项、测试验收、文档引用关系、**跨文档引用索引（§7）** | 安全边界/流程变更时 |
@@ -225,8 +225,7 @@
 | `SAF-NO-SECRET-ECHO` | src/config.rs `SecretString` 字段与公共配置 API | 密钥字段不实现 `Debug` 且永不进入公共配置 API 响应；Redis 线格式类型私有，不得序列化进 HTTP 响应 | 安全 |
 | `SAF-PROBE-PUBLIC` | AGENTS.md §2 / design.md §7.3 | `/healthz`、`/ready` 公开探针：无鉴权、无敏感信息 | 安全 |
 | `ARCH-HEALTHZ` | docs/design.md §7.3/§10.0 | `/healthz` liveness（进程存活），语义长期稳定 | 架构 |
-| `ARCH-READY-BASELINE` | docs/design.md §7.3 / src/notify.rs `ready` | `/ready` 基础探测：配置完整性 + Redis 可达性，就绪 `200`（就绪报告 JSON），不就绪 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`）；**不**含 JMAP session / TG getMe 端到端探测（阶段0 交付时曾为占位 200，现已演进） | 架构 |
-| `GATE-READY-DEPS` | docs/design.md §10.0 | 余下门禁：`/ready` 补 JMAP session / TG getMe 等**端到端**依赖探测（阶段3.5+ 的剩余部分，含其测试与部署接线） | 流程 |
+| `ARCH-READY-BASELINE` | docs/design.md §7.3 / src/notify.rs `ready`+`probe_jmap_session`+`probe_telegram_get_me` | `/ready` 端到端就绪：配置完整性 + Redis 可达性 + **出站只读探测**（JMAP session `GET`、Telegram `getMe`，各 `PROBE_TIMEOUT`=3000ms、并行，最坏约 3s），四者全过 `200`（就绪报告 JSON 含真实 `jmap`/`telegram` 字段），任一失败 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`）；探针只读、无状态写入（`refresh_business_config` 仅读 Redis），bot token 仅用于拼 URL | 架构 |
 | `GATE-P0` | docs/design.md §10.0 | 阶段0 P0 门禁（fmt/clippy/test 过 Debian 容器等 8 项） | 流程 |
 | `BOUND-STAGE1` | docs/design.md §10.0 | 阶段1 推进边界（过 GATE-P0 才进；R1 入口鉴权已在阶段0 落地） | 流程 |
 | `ARCH-CONFIG-ENV` | docs/design.md §7.1 | 配置=环境变量手工解析，无 figment/TOML | 架构 |

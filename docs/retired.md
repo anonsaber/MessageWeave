@@ -4,7 +4,7 @@
 > 目的是**留原因、防复发**——以后看到这些名字，能立刻知道该用什么。
 > 当前真实实现与可核对事实见 `docs/reference.md`；缺口与阻塞见 `docs/roadmap.md`；当前设计见 `docs/design.md`。
 > 本文**没有行动项**。若某条变成要做的事，去 `docs/roadmap.md` 登记，本文条目保留为决策依据。
-> 验证基线：`ed93358`。
+> 验证基线：`c5bc7b8`。
 
 ---
 
@@ -23,6 +23,8 @@
 | `src/domain/llm/`、`src/domain/command.rs`、`src/domain/notification.rs`、`src/domain/state.rs`、`src/channel/`、`src/notify/`、`src/util/`、`tests/` 子模块拆分 | 目标形态目录，未落地 | 代码量未到需要拆分的规模 | 实际结构见 `docs/design.md` 的工程结构一节：领域层是 `src/domain.rs` + `src/domain/jmap/`（仅 `client.rs`）；LLM 在 `src/ai.rs`；通知在 `src/notify.rs`；**`src/util/` 与 `tests/` 根本不存在**（加密逻辑内联在 `src/state.rs` / `src/config.rs`） |
 | `tests/telegram_dispatch.rs` | 目标形态测试，未落地 | 依附 teloxide 测试模式 | `src/channel.rs` 的单元测试（`#[test]`） |
 | docker-compose `healthcheck` 示例（`message-weave health --addr ...`） | 已删除的示例 | 运行镜像 `debian:bookworm-slim` 内无 `curl`/`wget`，且 `src/main.rs` 无 CLI 子命令解析，示例照抄必失败 | 由平台 ingress 探测 `/ready`；说明见 `docs/deployment.md` 的就绪探测一节 |
+
+| SPA 管理凭据 = `REDIS_URL` 的 Redis ACL 密码 | 未采用路线 | 混淆基础设施凭据与 UI 管理密码；Redis 无 ACL 密码（TLS-only 托管 Redis）时 `bootstrap_token` 的 `.is_empty()` 守卫让 SPA 永久 401 | 改用 `CONFIG_ENCRYPTION_KEY`（启动必填的 32 字节高熵 hex，常数时间比较） |
 
 ### 1.1 teloxide 候选对比（评估记录）
 
@@ -72,18 +74,19 @@
 |---|---|---|---|
 | `channel/telegram/{mod,commands,session,render}.rs` | 虚构文件 | 目标目录树里画出，从未创建 | 命令解析在 `parse_intent`（`src/worker.rs`）；会话/授权态走 Redis TTL（`docs/reference.md` 的 AI 授权态一节）；渲染函数在 `src/channel.rs` 内 |
 | `delivery:pending:{stream}` | 虚构键 | 与 Redis Streams 的 pending-entries list（PEL）混淆——PEL 由 Redis 内部维护，不是可写键 | 真实键：`delivery:inflight:{stream}:{id}`（EX 60）与 `delivery:committed:{stream}:{id}`（EX 604_800），见 `docs/reference.md` 的投递流水线键一节 |
-| `check_config_reload` | 虚构函数 | 未提交草稿中的名字，从未进入代码 | 热更新为 `refresh_business_config`（`src/notify.rs:628`） |
-| `push:registration:{sha256(callback_url)}` 曾被写成「360s 注册单飞锁」 | 事实误标 | 该键是 7d 回调→订阅 ID 映射 | 真正的 360s 单飞锁是 `lock:push-register:{sha256(callback_url)}`（`src/notify.rs:810-819`） |
-| `MESSAGWEAVE_DOMAIN` 曾被写成「生产未配置时 Worker 白名单失效」 | 虚构断言（未提交草稿/讨论中出现，未进文档） | 该环境变量全仓零命中；Worker 白名单是**无条件 fail-closed**：未知路径 404、method 不符 405、后端缺失或解析失败 503（`cloudflare-worker/src/index.js:69-82`） | 无需配置开关，白名单恒生效 |
+| `check_config_reload` | 虚构函数 | 未提交草稿中的名字，从未进入代码 | 热更新为 `refresh_business_config`（`src/notify.rs:704`） |
+| `push:registration:{sha256(callback_url)}` 曾被写成「360s 注册单飞锁」 | 事实误标 | 该键是 7d 回调→订阅 ID 映射 | 真正的 360s 单飞锁是 `lock:push-register:{sha256(callback_url)}`（`src/notify.rs:887-890`） |
+| `MESSAGWEAVE_DOMAIN` 曾被写成「生产未配置时 Worker 白名单失效」 | 虚构断言（未提交草稿/讨论中出现，未进文档） | 该环境变量全仓零命中；Worker 白名单是**无条件 fail-closed**：未知路径 404、method 不符 405、后端缺失或解析失败 503（`cloudflare-worker/src/index.js:77-92`） | 无需配置开关，白名单恒生效 |
+| `read_batch` / `retry_or_dlq`「Redis 出错时仍可能返回 `Ok(())`，消费循环因此不会因单次失败退出」 | 虚构断言 | 消费入口是 HTTP handler `worker`（`notify.rs:326`），**不是后台循环**：全仓 `src/` 零命中 `select!`，无信号处理、无常驻 worker 进程。`read_batch`（`state.rs:343`）经 `?` 把 Redis 错误原样上抛（:379），唯一被丢弃的结果是 XGROUP `CREATE` 的 `BUSYGROUP` 幂等保护（:376）；`retry_or_dlq` 同样经 `?` 上抛。调用方对每一处 `Err` 都返回 `503 service_unavailable` + `retryable=true`，故「循环不因单次失败退出」这一语义前提本身不成立 | 无——不存在该缺口；`docs/roadmap.md`「代码缺口」4 → 3，`docs/design.md`「已知边界」同句已删 |
 
 ---
 
 | `src/domain/llm/` 整个模块族 | 虚构模块树 | `domain/` 下只有 `jmap.rs` 与 `jmap/client.rs`；LLM 只有 `src/ai.rs` 一个文件（`LlmClient`） | 无 |
 | `ai::config` / `ai::fallback` / `ai::policy` / `ai::audit` | 虚构模块 | LLM 配置在 `config.rs::LlmConfig`，运行时参数在 `state.rs::RuntimeConfig`，无 policy/audit 概念 | 无 |
 | `channel/mod.rs` | 虚构文件 | 渠道层就是 `src/channel.rs`，不是 `channel/` 目录 | 无 |
-| `notify::push_handler` / `notify::worker` / `notify::reconcile` 作为模块路径 | 虚构模块路径 | 这些是 `src/notify.rs` 内的自由函数（`notify.rs:250` / `:97` / `:136`），不是模块路径 | 无 |
+| `notify::push_handler` / `notify::worker` / `notify::reconcile` 作为模块路径 | 虚构模块路径 | 这些是 `src/notify.rs` 内的自由函数（`jmap_push` / `worker` / `reconcile`），不是模块路径 | 无 |
 | `mod_dedup` / `mod_streams` / `mod_sincestate` | 虚构模块名 | `state.rs` / `notify.rs` 都是平铺文件，无子模块；去重与 Streams 逻辑以自由函数存在 | 无 |
-| `PushVerification` 类型 | 虚构类型 | 未定义；`register_push`（`notify.rs:668`）内联处理回调 URL 与验证码回写 | 无 |
+| `PushVerification` 类型 | 虚构类型 | 未定义；`register_push`（`notify.rs:873`）内联处理回调 URL 与验证码回写 | 无 |
 | `CancellationToken` | 虚构类型 | 未使用；无优雅关闭、无信号处理（`src/` 零命中 `tokio::signal` / `ctrl_c`） | 无 |
 | `Preview` 类型 / 4000 字符长邮件保护 / `[继续查看原文]` 按钮 / `/llm-fallback` 按钮 | 虚构类型与 UI | 全部未实现；授权后把全文交给 LLM，失败即回退前 300 字符，无任何截断标注或按钮 | 无 |
 | `LlmErr`（5 变体） | 虚构枚举 | 真实是 `AiError`，仅 3 个变体（`InvalidEndpoint` / `Request` / `Response`） | 无 |

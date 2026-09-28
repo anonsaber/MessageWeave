@@ -2,7 +2,7 @@
 
 > 只放**缺口**、**阻塞**与**阶段目标**。已实现能力见 `README.md`、`docs/design.md`、`docs/deployment.md`；
 > 可核对的事实（Redis 键、TTL、错误码、路由）见 `docs/reference.md`。
-> 验证基线：`ed93358`。门禁命令见 `docs/deployment.md` 的 Gate 一节。
+> 验证基线：`c5bc7b8`。门禁命令见 `docs/deployment.md` 的 Gate 一节。
 
 ## 阶段目标
 
@@ -21,19 +21,10 @@
 
 - **`/search` + `SearchSnippet/get` 高亮** — 未实现。`src/` 中 `SearchSnippet` / `search_snippet` 零命中，worker 的 `Intent` 枚举也无 `Search` 变体，因此该路径无法进入。设计文档中的接口表已标注「（未实现）」。
 - **Telegram 429 退避实测** — `src/channel.rs` 的 `max_retries`（默认 3，硬上限 5）不针对 Telegram 服务端 30 msg/s 限流做专门退避；429 行为无实测数据。需真实 Bot 压测后再决定是否引入指数退避。
-- **Redis 错误映射** — `read_batch` 与 `retry_or_dlq` 在 Redis 出错时仍可能返回 `Ok(())`，消费循环不会因单次失败退出，这类故障只能靠 Redis 侧告警发现。（可选改进）
 - **多实例重复投递窗口（残余）** — XAUTOCLAIM 空闲阈值已按批大小缩放（批大小 × 单条上限 300s）；仅当单条事件处理耗时接近 300s 上限时，多实例部署下另一实例仍可能提前认领（仅重复不丢）。单实例不受影响。
-- **Worker safelist 与注册流程不一致** — 网关白名单是无条件 fail-closed 的（无开关可放宽，见 `docs/reference.md` 的网关路由矩阵一节）。后端共注册 18 条路由，其中 12 条经 Worker 转发、6 条不转发；不转发的 6 条里只有 `POST /api/push/register` 与 `POST /api/push/disable` 按设计**需要**业务流量直连后端（另有 `GET, PUT /api/enabled`、`POST /api/bootstrap`、`POST /worker`、`GET /healthz` 四条属内部运维路径，不需要业务流量）。因此实际缺口只有这两个端点。**待决策**：把它们加进 safelist（单入口，但放宽了「只转发明细路由」的边界），还是维持双入口（边界严，但运维要配两条路径）。
-
-## 决策待定
-
-这两条都是**上线时的运维选择，不是设计分歧**——不影响代码结构、不影响门禁、可以无限期挂着而不产生技术债。建议处理方式：**先按任一默认值写进部署文档，等真的上平台时再确认**；确认前不要为它们开 issue 或分支。
-
-- **平台 URL / 域名与证书配置方**（`Q-DEP-A`，关联 `C-HTTPS-URL`；默认按「平台自动证书 + 自管反代二选一，先文档化两条路径」处理）— 平台自动证书 or 自管反代，以及 4 条路径的可达性验证方式。
-- **外部调度器选型**（`Q-DEP-B`，关联 `NFR-RECONCILE-INTERVAL`；默认按「k8s CronJob」写）— 系统 crontab / k8s CronJob / CI scheduled / 第三方 cron。仅影响运维方式，不改变架构。
 
 ## 验收待办
 
-- **真实平台日志采集验收**（`Q-DEP-B` 允许延后）— 容器不写日志文件、只走 stdout 已由代码审查确认（`C-LOG-STDOUT-ONLY`）；结构化日志字段与脱敏已由代码审查确认（`SAF-LOG-PURITY`）。未验证项：真实平台采集器是否落盘、是否可检索。
-- **`/ready` 端到端依赖探测**（`GATE-READY-DEPS`）— 当前 `ARCH-READY-BASELINE` 仅覆盖配置完整性 + Redis 可达性；JMAP session / Telegram getMe 等端到端探测尚未接入。
+- **真实平台日志采集验收** — 容器不写日志文件、只走 stdout 已由代码审查确认（`C-LOG-STDOUT-ONLY`）；结构化日志字段与脱敏已由代码审查确认（`SAF-LOG-PURITY`）。未验证项：真实平台采集器是否落盘、是否可检索。
+- **`/ready` 端到端依赖探测（已完成）** — JMAP session `GET` 与 Telegram `getMe` 探针已接入 `/ready`（`src/notify.rs` 的 `probe_jmap_session` / `probe_telegram_get_me`，各 `PROBE_TIMEOUT` 3000ms、**并行**（`tokio::join!`），最坏约 3s）：配置完整性 + Redis 可达性 + 两个上游全过返 `200` 与就绪报告，任一失败返 `503` + `Retry-After: 30`。两个探针是可复用纯函数，④ 远程 debug 直接复用同一实现，**不要另写一套**。`ARCH-READY-BASELINE` 语义已更新为端到端就绪。剩余的真实环境验证见上面「真实 Stalwart 邮箱联调」与「真实 Telegram Bot 联调」。
 - **JMAP 只读 adapter 真机验证**（`GATE-G1-JMAP-READONLY`）— 代码已实现（mock + `#[ignore]` 真机测试），待 `cargo test -- --ignored jmap::`。

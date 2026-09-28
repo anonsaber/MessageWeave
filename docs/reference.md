@@ -3,7 +3,7 @@
 > **This file is the single source of truth for verifiable facts.**
 > When any other document disagrees with this one, this one wins.
 >
-> **Verified against commit `ed93358`.** Line numbers in this file were read from that
+> **Verified against commit `c5bc7b8`.** Line numbers in this file were read from that
 > commit with the working tree clean.
 >
 > **Maintenance responsibility.** Any change to the public API of `src/config.rs`,
@@ -165,11 +165,18 @@ Every error response uses one envelope shape:
 | 409 | `conflict` | — |
 | 422 | `invalid_configuration` | — |
 | 500 | `internal_error` | — |
-| 503 | `service_unavailable`, `disabled`, `push_subscription_not_found`, `push_verify_rate_limited` | `30` when retryable |
+| 503 | `service_unavailable`, `disabled`, `push_subscription_not_found`, `push_verify_rate_limited`, `push_state_unavailable`, `push_destroy_failed` | `30` when retryable, or always for the push register/disable failures |
 
-`Retry-After` is set only when the `retry` flag is true, inside `error_response`
-(notify.rs:243-244), and is emitted unconditionally by the readiness handler for a not-ready
-503 (notify.rs:1003). The header value is always the literal string `"30"`.
+`Retry-After` has two emission sites, both in `notify.rs`, and the value is always the literal
+string `"30"`:
+
+- `error_response` (`notify.rs:316-324`, inserted at `:320`) sets it **only when its `retry`
+  flag is true**. The readiness failure path (`notify.rs:157`) passes `retry = true`, so `/ready`
+  is covered by that rule rather than by a special case.
+- `error_response_with_id` (`notify.rs:1076-1084`, inserted at `:1082`) sets it
+  **unconditionally**. It is used only for the push register/disable failures
+  `push_state_unavailable` and `push_destroy_failed` (`notify.rs:941`, `:958`, `:975`,
+  `:1012`), which are always `503`.
 
 `GET /api/status` is the exception that reports setup state with a non-envelope body.
 
@@ -177,7 +184,7 @@ Every error response uses one envelope shape:
 
 ## 3. Backend routes
 
-All registered in `router_with_worker_state_runtime_bootstrap_config` (notify.rs:1187-1201).
+All registered in `router_with_worker_state_runtime_bootstrap_config` (notify.rs:1250-1277).
 
 | Method | Path | Handler |
 |---|---|---|
@@ -196,13 +203,23 @@ All registered in `router_with_worker_state_runtime_bootstrap_config` (notify.rs
 | GET | `/healthz` | `healthz` |
 | GET | `/ready` | `ready` |
 | GET | `/api/status` | `setup_status` |
+| GET | `/`, `/assets/config.js`, `/assets/styles.css` | `index` / `web_config` |
 
 Response conventions:
 
 - `GET /healthz` returns **200 unconditionally**. It is a liveness probe and must not be
   used to decide whether to route traffic.
-- `GET /ready` returns **503** when configuration or dependencies are not ready, and carries
-  `Retry-After: 30` for not-ready responses.
+- `GET /ready` returns **503** when configuration, Redis, or an upstream probe is not ready,
+  and carries `Retry-After: 30` for not-ready responses. It checks four things: config
+  completeness (`setup_missing` empty), Redis reachability, and two upstream probes —
+  `GET {jmap_origin}/.well-known/jmap` with the configured Basic credentials, and
+  `GET https://api.telegram.org/bot<token>/getMe`. Both probes share `PROBE_TIMEOUT` = 3000ms
+  (`notify.rs:69`) and run **in parallel** (`tokio::join!`, `notify.rs:143`), so the worst case
+  is a single timeout, about 3s. On success the body is a report whose `jmap`/`telegram` fields
+  are real probe results. The probes are plain reusable functions (`probe_jmap_session`,
+  `probe_telegram_get_me`) also used by the remote-debug path, so they must not be duplicated.
+  The JMAP probe deliberately authenticates against the *normalized origin*: probing the raw
+  session URL unauthenticated would report not-ready forever and make ingress stop routing.
 - `GET /api/status` returns **503** with body `{"status":"configuration-setup","missing":[...]}`
   when a required environment variable is absent.
 - Static assets are served with a strict CSP; see §7.
@@ -212,35 +229,44 @@ Response conventions:
 ## 4. Gateway vs backend route matrix
 
 > **Independently verified.** Source: `cloudflare-worker/src/backends.js` `SAFE_ROUTES`
-> (backends.js:9-22), 12 entries. The worker entry point is `src/index.js`
+> (backends.js:9-24), 14 entries, alongside `ROUTE_METHODS` (index.js:40-55)
+> which fixes one method set per path. The worker entry point is `src/index.js`
 > (wrangler.toml:20); `src/lb.js` performs forwarding and bounded failover (`SAF-LB-PASSTHRU`,
 > `C-NO-LONG-CONN`).
 
 The gate is **unconditional and fail-closed**. The worker reads no configuration switches at
-all: a path missing from `SAFE_ROUTES` returns **404** (index.js:69-72), a registered path
-with the wrong method returns **405** (index.js:73-76), and a missing or unparseable backend
-pool returns **503** rather than passing the request through (index.js:80-82).
+all: a path missing from `SAFE_ROUTES` returns **404** (index.js:72-73), a registered
+path with the wrong method returns **405** (index.js:76-77), and a missing or unparseable
+backend pool returns **503** rather than passing the request through (index.js:84-87).
 
-**Forwarded by the worker (12):**
+**Forwarded by the worker (14):**
 
 `/` · `/assets/config.js` · `/assets/styles.css` · `/api/status` · `/api/config` ·
 `/api/business-config` · `/api/admin/session` · `/api/admin/session/revoke` ·
-`/webhook/tg` · `/push/jmap` · `/reconcile` · `/ready`
+`/webhook/tg` · `/push/jmap` · `/api/push/register` · `/api/push/disable` · `/reconcile` ·
+`/ready`
 
-**Registered on the backend but NOT forwarded (6):**
+**Registered on the backend but NOT forwarded (4):**
 
 | Path | Why it is absent from the gateway |
 |---|---|
-| `POST /api/push/register` | Push registration requires the callback URL exchange to complete directly against the backend |
-| `POST /api/push/disable` | Same reasoning as registration |
 | `GET, PUT /api/enabled` | Internal operational switch, not exposed through the public gateway |
 | `POST /api/bootstrap` | One-shot trust bootstrap; kept off the public path |
-| `POST /worker` | Internal worker endpoint |
+| `POST /worker` | Operator-invoked worker trigger (Bearer-auth'd, `notify.rs:326`); not part of the public gateway path |
 | `GET /healthz` | Liveness is aggregated by the gateway itself |
 
-Consequence: the SPA's first-boot flow cannot drive `/api/bootstrap` through the worker.
-Bootstrap must be performed against the backend origin directly, or the bootstrap path must
-be added to the gateway allowlist.
+Consequence: none of the four carries external business traffic, so no second ingress is
+needed in front of the backend instances. The SPA's first-boot flow still cannot drive
+`/api/bootstrap` through the worker — bootstrap must be performed against the backend origin
+directly, or the bootstrap path must be added to the gateway allowlist.
+
+`POST /api/push/register` and `POST /api/push/disable` **are** forwarded. Both are safe to
+proxy: the callback URL is supplied by the client in the request body (`notify.rs:851`,
+validated as a URL at :868), and every push subscription record is written to and read back
+from the shared Redis (`lock:push-register:{sha256(url)}`, `get_push_subscription_for_callback`
+at `notify.rs:894`), so it does not matter which backend instance the worker picks. Push
+registration therefore no longer requires hitting a specific backend address — see
+deployment.md §10.5.
 
 ---
 
