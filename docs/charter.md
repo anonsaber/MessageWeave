@@ -237,6 +237,7 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 | `REQ-SINGLE-ACCOUNT` | docs/design.md §3.1/§11.3 | 单账户；多账户 = 多 bot 实例 | 需求 |
 | `REQ-PUSH-TYPES` | src/domain/jmap/client.rs:109 注释 | `PushSubscription/set` create 在 jmap-client 0.4.2 中没有 `types` 参数；订阅 id 对外暴露前须经 `push_subscription_update_types` 收窄为 `Email` + `EmailDelivery` | 需求 |
 | `REQ-RECONCILE-IDEMPOTENCY` | src/state.rs `claim_dedup` + `get_reconcile_state` / docs/design.md §8.2 | JMAP 对账游标只有在全部分页事件成功入队（XADD）后才推进；单次对账由 Redis SET NX EX 锁 `lock:reconcile` 保证单飞（TTL 300s，owner token 续期 90s，仅持有者可续期/释放）；处理端再经 `claim_dedup`（SET NX EX，86400s）保证同一流消息不重复投递 | 需求 |
+| `REQ-TIMEZONE-DISPLAY` | src/config.rs `SUPPORTED_TIMEZONES` / docs/reference.md §5.4 | 通知的收件时间按业务配置 `timezone`（IANA，默认 `Asia/Shanghai`）渲染为 `%Y-%m-%d %H:%M`；仅接受 16 个无夏令时区域，未匹配返回 422，不做时区库推断 | 需求 |
 | `NFR-NOTIFY-SLA` | docs/deployment.md §6.5 | 通知可用性 ≥99.9%，允许少量延迟 | 非功能 |
 | `NFR-RECONCILE-INTERVAL` | docs/deployment.md §6.3 | 外部 Cron 对账间隔 5–10 分钟 | 非功能 |
 | `SAF-NOTIFY-META` | §3 | 新邮件通知只含元数据，正文不入通知 | 安全 |

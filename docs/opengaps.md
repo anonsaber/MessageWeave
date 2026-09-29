@@ -18,7 +18,7 @@
 上一轮真机联调已经关掉了两条阻塞：
 
 - **Telegram 入站方向**：`setWebhook` 之后群里发 `/help`，`POST /worker` 排空即收到自动回复。此前 `/webhook/tg` 收到的全部是伪造 update，Telegram 侧从未收到过 `setWebhook`，所以这个方向一直没有被真实流量验证过。
-- **Stalwart `PushSubscription`**：`stalwart:jmap` 连续数天有真实、互不重复的推送事件。该 stream 全代码库只有两个写入点——`src/notify.rs:1139`（JMAP 回调入队）与 `src/worker.rs:374`（对账增量入队）——所以有事件出现就只能是订阅活着且在投递。同一次观测也顺带验证了去重键在跨日规模下没有重复投递。
+- **Stalwart `PushSubscription`**：`stalwart:jmap` 连续数天有真实、互不重复的推送事件。该 stream 全代码库只有两个写入点——`src/notify.rs:1140`（JMAP 回调入队）与 `src/worker.rs:394`（对账增量入队）——所以有事件出现就只能是订阅活着且在投递。同一次观测也顺带验证了去重键在跨日规模下没有重复投递。
 
 两条的操作步骤已移到面向使用者的 `docs/deployment.md` §4.1，本文件不再跟踪它们。
 
@@ -48,9 +48,9 @@ TTL 参数已在代码里写死、单测也已覆盖，但真实场景下的实�
 | --- | --- | --- | --- |
 | `lock:push-register:{sha256(callback_url)}` | 注册单飞锁 | 360s | `src/notify.rs:1178` |
 | `lock:reconcile` | 对账锁（长对账中每 90s 续租） | 300s | `src/notify.rs:289` / `:302` |
-| `ratelimit:push-verify:{subscription_id}` | 验证限流 | 30s | `src/notify.rs:1095` |
+| `ratelimit:push-verify:{subscription_id}` | 验证限流 | 30s | `src/notify.rs:1096` |
 | `dedup:tg:{update_id}` | Telegram 更新去重 | 86400s | `src/notify.rs:248` |
-| `dedup:jmap:{account_id}:{email_id}` | JMAP 更新去重 | 86400s | `src/notify.rs:1134` |
+| `dedup:jmap:{account_id}:{email_id}` | JMAP 更新去重 | 86400s | `src/notify.rs:1135` |
 
 我来做的：触发一次真实回调并记录这五个键的实际过期行为，把实测值回填本节。在这之前本节保持阻塞。
 

@@ -74,11 +74,11 @@
 `hoststack.yaml`、不用重新构建。判定为纯函数（不直接读全局 env）以便单测覆盖，测试在
 `src/main.rs:217-264`。
 
-缺一即不挂载：`debug_router()` 本身会构造出全部 7 条路由（`src/debug.rs:72-80`），但主入口**只在双因子成立时才合并它**（`src/notify.rs:1340-1342`）。所以未开启时 `/debug/*` 路由根本不存在，请求走 axum 兜底返回普通 `404 not found`——**不是** 401，也不会泄露「此路径存在」。开启成功时打一条 WARN 日志标记该面已打开（`src/main.rs:115-117`，`SAF-LOG-PURITY`：只记开启状态，从不记录 token 值）。
+缺一即不挂载：`debug_router()` 本身会构造出全部 7 条路由（`src/debug.rs:72-80`），但主入口**只在双因子成立时才合并它**（`src/notify.rs:1625`）。所以未开启时 `/debug/*` 路由根本不存在，请求走 axum 兜底返回普通 `404 not found`——**不是** 401，也不会泄露「此路径存在」。开启成功时打一条 WARN 日志标记该面已打开（`src/main.rs:115-117`，`SAF-LOG-PURITY`：只记开启状态，从不记录 token 值）。
 
 **鉴权**
 
-7 条路由全部要求 `Authorization: Bearer <DEBUG_TOKEN>`，统一走 `debug_authorized`（`src/debug.rs:45`），它委托生产同款 `worker_authorized`（`src/notify.rs:446`），因此令牌是**常数时间比较**（`src/notify.rs:1136`）。失败回 `401 unauthorized`，且不设 `Retry-After`（`src/debug.rs:52-54`）。
+7 条路由全部要求 `Authorization: Bearer <DEBUG_TOKEN>`，统一走 `debug_authorized`（`src/debug.rs:45`），它委托生产同款 `worker_authorized`（`src/notify.rs:495`），因此令牌是**常数时间比较**（`src/notify.rs:1416`）。失败回 `401 unauthorized`，且不设 `Retry-After`（`src/debug.rs:52-54`）。
 
 **7 条路由与预期状态码**（注册于 `src/debug.rs:72-80`，路径为字面量，无常量抽取）
 
@@ -99,7 +99,7 @@
 **三条约束，部署时务必确认**
 
 - **绝不回显凭据值**：`debug_config`（`src/debug.rs:94`）对每个 Secret 字段只输出 `*_configured` **布尔**——JMAP 密码、bot token、`worker_token`、`reconcile_token`、LLM `api_key` 一律不落响应体（`SAF-DEBUG-AUTH`）。注意这是「不含凭据」，不是「全脱敏」：**非密文的身份与预算字段是明文返回的**（JMAP session URL 与 username、Telegram `chat_id`、LLM `base_url`/`model`、各类超时与重试数），所以该面仍只能放在可信网络上。
-- **`/debug/notify` 受 chat 白名单约束，但空白名单不拦截**：它复用生产同一份白名单快照（`src/notify.rs:1142`），判定条件是「白名单**非空**且 `chat_id` 不在其中」才回 `403 chat_not_allowed`（`src/debug.rs:232-235`）。因此已配置白名单时无法绕过业务侧发送限制；若白名单未配置（为空）则此判定不生效，`chat_id` 可任意指定——所以启用本面时应确认业务白名单已真正配置。`text` 缺省为固定联调文案，并按 1024 字符截断（`src/debug.rs:240-245`）。
+- **`/debug/notify` 受 chat 白名单约束，但空白名单不拦截**：它复用生产同一份白名单快照（`src/notify.rs:1422`），判定条件是「白名单**非空**且 `chat_id` 不在其中」才回 `403 chat_not_allowed`（`src/debug.rs:232-235`）。因此已配置白名单时无法绕过业务侧发送限制；若白名单未配置（为空）则此判定不生效，`chat_id` 可任意指定——所以启用本面时应确认业务白名单已真正配置。`text` 缺省为固定联调文案，并按 1024 字符截断（`src/debug.rs:240-245`）。
 - **不在 Worker 白名单内，只能直连 origin**：网关的 15 条安全路由（`cloudflare-worker/src/backends.js:9-25`）不含任何 `/debug/*`，Worker 对未白名单路径返回 `404 route not forwarded: /debug/...`（`cloudflare-worker/src/index.js:81-82`）。因此 `/debug/*` 只能通过直连后端 origin 访问；若必须经代理，请自行在代理层加鉴权，不要让公网可达。
 
 > **建议**：生产环境不开启。需要远程联调时在控制台设置 `DEBUG_ENABLED=1` 与一次性
@@ -184,7 +184,7 @@ curl -fsS -X POST "https://<你的平台URL>/api/push/register" \
 后端用 JMAP 自动回写——**验证码不由运维提供，也不会从 SPA 配置接受**（`src/notify.rs:1163`）。
 
 - `callback_url` 必须是 HTTPS 且**不含用户名 / 密码**，否则 400 `invalid_request`
-  （`src/notify.rs:1174`）。
+  （`src/notify.rs:1175-1177`）。
 - 同一个 `callback_url` 重复调用**幂等复用**已有订阅，不会重复注册。
 - 注册期间持 `lock:push-register:{sha256(callback_url)}` 360 s 单飞锁
   （`src/notify.rs:1178` / `src/notify.rs:1186`），撞锁返回 409 `conflict`。
@@ -300,6 +300,7 @@ services 表里已存的值填进 payload，再用 `hoststack.yaml` 声明的值
 | Push registration/verification | 已接入，需显式注册 | `POST /api/push/register` 接受 HTTPS callback URL 并调用 `PushSubscription/set create`；相同 callback URL 重复请求幂等复用；`/push/jmap` 接收 Stalwart 生成的验证码并自动回写，Redis 保存订阅 ID 和短期验证状态 |
 | `LLM_*` | 可选 | OpenAI-compatible 业务配置字段（`REQ-LLM-OPENAI-COMPAT`）；其中 `LLM_MAX_RETRIES` **不是**业务配置字段而是 Redis 运行参数（回落默认见 `docs/reference.md` §6.1）；**仅当用户明确允许时才把邮件正文外发 AI**（`REQ-AI-EXTERNAL-CONSENT`） |
 | `ACCOUNT_ID` | 默认空 | **单账户**（`REQ-SINGLE-ACCOUNT`）：留空则取 session 主账户；多账户 = 部署多个 bot 实例（各自独立 token/配置），不做多账户单实例 |
+| `TIMEZONE` | 默认 `Asia/Shanghai` | 通知里的收件时间按此时区渲染（`REQ-TIMEZONE-DISPLAY`，wire 键为小写 `timezone`）。在配置页第 `04` 节「通知显示 / Notification display」的选择器里设置，不是环境变量。**只接受 16 个固定偏移时区**（`Etc/UTC`、`Africa/Cairo`、`Europe/Istanbul`、`Africa/Nairobi`、`Asia/Dubai`、`Asia/Karachi`、`Asia/Kolkata`、`Asia/Bangkok`、`Asia/Ho_Chi_Minh`、`Asia/Shanghai`、`Asia/Hong_Kong`、`Asia/Taipei`、`Asia/Singapore`、`Asia/Manila`、`Asia/Tokyo`、`Asia/Seoul`），不在表内时 `PUT /api/business-config` 返回 **422** 且旧配置继续生效。**不跟踪夏令时**：离线构建没有 IANA tz 数据库（`chrono-tz` 不可用），所以只收录全年无夏令时的区域；需要伦敦/纽约这类区域请自行换算成对应的固定偏移区域 |
 
 AI 授权期限由用户选择（临时一次、今天、7天或直到撤销），Redis 仅保存 chat id、授权状态和带 TTL 的到期时间；不会保存正文或摘要。到期后摘要请求回到元数据模式并提示重新授权。
 
@@ -412,19 +413,28 @@ GET  /ready          公开就绪探针；检查配置完整性 + Redis 可达�
 两个 token 都是 Redis 业务配置字段（§5），不再从环境变量读取；外部 cron 从自己的 secret
 存储取同一个值即可（下方 k8s 示例即此做法）。`/worker` 只认 Bearer token、**没有
 admin-session 兜底**（`src/notify.rs:386`），这是有意的：cron 不需要先登录拿 session。
-token 轮换后**无需重启**——worker 处理函数开头先 `refresh_business_config`，再从热更新快照
-取值（`src/notify.rs:1425`）。
+token 轮换后**无需重启**——worker 处理函数开头先 `refresh_business_config`（`src/notify.rs:381`），
+再从热更新快照取值（`:385`，快照由 `auth_snapshot` 读取）。
 
 `/worker` 不在 Worker 转发白名单里（`SAFE_ROUTES`：`/reconcile` 在内、`/worker` 不在），
 走 Worker 会被 404 `route not forwarded` 挡掉，必须打后端 origin。见 §10.4。
 
-最小示例（curl 直连 Worker）：
+最小示例（手动烟测，打印状态码；`/reconcile` **不接受请求体**，游标存在服务端 Redis 里）：
 
 ```bash
-curl -fsS -X POST "https://<你的平台URL>/reconcile" \
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -X POST "https://<你的平台URL>/reconcile" \
   -H "Authorization: Bearer <RECONCILE_TOKEN>" \
-  -H "content-type: application/json" \
-  -d '{"since":"<STATE>"}'
+  --max-time 60
+```
+
+`/worker` 也先手动跑一遍，但要打**后端 origin 直连地址**（它不在 Worker 转发白名单里，见 §10.4）。空请求体是合法的，等价于取默认 10 条，不用带 `-d`：
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -X POST "https://<后端origin直连地址>/worker" \
+  -H "Authorization: Bearer <WORKER_TOKEN>" \
+  --max-time 60
 ```
 
 最小调度（两步一条 cron，顺序不能反）：
@@ -490,11 +500,10 @@ spec:
 | --- | --- | --- |
 | `/reconcile` 204 | 对账完成（含 since 游标前进 0 条） | 正常，不需要动作 |
 | `/worker` 204 | 本次调用正常结束 | **不能当成功信号**：无消息可读、全部撞去重都回 204，`src/notify.rs:491` 无条件返回 |
-| `/reconcile` 400 | `since` 不是合法游标 | 检查请求体，不要盲重试 |
-| `/worker` 400 | 请求体不是合法 JSON（`src/notify.rs:402`） | 修 curl |
-| `/reconcile` 401 | `Authorization` 头缺失或 `reconcile_token` 不匹配（`src/notify.rs:279`） | 检查 cron 的 token 值；重启不解决 |
-| `/worker` 401 | Bearer 值与 `worker_token` 不匹配（`src/notify.rs:386`） | 同上；`/worker` 无 admin-session 兜底 |
-| `/reconcile` 409 | 单飞锁 `lock:reconcile` 被占（`src/notify.rs:289`） | 直接跳过本次 tick，不要重试 |
+| `/worker` 400 | 请求体不是合法 JSON（`src/notify.rs:402`） | 修 curl；空请求体合法，等价于取默认 10 条 |
+| `/reconcile` 401 | `Authorization` 头缺失或 `reconcile_token` 不匹配（`src/notify.rs:284`） | 检查 cron 的 token 值；重启不解决 |
+| `/worker` 401 | Bearer 值与 `worker_token` 不匹配（`src/notify.rs:393`） | 同上；`/worker` 无 admin-session 兜底 |
+| `/reconcile` 409 | 单飞锁 `lock:reconcile` 被占（`src/notify.rs:289` 取锁，`src/notify.rs:345` 返回） | 直接跳过本次 tick，不要重试 |
 | 503 | 业务配置此刻不可用，或 Redis / JMAP 请求失败 | 可重试；响应带 `Retry-After: 30`（`src/notify.rs:374`） |
 
 重试建议：
@@ -516,6 +525,7 @@ spec:
 - `204` 与 `409` 都是正常结果，不要把它们当失败重试——尤其别对 `409` 做紧密循环重试。
 - 调度间隔按 `NFR-RECONCILE-INTERVAL` 取 **5–10 分钟**。Push 是主路径，对账是兜底；
   但**排空不是兜底项**——没有它，邮件只会一直进队列，一行通知都不会发出来。
+- **`/reconcile` 不会返回 400**：它没有请求体解析，传了 body 会被静默忽略，所以不要以为要传 `since`。
 - 走 Worker 转发**无需特殊设置**：网关已为 `POST /reconcile` 单独覆盖超时与尝试次数——超时取
   `LB_RECONCILE_TIMEOUT_MS`（默认 `320000` ms，大于单飞锁租期 300 s + 心跳余量；锁续租逻辑见
   `src/notify.rs:302`），且 `maxAttempts=1` **绝不故障转移**（故障转移只会让第二实例立刻返回
@@ -721,7 +731,7 @@ Stalwart PushSub ────┼─▶ https://lb.<you>.workers.dev      ← 唯
 
 ### 10.4 路由与故障转移
 
-- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **15 条**（`SAFE_ROUTES` at `backends.js:9-25` + `ROUTE_METHODS` at `index.js:45-61`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`PUT /api/business-config`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`GET|PUT /api/enabled`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 4 类不在 safelist**：`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`POST /worker`（队列排空端点，由外部调度周期性调用而非人工触发，Bearer 鉴权，见 §6.3.1）、`GET /healthz`（网关自行聚合，不转发）、`/debug/*`（7 条远程联调面，`SAF-DEBUG-GATE`，只能直连后端 origin，见 §2.1）——**这 4 类都不承载外部业务流量，因此后端实例前不需要第二道入口**。`GET|PUT /api/enabled` 属于必须透传的例外：管理 SPA 本身只部署在 Worker 域名下，业务总开关由它读取与切换（`loadEnabled` 在 `web/config.js:586` 读、开关写入在 `:958`），缺了这条白名单，SPA 里那个开关在后端直连模式下可用、经网关部署时恒 404；该路由已强制 admin-session Bearer 鉴权，暴露面与同在白名单内的 `/api/admin/session` 完全一致。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
+- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **15 条**（`SAFE_ROUTES` at `backends.js:9-25` + `ROUTE_METHODS` at `index.js:45-61`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`PUT /api/business-config`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`GET|PUT /api/enabled`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 4 类不在 safelist**：`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`POST /worker`（队列排空端点，由外部调度周期性调用而非人工触发，Bearer 鉴权，见 §6.3.1）、`GET /healthz`（网关自行聚合，不转发）、`/debug/*`（7 条远程联调面，`SAF-DEBUG-GATE`，只能直连后端 origin，见 §2.1）——**这 4 类都不承载外部业务流量，因此后端实例前不需要第二道入口**。`GET|PUT /api/enabled` 属于必须透传的例外：管理 SPA 本身只部署在 Worker 域名下，业务总开关由它读取与切换（`loadEnabled` 在 `web/config.js:676` 读、开关写入在 `:1048`），缺了这条白名单，SPA 里那个开关在后端直连模式下可用、经网关部署时恒 404；该路由已强制 admin-session Bearer 鉴权，暴露面与同在白名单内的 `/api/admin/session` 完全一致。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
 - **健康聚合（`MOD-HEALTH-AGG`）**：Worker 自行承载 `GET /healthz`，按 TTL 缓存（默认 30s，`LB_HEALTH_TTL_MS` 可调）探测各后端 `/healthz`，返回 `{status, available, total, backends:[{origin,up,status}]}`；≥1 后端 up → 200，全 down → 503。`/ready` 透传给后端，做配置 + Redis + 出站只读探测（JMAP session、TG getMe，各 3s、并行，最坏约 3s），不触发业务副作用。
 - **故障转移（`forwardWithFailover`）**：每次请求最多 `min(LB_MAX_ATTEMPTS, origins.length)` 次尝试；**仅**超时（AbortError）或 5xx 触发换下一个 origin；4xx/2xx/3xx 直接返回；默认 `LB_MAX_ATTEMPTS=2`（首次 + 1 次故障转移）。**例外：`POST /reconcile` 固定 `maxAttempts=1`，绝不故障转移**——它持集群级单飞锁，切实例只会立刻撞 `409`；其单请求超时取 `LB_RECONCILE_TIMEOUT_MS`（默认 `320000` ms），其余路由不受影响。
 - **随机分摊**：起点 origin 按 `Math.random` 随机化，实现双活；单 origin 配置时退化为确定性。

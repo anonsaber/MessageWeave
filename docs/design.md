@@ -151,7 +151,7 @@ WebSocket(...)              ws 错误（feature 开启时）
 | Bot 动词 | 封装函数 | 内部 JMAP |
 |---|---|---|
 | `list_folders()` | → `Vec<Folder>` | `mailbox_query` + `mailbox_get`（缓存 role→id） |
-| `list_emails(folder, page)` | → `Vec<EmailSummary>` | `email_query`(anchor 分页) + `email_get`([Subject, From, Preview, ReceivedAt, HasAttachment]) |
+| `list_emails(folder, page)` | → `Vec<EmailMetadata>` | `email_query`(anchor 分页) + `email_get` 不传 `properties`（取服务器默认全量，含 `From`；列表页也要显示发件人） |
 | `read_email(id, want_body)` | → `EmailBody { text, html, attachments }` | `email_get`([BodyStructure, BodyValues, BlobIds])；**多 part 原文**（`REQ-JMAP-RAW-MULTIPART`）：按 `text_body` 顺序筛选"有 `part_id` 且 `bodyValue`"的 part 后**拼接**为 `text`；若无可用部分 → 返回**明确错误**（不静默返回空串）。附件用 `Blob/get` |
 | `send_email(to, subject, body, attachments)` | → `EmailId` | ① `email_import`/`email_set` 建 draft ② `email_submission_set`(onSend) |
 | `set_flag(id, keyword)` | → () | `email_set` keywords |
@@ -250,7 +250,7 @@ Telegram 渠道用 `src/channel.rs` 的 `reqwest` 自研实现（`ARCH-DEPS-STAG
 Stalwart JMAP Push → POST /push/jmap (StateChange{Email/EmailDelivery: new_state})
   → 校验 pushSubscriptionId + verificationCode → 幂等去重(MOD-DEDUP) → 入 Redis Streams(MOD-STREAMS) → 立即 2xx ACK
   → worker: XREADGROUP → 用 sinceState(存 Redis, MOD-SINCESTATE) 调 Email/changes → 取 created[] 的 id
-  → email_get([From, Subject, Preview, ReceivedAt, HasAttachment])
+  → read_email 封装 email_get（Subject, Preview, From, TextBody, BodyValues, Size, ReceivedAt, HasAttachment）→ EmailMetadata
   → notify::core 组装领域 Notification（仅元数据 + 行内按钮意图，绝不含正文）
   → channel::telegram::TelegramClient::send_notification(chat, notification)（内部渲染文本后经 send_text 发出）
   → 更新 sinceState（写外部 Redis）→ XACK
@@ -335,7 +335,7 @@ message-weave/
 
 | 模块 | 依赖 | 输出 | 可测性 | 现状 |
 |---|---|---|---|---|
-| `config` | secrecy；ring（`session_digest` SHA-256） | `Config` 结构（6 字段，全部有真实读取方） | 纯函数，易测 | 已实现（Redis 业务配置 serde 反序列化 + `validate_nonblank` fail-closed；启动期 env 由 `main.rs` 直读，无 figment/TOML） |
+| `config` | secrecy；ring（`session_digest` SHA-256） | `Config` 结构（7 字段，全部有真实读取方） | 纯函数，易测 | 已实现（Redis 业务配置 serde 反序列化 + `validate_nonblank` fail-closed；启动期 env 由 `main.rs` 直读，无 figment/TOML） |
 | `error` | — | `BotError`（§8.1，4 个变体） | 单测 | 已实现 |
 | `domain` + `domain::jmap::client` | **jmap-client 0.4.2** | JMAP 只读语义；`client` = 真实只读 adapter（`MOD-JMAP-CLIENT`） | mock JMAP 响应 + `#[ignore]` 真机测试 | 代码已实现，待真实 Stalwart 端到端验证（`cargo test -- --ignored jmap::`） |
 | `state` | redis 0.27 | Redis 读写：配置/开关/会话/TTL 键（`C-REDIS-ONLY-STATE`） | Redis mock | 已实现 |
@@ -729,7 +729,7 @@ src/ai.rs   # LlmClient（唯一实现）：summarize() 打 OpenAI 兼容 /chat/
 ```
 配置装载在 `src/config.rs` 的 `LlmConfig`，运行时参数在 `src/state.rs` 的 `OutboundConfig`（经 `RuntimeConfigProvider` 下发）。
 LLM 能力只存在于 `src/ai.rs` 一个文件；**没有**配置 / 回退 / 策略 / 审计分层——熔断、规则回退、审计 span 全部未实现（见 §12.4–12.7）。
-调用方只有 `worker.rs` 的 `MetadataWorker`（已授权摘要）和 `notify.rs`（新邮件通知）。
+`summarize()` 只有**一个**调用点：`worker.rs` 的 `/summary` 已授权摘要分支。新邮件通知**不调用 LLM** —— `send_notification` 只渲染 `From:` / `Subject:` / `Received:` 三行元数据，正文永不外发（见 docs/reference.md §5.4）。
 
 ### 12.2 LLM 变量清单（当前实现）
 

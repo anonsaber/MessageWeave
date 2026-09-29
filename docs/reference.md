@@ -71,7 +71,7 @@ substring matches anywhere in the message (`worker.rs:546-566`, `:581-586`).
 `1小时` / `临时1小时` / `直到撤销（最长365天）` are **category labels, not trigger words**:
 typing a label alone grants nothing. Consent never auto-renews.
 
-The same `parse_intent` (worker.rs:523, `Intent` at worker.rs:505) routes `/search <关键词>`
+The same `parse_intent` (worker.rs:543, `Intent` at worker.rs:525) routes `/search <关键词>`
 and the Chinese prefixes `搜索`, `查找`, `检索` (prefix-matched only, never a substring) to
 `Intent::Search`. Search grants no consent and writes no Redis key.
 
@@ -79,9 +79,9 @@ and the Chinese prefixes `搜索`, `查找`, `检索` (prefix-matched only, neve
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `stalwart:jmap`, `stalwart:telegram` | Stream, no EX | `State::enqueue` (state.rs:283, `XADD` at state.rs:285); call sites notify.rs:204 (TG webhook) and notify.rs:860 (JMAP push); reconcile path via `claim_dedup_and_enqueue` (worker.rs:374) | `read_batch` over consumer group `stalwart-workers`, consumer `http-worker` (notify.rs:361, :428) |
-| `delivery:inflight:{stream}:{id}` | EX 60 | key built at notify.rs:396, `claim_dedup` at notify.rs:397 | `release_dedup` on completion (notify.rs:410, 416, 425) |
-| `delivery:committed:{stream}:{id}` | EX 604_800 | key built at notify.rs:375, `claim_dedup` at notify.rs:409 | `dedup_exists` before send (notify.rs:376) |
+| `stalwart:jmap`, `stalwart:telegram` | Stream, no EX | `State::enqueue` (state.rs:283, `XADD` at state.rs:285); call sites notify.rs:253 (TG webhook) and notify.rs:1140 (JMAP push); reconcile path via `claim_dedup_and_enqueue` (worker.rs:394) | `read_batch` over consumer group `stalwart-workers`, consumer `http-worker` (notify.rs:409-410) |
+| `delivery:inflight:{stream}:{id}` | EX 60 | key built at notify.rs:445, `claim_dedup` at notify.rs:446 | `release_dedup` on completion (notify.rs:459, 466, 475) |
+| `delivery:committed:{stream}:{id}` | EX 604_800 | key built at notify.rs:424, `claim_dedup` at notify.rs:458 | `dedup_exists` before send (notify.rs:425) |
 | `retry:{stream}:{id}` | EX 86_400 | `retry_or_dlq` Lua script (key state.rs:481, `INCR` state.rs:485, `EXPIRE` state.rs:486) | reclaim path |
 | `stalwart:jmap:dlq`, `stalwart:telegram:dlq` | Stream, no EX | Lua `XADD` at state.rs:488; name built at notify.rs:429 (`max_attempts` 3, same call) | **nothing in code reads it** |
 
@@ -104,9 +104,9 @@ back — replay is an operator action, not a service feature.
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `dedup:tg:{update_id}` | EX 86_400 | key at notify.rs:199, `claim_dedup` at notify.rs:200, `release_dedup` at :208 | — |
-| `dedup:jmap:{account}:{email}` | EX 86_400 | key at notify.rs:855, `claim_dedup` at notify.rs:856, `release_dedup` at notify.rs:865; same key rebuilt at worker.rs:361 and claimed with `claim_dedup_and_enqueue` at worker.rs:374 | — |
-| `ratelimit:push-verify:{subscription}` | EX 30 | key at notify.rs:816, `claim_dedup` at notify.rs:817 (`push_verify_rate_limited` at :819) | — |
+| `dedup:tg:{update_id}` | EX 86_400 | key at notify.rs:248, `claim_dedup` at notify.rs:249, `release_dedup` at :258 | — |
+| `dedup:jmap:{account}:{email}` | EX 86_400 | key at notify.rs:1135, `claim_dedup` at notify.rs:1136, `release_dedup` at notify.rs:1145; same key rebuilt at worker.rs:390 and claimed with `claim_dedup_and_enqueue` at worker.rs:394 | — |
+| `ratelimit:push-verify:{subscription}` | EX 30 | key at notify.rs:1096, `claim_dedup` at notify.rs:1097 (`push_verify_rate_limited` at :1107) | — |
 | `state:jmap:since` | **No EX** | `set_reconcile_state` (state.rs:676; key at state.rs:679, `SET` without `EX`) | `get_reconcile_state` (state.rs:668) |
 
 `state:jmap:since` is the only state key that survives indefinitely without an explicit
@@ -117,7 +117,7 @@ re-baseline on the next restart.
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `lock:reconcile` | 300 | `acquire_lock` (notify.rs:240) | `renew_lock` heartbeat 90 (notify.rs:253) |
+| `lock:reconcile` | 300 | `acquire_lock` (notify.rs:289) | `renew_lock` heartbeat 90 (notify.rs:302) |
 | `lock:push-register:{sha256(callback_url)}` | 360 | `acquire_lock` (notify.rs:907) | `release_lock` (notify.rs:923, 937, 950, 967, 984, 994) |
 
 **Why the registration lock is 360 s and not 300 s.** The lock must outlive the longest
@@ -185,13 +185,13 @@ field. `request_id` is always present.
 `Retry-After` has two emission sites, both in `notify.rs`, and the value is always the literal
 string `"30"`:
 
-- `error_response` (`notify.rs:321-329`, inserted at `:324`) sets it **only when its `retry`
-  flag is true**. The readiness failure path (`notify.rs:162`) passes `retry = true`, so `/ready`
+- `error_response` (`notify.rs:370-378`, inserted at `:374`) sets it **only when its `retry`
+  flag is true**. The readiness failure path (`notify.rs:210`) passes `retry = true`, so `/ready`
   is covered by that rule rather than by a special case.
-- `error_response_with_id` (`notify.rs:1088-1094`, inserted at `:1090`) sets it
+- `error_response_with_id` (`notify.rs:1368-1375`, inserted at `:1371`) sets it
   **unconditionally**. It is used only for the push register/disable failures
-  `push_state_unavailable` and `push_destroy_failed` (`notify.rs:953`, `:969`, `:986`,
-  `:1023`), which are always `503`.
+  `push_state_unavailable` and `push_destroy_failed` (`notify.rs:1233`, `:1250`, `:1267`,
+  `:1304`), which are always `503`.
 
 `GET /api/status` is the exception that reports setup state with a non-envelope body.
 
@@ -199,12 +199,12 @@ string `"30"`:
 
 ## 3. Backend routes
 
-All HTTP API routes are registered in `router_with_worker_state_runtime_bootstrap_config`
-(`notify.rs:1295`), with the routes wired at `notify.rs:1323-1338`. The three static SPA routes
+All HTTP API routes are registered in `router_with_worker_state_runtime_bootstrap`
+(`notify.rs:1575`), with the routes wired at `notify.rs:1604-1622`. The three static SPA routes
 in the last table row are the exception: they live in `web::router()` (`src/web.rs:19-24`) and
 are merged into the router via `.merge(web::router())`: the setup-mode router at `src/main.rs:76`,
-the production router at `src/main.rs:180`. The setup-mode router at `src/main.rs:76` mounts only
-three of this table — `/healthz`, `/ready` and `/api/status` — and no business or admin route;
+the production router at `src/main.rs:195-205`. The setup-mode router at `src/main.rs:76` mounts
+only three of this table — `/healthz`, `/ready` and `/api/status` — and no business or admin route;
 §5.1 explains why that is deliberate.
 
 | Method | Path | Handler |
@@ -230,10 +230,10 @@ three of this table — `/healthz`, `/ready` and `/api/status` — and no busine
 The remote-debug surface (`src/debug.rs:72-80`) is merged **only when the debug surface is
 requested — `--debug` on the command line or a truthy `DEBUG_ENABLED` env var — and `DEBUG_TOKEN`
 is non-empty** (`SAF-DEBUG-GATE`, gate logic `src/main.rs:15-25`, wired at `src/main.rs:102-114`,
-`src/notify.rs:1340-1342`); otherwise none of these routes exist and requests fall through to
+`src/notify.rs:1625`); otherwise none of these routes exist and requests fall through to
 axum's generic `404`, not a 401. All seven require `Authorization: Bearer <DEBUG_TOKEN>`,
 checked by `debug_authorized` (`src/debug.rs:45`), which delegates to the production
-`worker_authorized` so the comparison is constant time (`src/notify.rs:1136`).
+`worker_authorized` so the comparison is constant time (`src/notify.rs:1416`).
 
 | Method | Path | Handler |
 |---|---|---|
@@ -254,7 +254,7 @@ Response conventions:
   completeness (`setup_missing` empty), Redis reachability, and two upstream probes —
   `GET {jmap_origin}/.well-known/jmap` with the configured Basic credentials, and
   `GET https://api.telegram.org/bot<token>/getMe`. Both probes share `PROBE_TIMEOUT` = 3000ms
-  (`notify.rs:74`) and run **in parallel** (`tokio::join!`, `notify.rs:148`), so the worst case
+  (`notify.rs:122`) and run **in parallel** (`tokio::join!`, `notify.rs:196`), so the worst case
   is a single timeout, about 3s. On success the body is a report whose `jmap`/`telegram` fields
   are real probe results. The probes are plain reusable functions (`probe_jmap_session`,
   `probe_telegram_get_me`) also used by the remote-debug path, so they must not be duplicated.
@@ -309,7 +309,7 @@ backend pool returns **503** rather than passing the request through (index.js:8
 
 `GET, PUT /api/enabled` (the `SAF-ENABLE-FLAG` kill switch) **is** forwarded, because the
 admin SPA serves it at the Worker URL and toggles it from the service card (`loadEnabled`
-reads it at `web/config.js:586`, the toggle writes it at `:958`); both calls are
+reads it at `web/config.js:676`, the toggle writes it at `:1048`); both calls are
 admin-session Bearer-auth'd, so the exposure is identical to the already-forwarded
 `/api/admin/session` pair.
 
@@ -320,9 +320,9 @@ directly, or the bootstrap path must be added to the gateway allowlist.
 
 `POST /api/push/register` and `POST /api/push/disable` **are** forwarded. Both are safe to
 proxy: the callback URL is supplied by the client in the request body (`notify.rs:875`,
-validated as a URL at :891), and every push subscription record is written to and read back
+validated as a URL at :1172), and every push subscription record is written to and read back
 from the shared Redis (`lock:push-register:{sha256(url)}`, `get_push_subscription_for_callback`
-at `notify.rs:918`), so it does not matter which backend instance the worker picks. Push
+at `state.rs:768`), so it does not matter which backend instance the worker picks. Push
 registration therefore no longer requires hitting a specific backend address — see
 deployment.md §10.5.
 
@@ -348,9 +348,9 @@ and reconcile traffic share one router and reconcile is a standalone `POST /reco
 endpoint, so the variable never changed any runtime behaviour — there is now nothing to set.
 
 **Missing a required variable does not crash the process.** It logs a warning and serves
-`router_configuration_setup` (`notify.rs:1200-1223`), which mounts only `/api/status`,
+`router_configuration_setup` (`notify.rs:1500-1520`), which mounts only `/api/status`,
 `/ready` and `/healthz` on top of the static SPA. The business and admin routes from §3 are not
-registered at all: `admin_token` is empty, so `constant_time_eq` (`notify.rs:1136`) would reject
+registered at all: `admin_token` is empty, so `constant_time_eq` (`notify.rs:1416`) would reject
 every candidate forever, and `MemoryState` (`state.rs:875`) could not persist a bootstrap
 write anyway. Posting to `/api/bootstrap` in this mode yields `404` (route absent), not a `401`
 that reads as "retry with a better credential". The container stays up and answers the status
@@ -414,14 +414,14 @@ The `JMAP_*` family is exactly three names. In production the account id arrives
 `accountId` request-body field (notify.rs:1122) and is held on the client as
 `account_id` (src/domain/jmap/client.rs:14); the only remaining environment reads of these
 four names are inside the `#[ignore]` real-server smoke test at
-src/domain/jmap/client.rs:514-526, which is not part of the production configuration surface.
+src/domain/jmap/client.rs:517-526, which is not part of the production configuration surface.
 
 The single prefixed name is `TELEGRAM_CHAT_ID`. Anything else documented as
 `TELEGRAM_BOT_TOKEN` or similar is a documentation error, not a supported variable.
 
 **Trust root.** The SPA admin credential is `CONFIG_ENCRYPTION_KEY` itself: read at startup
 (main.rs:63) and held as `admin_token` (main.rs:92), it is checked in constant time by
-`worker_authorized` (notify.rs:446; compare at notify.rs:1136) at the top of both
+`worker_authorized` (notify.rs:495; compare at notify.rs:1136) at the top of both
 `POST /api/bootstrap` (notify.rs:605) and `POST /api/admin/session` (notify.rs:775). It is
 only compared against the request bearer — never echoed, logged, or stored. The session
 issued by `/api/admin/session` is a freshly generated random 32-byte hex token
@@ -429,6 +429,41 @@ issued by `/api/admin/session` is a freshly generated random 32-byte hex token
 `config:admin_session`. `REDIS_URL` is the Redis connection string alone: an ACL password in
 it, if any, authenticates the Redis connection and is not the credential for any HTTP
 endpoint.
+
+### 5.4 Notification rendering
+
+`send_notification` (`channel.rs`) is the only function that renders a notification into
+Telegram text, and it renders exactly three metadata lines — never the body, and never an
+LLM summary:
+
+```text
+From: Zhang San <zhang@example.com>
+Subject: Q4 budget
+Received: 2026-09-28 09:15
+```
+
+`From:` is the JMAP `EmailAddress` in standard display form: `Name <address>` when the
+sender carries a display name, the bare address otherwise. Both `From:` and `Subject:`
+fall back to a literal (`unknown` / `(no subject)`) only when JMAP did not return the
+property.
+
+`Received:` is rendered at notification time, not stored as text. The server keeps the
+JMAP `receivedAt` as a Unix second and converts it to wall-clock time in the configured
+timezone using `%Y-%m-%d %H:%M` — 24-hour clock, minute precision, no AM/PM, no seconds.
+When `receivedAt` is absent, or falls outside the representable instant range for the zone,
+the literal `unknown` is shown rather than a clipped timestamp.
+
+The timezone is a business-configuration field, `timezone` (`REQ-TIMEZONE-DISPLAY`): an
+IANA identifier, default `Asia/Shanghai`. Only 16 zones are accepted, every one of them
+without daylight saving transitions — `Etc/UTC`, `Africa/Cairo`, `Europe/Istanbul`,
+`Africa/Nairobi`, `Asia/Dubai`, `Asia/Karachi`, `Asia/Kolkata`, `Asia/Bangkok`,
+`Asia/Ho_Chi_Minh`, `Asia/Shanghai`, `Asia/Hong_Kong`, `Asia/Taipei`, `Asia/Singapore`,
+`Asia/Manila`, `Asia/Tokyo`, `Asia/Seoul`. Any other identifier is rejected with **422**
+rather than silently falling back to a guess. This is a deliberate limitation: the offline
+build has no IANA tz database (`chrono-tz` is unavailable), so each zone resolves to a
+fixed offset and never tracks a transition. None of the sixteen needs one, which is why
+`Asia/Shanghai` can be the default. Like the rest of business configuration it is edited
+in the SPA and applied hot, with no restart.
 
 ---
 
@@ -454,7 +489,7 @@ There is **no** `LLM_MAX_RETRIES` environment variable; retry count lives in
 | `MAX_BASELINE_EMAILS` | 10_000 | worker.rs:250 |
 | `RECONCILE_BUDGET` | 20 s | worker.rs:251 |
 | `CHANGE_WINDOW_CAP` | 4_096 | worker.rs:307 |
-| Lock TTL / heartbeat | 300 s / 90 s | notify.rs:240 / 252 |
+| Lock TTL / heartbeat | 300 s / 90 s | notify.rs:289 / 302 |
 
 `max_changes` is a function parameter, not a constant.
 
@@ -510,8 +545,8 @@ and only `script-src`, `style-src` and `connect-src` re-open a same-origin chann
 
 Recorded here so that references elsewhere cannot be mistaken for shipped features.
 
-- `/search` **is** implemented (`bfe0fd8`). Adapter: `search_emails` at `worker.rs:652` and
-  at `src/domain/jmap.rs:268`, backed by `search_emails` at `src/domain/jmap/client.rs:319`.
+- `/search` **is** implemented (`bfe0fd8`). Adapter: `Intent::Search` at `worker.rs:553` and
+  at `src/domain/jmap.rs:268`, backed by `search_emails` at `src/domain/jmap/client.rs:320`.
   What is *not* possible: **body-level** snippets. jmap-client `0.4.2` only exposes
   `emailId`/`subject`/`preview` from `SearchSnippet/get`, and its `Filter` type has no comparator syntax, so
   per-part body highlight cannot be modelled through the locked crate. Search degrades to

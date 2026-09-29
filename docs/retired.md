@@ -87,7 +87,7 @@
 | 把渠道层建成目录模块（含模块入口文件） | 虚构目录 | 渠道层就是 `src/channel.rs` 一个文件 | 无 |
 | `notify::push_handler` / `notify::worker` / `notify::reconcile` 作为模块路径 | 虚构模块路径 | 这些是 `src/notify.rs` 内的自由函数（`jmap_push` / `worker` / `reconcile`），不是模块路径 | 无 |
 | `mod_dedup` / `mod_streams` / `mod_sincestate` | 虚构模块名 | `state.rs` / `notify.rs` 都是平铺文件，无子模块；去重与 Streams 逻辑以自由函数存在 | 无 |
-| `PushVerification` 类型 | 虚构类型 | 未定义；`register_push`（`notify.rs:885`）内联处理回调 URL 与验证码回写 | 无 |
+| `PushVerification` 类型 | 虚构类型 | 未定义；`register_push`（`notify.rs:860`）内联处理回调 URL 与验证码回写 | 无 |
 | `CancellationToken` | 虚构类型 | 未使用；无优雅关闭、无信号处理（`src/` 零命中 `tokio::signal` / `ctrl_c`） | 无 |
 | `Preview` 类型 / 4000 字符长邮件保护 / `[继续查看原文]` 按钮 / `/llm-fallback` 按钮 | 虚构类型与 UI | 全部未实现；授权后把全文交给 LLM，失败即回退前 300 字符，无任何截断标注或按钮 | 无 |
 | `LlmErr`（5 变体） | 虚构枚举 | 真实是 `AiError`，仅 3 个变体（`InvalidEndpoint` / `Request` / `Response`） | 无 |
@@ -96,7 +96,7 @@
 | 熔断器 / 半开态 / 熔断后 60s 冷却 / 规则兜底（Redis 共享计数） | 未实施设计 | 只有超时 + 重试；LLM 失败静默降级为前 300 字回退，无用户侧提示、无状态记录 | 无 |
 | 定时摘要 / 每日邮件摘要推送 | 未实施 | 未实现 | 无 |
 | 附件下载（`send_document` / `Blob/get` / 下载按钮） | 未实施 | JMAP 侧只读；邮件附件仅以 `has_attachment: bool` 形式出现 | 无 |
-| `/flag` / `/unseen` / 发信命令 | 未实施 | 当前识别 6 个意图（帮助 / 同意 / 摘要 / 搜索 / 普通消息 / 未识别）；其中 `/search` 已实现（`worker.rs:533`） | 无 |
+| `/flag` / `/unseen` / 发信命令 | 未实施 | 当前识别 6 个意图（帮助 / 同意 / 摘要 / 搜索 / 普通消息 / 未识别）；其中 `/search` 已实现（`worker.rs:553`） | 无 |
 | `Identity` 概念 | 未实施 | 账号识别只依赖 `ACCOUNT_ID`，无身份层抽象 | 无 |
 | 把 `RUN_MODE` 抽成独立配置文件 | 虚构拆分方案 | `RUN_MODE` 曾由 `config.rs` 读取并在 `src/main.rs` 校验取值，**该变量与校验块现已一并删除**（见 §4）；从未存在 `validate_env_or_exit` 这类函数 | 无 |
 | docker-compose `message-weave health --addr` 示例 | 虚构命令 | 应用无 CLI 子命令；健康检查端点是 `GET /healthz` 与 `GET /ready` | 见 `docs/deployment.md` 的 Health-check 表 |
@@ -124,7 +124,7 @@
 | `required_secret` / `required_nonblank` / `env_bool` | 已删除助手函数 | 仅被上述解析器调用，随其一并删除 | 必填语义改由 `validate_nonblank` 在 Redis 业务配置路径承担（8 处调用） |
 | `RUN_MODE` 变量 + `Config.run_mode` 字段 + 启动校验块 | 已删除标识符 | 两种取值从未改变任何运行时行为：webhook 与 reconcile 共享同一套路由表，`POST /reconcile` 是独立端点。该变量只额外制造了一个必须被文档解释的分支 | 全仓零命中；`NG-SERVER-MODE` 作为设计非目标保留在 `docs/charter.md` |
 | `jmap_password()` 安全访问器 | 已删除方法 | 为 `SecretString` 字段提供不泄密的读取入口，仅在 env 解析路径中有意义 | `jmap_password` 作为业务配置**字段名**保留（`BusinessConfigWire` / `BusinessConfig`），字段本身即 `SecretString` |
-| `Config.port` / `Config.redis_url` 字段 | 已删除字段 | `port` 在两个构造器里硬编码 `8080`，而监听绑定直接从环境变量取值——字段值可与真实监听端口静默不一致，且全仓零读取方；`redis_url` 同样零读取 | `Config` 收窄为 6 字段：`telegram` / `jmap` / `account_id` / `llm` / `auth` / `worker_token`，与 `BusinessConfig` 同构 |
+| `Config.port` / `Config.redis_url` 字段 | 已删除字段 | `port` 在两个构造器里硬编码 `8080`，而监听绑定直接从环境变量取值——字段值可与真实监听端口静默不一致，且全仓零读取方；`redis_url` 同样零读取 | `Config` 收窄为 7 字段：`telegram` / `jmap` / `account_id` / `llm` / `auth` / `worker_token` / `timezone`（末项镜像自 `BusinessConfig`，供 worker 渲染时间戳） |
 | 两个构造器的 `redis_url` 参数 | 已删除参数 | 唯一读者（原 main.rs 第 72 行）在上一轮改造中被移除 | `redis_only()` 与 `from_business(value)`；包装器 `from_business_json` / `from_business_value` 同步去掉首参 |
 | 19 个遗留环境变量名 | 已删除读取 | 见上；这些名字在代码中已无任何读取方 | 名单见 `docs/reference.md` §5.3；语义见 `docs/design.md` §7.1 |
 | `Channel` / `Notifier` / `MessageAdapter`（`src/channel.rs`）+ `UserCommand`（`src/domain.rs`） | 已删除占位 trait 与类型 | 三者**无实现、无调用方、无 dyn 绑定**，`#[expect(dead_code)]` 属性是仅有的引用来源；实际 Telegram 出站走 `channel::telegram::TelegramClient`，由 `worker.rs` 的 `MetadataWorker` 与 `notify.rs` 直接持有，从未经过它们。`UserCommand` 的唯一使用者是被删的 `Channel` | `channel.rs` 只留 `pub mod telegram`（`TelegramClient`，`reqwest` 自研）；`domain.rs` 只留领域 `Notification`（worker.rs:234 在用）。这是 src/ 里最后 3 个 `#[expect(dead_code)]` |
