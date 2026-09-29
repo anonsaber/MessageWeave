@@ -394,7 +394,7 @@ message-weave/
 
 > 当前 `config.rs` 从 Redis 业务配置提供上述字段（含 `TelegramConfig` / `JmapConfig` / `LlmConfig`）；进程级启动变量由 `src/main.rs` 直读，不经过 `config` 层。未来若引入 TOML/figment 需另立决策；当前文档不假设配置文件存在。
 > **入口鉴权密钥（`TG_WEBHOOK_SECRET`/`RECONCILE_TOKEN`）在业务配置完成后必须有效**（fail-closed，`SAF-AUTH-*`）。JMAP Push 的验证码由 Stalwart 在订阅创建后动态生成，不属于业务配置。启动引导变量缺失时服务进入配置引导模式并保持 SPA 可访问；不会因为缺少启动变量而伪造业务成功，也不会绕过入口鉴权。
-> **JMAP session URL 归一化（`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）**：`JMAP_SESSION_URL` 既接受**服务基地址**（`https://mail.example.com`）也接受**完整 session URL**（`https://mail.example.com/.well-known/jmap`）。代码在调用 `jmap_client::Client::connect` **之前统一归一化为 origin/base**——`jmap-client` 会自动追加 `/.well-known/jmap`，故**不会出现重复路径**（如 `…/.well-known/jmap/.well-known/jmap`）。约束：**仅 HTTPS**（http 拒绝）；**禁止 URL 内嵌用户名/密码**（凭据只经 `JMAP_USERNAME`/`JMAP_PASSWORD`，`C-AUTH-APP-BASIC`）；拒绝危险 query。（状态：D-G1-1 **代码已实现，待真实 `cargo test -- --ignored jmap::` 验证**。）
+> **JMAP session URL 归一化（`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）**：`JMAP_SESSION_URL` 既接受**服务基地址**（`https://mail.example.com`）也接受**完整 session URL**（`https://mail.example.com/.well-known/jmap`）。代码在调用 `jmap_client::Client::connect` **之前统一归一化为 origin/base**——`jmap-client` 会自动追加 `/.well-known/jmap`，故**不会出现重复路径**（如 `…/.well-known/jmap/.well-known/jmap`）。约束：**仅 HTTPS**（http 拒绝）；**禁止 URL 内嵌用户名/密码**（凭据只经 `JMAP_USERNAME`/`JMAP_PASSWORD`，`C-AUTH-APP-BASIC`）；拒绝危险 query。**重定向白名单**：`jmap-client` 默认**拒绝一切重定向**，而 Stalwart 会把 `/.well-known/jmap` 307 跳到 `/jmap/session`，因此连接时把**配置里的 origin host 自身**加入信任名单，服务端改写出的其它 host 仍被拒绝（`follow_redirects([trusted_redirect_host(base)])`）。已知上游隐患：Stalwart 的 307 `Location` 会把 `user:pass` 写进 URL，且客户端把该 URL 带凭据回传——故传输错误串**不做额外日志**。（状态：D-G1-1 **代码已实现，并已用真实 Stalwart 实例通过 `cargo test -- --ignored jmap::` 验证**。）
 
 ### 7.2 密钥管理
 - **禁止**把 token/密码写入仓库或任何配置文件（本项目配置不进仓库，`ARCH-CONFIG-ENV`）。
@@ -535,7 +535,7 @@ pub enum BotError {
   - **入口鉴权（`SAF-AUTH-*`）**：`/reconcile`、`/webhook/tg`、`/push/jmap` 在**缺少或错误的**凭证下返回 `401`，并断言鉴权失败时**无副作用**（无 Redis 写入、无 JMAP/AI 调用）；正确凭证放行。
   - **健康探针（`SAF-PROBE-PUBLIC`）**：`/healthz` 返回 `200` 表示进程存活；`/ready` 以 `200/503` 表示就绪——检查配置完整性 + Redis 可达性 + 出站只读探测（`GET {jmap_origin}/.well-known/jmap` 带 Basic 认证、`GET https://api.telegram.org/bot<token>/getMe`，各 3s、并行，最坏约 3s），任一失败返回标准错误 envelope（`service_unavailable` + `Retry-After: 30`），全过返回就绪报告 JSON；响应体不含敏感信息。Uptime Kuma 按状态码（`/ready` 期望 200）监控，不受响应体变化影响。
   - **渠道解耦**：领域模块（`src/domain.rs` / `src/ai.rs` / `src/worker.rs`）的公开接口不出现任何渠道 SDK 类型；渠道装配集中在 `src/channel.rs`。
-  - **JMAP session URL（`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）**：基地址与完整 `…/.well-known/jmap` 两种输入**均接受且归一化结果一致**，传给 `Client::connect` 的 URL **不含重复 `/.well-known/jmap`**；`http://` 被拒绝；**内嵌凭据（`https://user:pass@host`）被拒绝**；危险 query 被拒绝。
+  - **JMAP session URL（`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）**：基地址与完整 `…/.well-known/jmap` 两种输入**均接受且归一化结果一致**，传给 `Client::connect` 的 URL **不含重复 `/.well-known/jmap`**；`http://` 被拒绝；**内嵌凭据（`https://user:pass@host`）被拒绝**；危险 query 被拒绝；重定向仅信任配置里的 origin host（Stalwart 会 307 跳到 `/jmap/session`）。
   - **JMAP 多 part 原文（`REQ-JMAP-RAW-MULTIPART`）**：`read_email` 对多 part 正文按 `text_body` 顺序拼接"有 `part_id` 且有 `bodyValue`"的部分；构造"无可用部分"用例断言返回**明确错误**（非空串）。
 
 ---
@@ -595,7 +595,7 @@ pub enum BotError {
 > 前置：`GATE-P0` 全项通过（`BOUND-STAGE1`）。
 
 - 依赖 `jmap-client 0.4.2`（**已引入**，`ARCH-DEPS-STAGE1`；版本/features 以 `Cargo.toml` 为准，**禁用 WebSocket feature**）；`config.rs` 复用既有 Redis 业务配置骨架（不引入独立的示例配置文件，见 `ARCH-CONFIG-ENV`）。
-- `domain::jmap::client` = 真实只读 adapter（`MOD-JMAP-CLIENT`，**G1/D-G1-1 代码已实现，待真实 `cargo test -- --ignored jmap::` 验证；未实际运行前不得声称真机通过**）：已实现 = 包装 `Client::connect`（Basic 认证 `C-AUTH-APP-BASIC`）、**URL 归一化**（`JMAP_SESSION_URL` 接受服务基地址或完整 `…/.well-known/jmap`，归一化为 origin/base 后传入，避免重复路径；仅 HTTPS、禁内嵌凭据与 query，`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）、**account 选择**：`ACCOUNT_ID` 留空取 session 主账户、显式值校验后使用（`REQ-SINGLE-ACCOUNT`）。
+- `domain::jmap::client` = 真实只读 adapter（`MOD-JMAP-CLIENT`，**G1/D-G1-1 代码已实现，并已用真实 Stalwart 实例通过 `cargo test -- --ignored jmap::` 验证（session 连接 → folder 列举 → 邮件列表 → 按 id 读取）**）：已实现 = 包装 `Client::connect`（Basic 认证 `C-AUTH-APP-BASIC`）、**URL 归一化**（`JMAP_SESSION_URL` 接受服务基地址或完整 `…/.well-known/jmap`，归一化为 origin/base 后传入，避免重复路径；仅 HTTPS、禁内嵌凭据与 query，`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）、**重定向信任**（仅信任配置里的 origin host，Stalwart 会 307 跳到 `/jmap/session`，否则 `jmap-client` 默认拒绝一切重定向）、**account 选择**：`ACCOUNT_ID` 留空取 session 主账户、显式值校验后使用（`REQ-SINGLE-ACCOUNT`）。
 - `domain::jmap::JmapService::list_folders / list_emails / read_email`（query/get；`list_emails` 含 `limit` 边界；`received_at` 解析；`read_email` 多 part 拼接见 `REQ-JMAP-RAW-MULTIPART`）。
 - **R1 入口鉴权已就绪**：`/reconcile`/`/webhook/tg`/`/push/jmap` 及 `/api/push/register` 鉴权（`SAF-AUTH-*`）已落地并通过单测；后续改动不得放宽或绕过鉴权。
 - `#[ignore]` 真实测试（`GATE-G1-JMAP-READONLY`）：经**环境变量**驱动，运行命令 `cargo test -- --ignored jmap::`（`--ignored` 是 libtest 参数，必须置于 `--` 之后）；仅编译不执行用 `cargo test --no-run`（编译含 `#[ignore]` 的测试目标）。**缺环境时清晰跳过且不泄露任何密钥**；CI 默认不跑真机用例，mock 测试继续保留。**真机用例通过与否须以实际 `--ignored` 运行为准——不得在未运行的情况下声称"真机通过"。**

@@ -377,7 +377,7 @@ The `JMAP_*` family is exactly three names. In production the account id arrives
 `accountId` request-body field (notify.rs:1122) and is held on the client as
 `account_id` (src/domain/jmap/client.rs:14); the only remaining environment reads of these
 four names are inside the `#[ignore]` real-server smoke test at
-src/domain/jmap/client.rs:499-511, which is not part of the production configuration surface.
+src/domain/jmap/client.rs:514-526, which is not part of the production configuration surface.
 
 The single prefixed name is `TELEGRAM_CHAT_ID`. Anything else documented as
 `TELEGRAM_BOT_TOKEN` or similar is a documentation error, not a supported variable.
@@ -474,7 +474,7 @@ and only `script-src`, `style-src` and `connect-src` re-open a same-origin chann
 Recorded here so that references elsewhere cannot be mistaken for shipped features.
 
 - `/search` **is** implemented (`bfe0fd8`). Adapter: `search_emails` at `worker.rs:652` and
-  at `src/domain/jmap.rs:268`, backed by `search_emails` at `src/domain/jmap/client.rs:318`.
+  at `src/domain/jmap.rs:268`, backed by `search_emails` at `src/domain/jmap/client.rs:319`.
   What is *not* possible: **body-level** snippets. jmap-client `0.4.2` only exposes
   `emailId`/`subject`/`preview` from `SearchSnippet/get`, and its `Filter` type has no comparator syntax, so
   per-part body highlight cannot be modelled through the locked crate. Search degrades to

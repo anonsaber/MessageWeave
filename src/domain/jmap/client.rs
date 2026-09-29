@@ -47,6 +47,7 @@ impl JmapClientBackend {
         let timeout = std::time::Duration::from_millis(timeout_ms.max(100));
         let connect = jmap_client::client::Client::new()
             .credentials((username, password))
+            .follow_redirects([trusted_redirect_host(&session_base)])
             .connect(&session_base);
         let mut client = tokio::time::timeout(timeout, connect)
             .await
@@ -454,6 +455,20 @@ pub(crate) fn normalize_session_url(value: &str) -> Result<String, JmapError> {
     Ok(parsed.origin().ascii_serialization())
 }
 
+/// Hosts the JMAP client is allowed to follow redirects to.
+///
+/// jmap-client ships with an empty trust list and aborts any redirect to a host it was not
+/// told to trust. Stalwart always 307-redirects `/.well-known/jmap` to `/jmap/session`, so
+/// leaving the list empty makes every Stalwart deployment fail at connect with
+/// "Aborting redirect request to unknown host". We trust the single origin host we were
+/// handed and nothing else — the client still refuses to be pointed at a different host.
+pub(crate) fn trusted_redirect_host(session_base: &str) -> String {
+    url::Url::parse(session_base)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
 fn select_account<'a>(
     requested: Option<&str>,
     primary: &'a str,
@@ -543,6 +558,31 @@ mod tests {
             .map(|value| (*value).to_owned())
             .collect::<Vec<_>>();
         Box::leak(owned.into_boxed_slice()).iter()
+    }
+
+    #[test]
+    fn redirect_trust_is_derived_from_the_given_origin_only() {
+        assert_eq!(
+            trusted_redirect_host("https://mail.example.com"),
+            "mail.example.com"
+        );
+        // normalize_session_url collapses the accepted paths to the origin, so the trust
+        // list stays a single host even when the caller typed the well-known path.
+        assert_eq!(
+            trusted_redirect_host(
+                &normalize_session_url("https://mail.example.com/.well-known/jmap").unwrap()
+            ),
+            "mail.example.com"
+        );
+        // host_str() excludes the port, and jmap-client compares against host_str() too,
+        // so a non-standard port must not leak into the trust list.
+        assert_eq!(
+            trusted_redirect_host("https://mail.example.com:8443"),
+            "mail.example.com"
+        );
+        // An unparseable base yields an empty host, which matches no redirect target, so the
+        // client falls back to trusting nobody — the pre-existing fail-closed behaviour.
+        assert_eq!(trusted_redirect_host("not a url"), "");
     }
 
     #[test]
