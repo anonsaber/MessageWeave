@@ -202,7 +202,8 @@ string `"30"`:
 All HTTP API routes are registered in `router_with_worker_state_runtime_bootstrap_config`
 (`notify.rs:1276`), with the routes wired at `notify.rs:1305-1319`. The three static SPA routes
 in the last table row are the exception: they live in `web::router()` (`src/web.rs:19-24`) and
-are merged into the production router at `src/main.rs:62` and `src/main.rs:194`.
+are merged into the router via `.merge(web::router())`: the setup-mode router at `src/main.rs:62`,
+the production router at `src/main.rs:180`.
 
 | Method | Path | Handler |
 |---|---|---|
@@ -224,7 +225,7 @@ are merged into the production router at `src/main.rs:62` and `src/main.rs:194`.
 | GET | `/`, `/assets/config.js`, `/assets/styles.css` | `index` / `script` / `styles` |
 
 The remote-debug surface (`src/debug.rs:72-80`) is merged **only when the process is started
-with `--debug` and `DEBUG_TOKEN` is non-empty** (`SAF-DEBUG-GATE`, `src/main.rs:96-100`,
+with `--debug` and `DEBUG_TOKEN` is non-empty** (`SAF-DEBUG-GATE`, `src/main.rs:82-89`,
 `src/notify.rs:1321-1322`); otherwise none of these routes exist and requests fall through to
 axum's generic `404`, not a 401. All seven require `Authorization: Bearer <DEBUG_TOKEN>`,
 checked by `debug_authorized` (`src/debug.rs:45`), which delegates to the production

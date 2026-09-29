@@ -692,7 +692,7 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 
 ### 11.4 已由代码回答的早期问题（不再待确认）
 以下问题在设计阶段以 Q6–Q30 形式列出，**代码落地时已各自给出答案**，因此不再是"待确认项"，此处只记结论：
-- **消息格式**（Q6）：出站只有 `send_text`（`src/channel.rs:134`），其载荷结构体 `SendMessage`（`src/channel.rs:80`）只有 `chat_id` + `text` 两个字段，**没有 `parse_mode`**——Telegram 收到后按纯文本渲染，既不用 HTML 也不用 MarkdownV2。
+- **消息格式**（Q6）：出站只有 `send_text`（`src/channel.rs:114`），其载荷结构体 `SendMessage`（`src/channel.rs:60`）只有 `chat_id` + `text` 两个字段，**没有 `parse_mode`**——Telegram 收到后按纯文本渲染，既不用 HTML 也不用 MarkdownV2。
 - **长邮件 / 原文直发**（Q7、Q29）：不存在"正文超过 4000 字符不发全文"的策略。`read_email` 拉全文送 LLM；AI 失败时回退为前 300 字符且**无"已截断"标注**（见 §12.3/§12.5）。
 - **附件**（Q8、Q28）：完全未实现。领域模型只有 `has_attachment: bool`，出站只有 `sendMessage`，没有 `send_document` 也没有 `Blob/get`（见 §12.3）。
 - **推送范围**（Q9）：对账拉全量 `changes`，Bot 侧不做文件夹/发件人/关键词过滤，也没有 Sieve 依赖（Q11 因此无影响）。
@@ -736,7 +736,7 @@ LLM 能力只存在于 `src/ai.rs` 一个文件；**没有**配置 / 回退 / �
 | 变量 | 类型 | 默认 | 用途 |
 |---|---|---|---|
 | `LLM_ENABLED` | bool | `false` | 总开关；默认关闭，未启用时不校验 `LLM_API_KEY`/`LLM_BASE_URL`/`LLM_MODEL` |
-| `LLM_ALLOW_NET` | bool | `false` | 运行时出站许可；`LLM_ENABLED && LLM_ALLOW_NET` 同时为真才构造 `LlmClient`，否则 `llm` 字段为 `None`（`src/main.rs:125`） |
+| `LLM_ALLOW_NET` | bool | `false` | 运行时出站许可；`LLM_ENABLED && LLM_ALLOW_NET` 同时为真才构造 `LlmClient`，否则 `llm` 字段为 `None`（`src/main.rs:111-127`） |
 | `LLM_API_KEY` | string | 可省略 | Bearer token；仅 `LLM_ENABLED=true` 时必填 |
 | `LLM_BASE_URL` | URL | 可省略 | 仅启用时必填，且必须 `https`，否则 `AiError::InvalidEndpoint` |
 | `LLM_MODEL` | string | 可省略 | 仅启用时必填；透传给 `/chat/completions` 的 `model` |

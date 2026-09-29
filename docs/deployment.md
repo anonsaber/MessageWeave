@@ -59,14 +59,14 @@
 
 **双因子启用条件（`SAF-DEBUG-GATE`，两者必须同时成立）**
 
-1. 进程命令行必须带 `--debug`（读取于 `src/main.rs:96`）。
-2. `DEBUG_TOKEN` 环境变量必须存在且非空（读取于 `src/main.rs:97-100`）。
+1. 进程命令行必须带 `--debug`（读取于 `src/main.rs:82`）。
+2. `DEBUG_TOKEN` 环境变量必须存在且非空（读取于 `src/main.rs:82-89`）。
 
-缺一即不挂载：`debug_router()` 本身会构造出全部 7 条路由（`src/debug.rs:72-80`），但主入口**只在双因子成立时才合并它**（`src/notify.rs:1321-1322`）。所以未开启时 `/debug/*` 路由根本不存在，请求走 axum 兜底返回普通 `404 not found`——**不是** 401，也不会泄露「此路径存在」。开启成功时打一条 WARN 日志标记该面已打开（`src/main.rs:107-109`，`SAF-LOG-PURITY`：只记开启状态，从不记录 token 值）。
+缺一即不挂载：`debug_router()` 本身会构造出全部 7 条路由（`src/debug.rs:72-80`），但主入口**只在双因子成立时才合并它**（`src/notify.rs:1321-1322`）。所以未开启时 `/debug/*` 路由根本不存在，请求走 axum 兜底返回普通 `404 not found`——**不是** 401，也不会泄露「此路径存在」。开启成功时打一条 WARN 日志标记该面已打开（`src/main.rs:90-92`，`SAF-LOG-PURITY`：只记开启状态，从不记录 token 值）。
 
 **鉴权**
 
-7 条路由全部要求 `Authorization: Bearer <DEBUG_TOKEN>`，统一走 `debug_authorized`（`src/debug.rs:45`），它委托生产同款 `worker_authorized`，因此令牌是**常数时间比较**（`src/notify.rs:1136`）。失败回 `401 unauthorized`，且不设 `Retry-After`（`src/debug.rs:52-54`）。
+7 条路由全部要求 `Authorization: Bearer <DEBUG_TOKEN>`，统一走 `debug_authorized`（`src/debug.rs:45`），它委托生产同款 `worker_authorized`（`src/notify.rs:446`），因此令牌是**常数时间比较**（`src/notify.rs:1136`）。失败回 `401 unauthorized`，且不设 `Retry-After`（`src/debug.rs:52-54`）。
 
 **7 条路由与预期状态码**（注册于 `src/debug.rs:72-80`，路径为字面量，无常量抽取）
 
