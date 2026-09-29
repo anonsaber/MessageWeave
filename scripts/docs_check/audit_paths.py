@@ -113,6 +113,9 @@ CONVENTIONAL = {
     "docker-compose.yml": "docker compose's default filename; deployment.md "
                           "states the repo ships no compose file and gives the "
                           "image-based command instead",
+    "hoststack.yml": "second filename HostStack's yaml-parser accepts alongside "
+                     "hoststack.yaml; deployment.md names both while the repo "
+                     "ships only the .yaml variant",
 }
 
 # --- non-path shapes that look like paths -----------------------------------

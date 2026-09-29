@@ -165,6 +165,21 @@ services 表里已存的值填进 payload，再用 `hoststack.yaml` 声明的值
 > 但按上面的优先级，**这个前提不成立**——直接删 YAML 服务起不来。**当前决定：保留
 > `hoststack.yaml`。** 保留的代价是双写（在控制台改命令不会生效，必须改 YAML）；
 > 保留的理由是部署命令进入 git 历史、可 review 可回滚，而控制台值散在平台侧、改动无痕迹。
+>
+> **这个双写不是我们多此一举，命令字段从设计上就不回写控制台**：agent 源码里只有
+> `yaml_port_declared` 与 `yaml_disk_declared` 两个回写事件，**命令没有**——每次部署都是
+> 拿 YAML 临时覆盖 services 行里的旧值。`port` 与 `disk` 之所以要回写，是因为
+> autoscaling 与 sleep-wake 直接读那行；命令只有部署路径自己读，所以不值得持久化。
+> 结论是控制台对命令字段永远是过期缓存，**不存在"以 UI 为准"的稳态**——这也是 HostStack
+> 把它叫 Infrastructure-as-Code 的原因（源码原文：*hoststack.yaml is
+> Infrastructure-as-Code: when the repo declares a command, it wins over whatever happens
+> to be cached on the services row*）。
+>
+> **关于这个文件的来历**：它不是 HostStack 生成的，也没有官方模板可抄——agent 镜像里
+> 既没有 `init` 类命令也没有内嵌的模板 YAML，只负责在仓库根读取 `hoststack.yaml` 或
+> `hoststack.yml`。本文件是 `a571033` 手写的，所以"官方推荐怎么写"没有标准答案，只有
+> schema（见上一条的未知键行为）。
+>
 > **若日后确要移除**，必须**先在控制台把三条命令改对**（install = `cargo fetch --locked`、
 > build = `cargo build --release --locked`、start = `./target/release/message-weave`），
 > 再删本文件并重新部署一次验证；同时把本段连同该前提移到 `docs/retired.md` 并记下
