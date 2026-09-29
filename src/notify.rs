@@ -950,6 +950,7 @@ async fn build_worker_report(
         config.telegram_chat_id,
         app.state,
         llm,
+        crate::config::timezone_offset_of(&config.timezone),
     )))
 }
 

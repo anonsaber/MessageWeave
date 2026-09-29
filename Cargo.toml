@@ -6,6 +6,10 @@ edition = "2021"
 [dependencies]
 async-trait = "0.1"
 axum = "0.8"
+# Already in Cargo.lock as a jmap-client transitive dep; used only for the
+# fixed-offset render of notification timestamps. No IANA DB: chrono-tz is not
+# available offline, so only no-DST zones are supported (see config.rs).
+chrono = "0.4"
 # Read-only HTTP JMAP only; keep WebSocket/EventSource out of the dependency graph.
 jmap-client = { version = "=0.4.2", default-features = false, features = ["async", "rustls"] }
 redis = { version = "0.27", default-features = false, features = ["aio", "tokio-comp", "streams", "script", "tokio-rustls-comp"] }

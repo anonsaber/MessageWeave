@@ -155,6 +155,8 @@ pub struct MetadataWorker<B> {
     chat_id: i64,
     state: Arc<dyn ReliableState>,
     llm: Option<Arc<LlmClient>>,
+    /// Fixed offset, seconds east of UTC, for the configured display zone.
+    timezone_offset: i32,
 }
 
 impl<B: JmapBackend> MetadataWorker<B> {
@@ -164,6 +166,7 @@ impl<B: JmapBackend> MetadataWorker<B> {
         chat_id: i64,
         state: Arc<dyn ReliableState>,
         llm: Option<Arc<LlmClient>>,
+        timezone_offset: i32,
     ) -> Self {
         Self {
             jmap,
@@ -171,8 +174,25 @@ impl<B: JmapBackend> MetadataWorker<B> {
             chat_id,
             state,
             llm,
+            timezone_offset,
         }
     }
+}
+
+/// Render a unix-seconds timestamp as wall clock time in a fixed-offset zone.
+///
+/// `offset_seconds` must be within +/-24h, which holds for every entry of
+/// `SUPPORTED_TIMEZONES`; out-of-range values return `None` instead of panicking.
+fn format_received_at(unix_seconds: i64, offset_seconds: i32) -> Option<String> {
+    use chrono::{DateTime, FixedOffset};
+
+    let offset = FixedOffset::east_opt(offset_seconds)?;
+    let utc = DateTime::from_timestamp(unix_seconds, 0)?;
+    Some(
+        utc.with_timezone(&offset)
+            .format("%Y-%m-%d %H:%M")
+            .to_string(),
+    )
 }
 
 #[async_trait]
@@ -236,7 +256,7 @@ impl<B: JmapBackend> WorkerHandler for MetadataWorker<B> {
                     subject: metadata.subject.unwrap_or_else(|| "(no subject)".into()),
                     received_at: metadata
                         .received_at
-                        .map(|v| v.to_string())
+                        .and_then(|unix| format_received_at(unix, self.timezone_offset))
                         .unwrap_or_else(|| "unknown".into()),
                 },
             )
@@ -996,6 +1016,7 @@ mod reload_tests {
             llm_model: None,
             reconcile_token: SecretString::new("reconcile".into()),
             worker_token: SecretString::new("worker".into()),
+            timezone: "Asia/Shanghai".into(),
         }
     }
 
@@ -1041,5 +1062,45 @@ mod reload_tests {
         async fn process(&self, _stream: &str, _payload: &str) -> Result<(), ()> {
             Ok(())
         }
+    }
+
+    /// `1700000000` is `2023-11-14T22:13:20Z`. These are the literal expected
+    /// wall clock strings, so an offset regression shows up as a value mismatch
+    /// rather than a silently shifted time.
+    #[test]
+    fn received_at_renders_in_the_configured_zone() {
+        use crate::config::{default_timezone, resolve_timezone};
+
+        let unix = 1_700_000_000_i64;
+        let shanghai = resolve_timezone("Asia/Shanghai").unwrap();
+        let tokyo = resolve_timezone("Asia/Tokyo").unwrap();
+        let utc = resolve_timezone("Etc/UTC").unwrap();
+        let kolkata = resolve_timezone("Asia/Kolkata").unwrap();
+
+        assert_eq!(
+            format_received_at(unix, shanghai),
+            Some("2023-11-15 06:13".into())
+        );
+        assert_eq!(
+            format_received_at(unix, tokyo),
+            Some("2023-11-15 07:13".into())
+        );
+        assert_eq!(
+            format_received_at(unix, utc),
+            Some("2023-11-14 22:13".into())
+        );
+        // Half-hour zone: the :30 offset must survive the round trip.
+        assert_eq!(
+            format_received_at(unix, kolkata),
+            Some("2023-11-15 03:43".into())
+        );
+
+        // The configured default is the zone the SPA ships with.
+        assert_eq!(default_timezone(), "Asia/Shanghai");
+        assert_eq!(resolve_timezone(&default_timezone()), Some(8 * 3600));
+
+        // Out-of-range values fall back to "unknown" upstream instead of panicking.
+        assert_eq!(format_received_at(i64::MIN, shanghai), None);
+        assert_eq!(format_received_at(unix, 25 * 3600), None);
     }
 }

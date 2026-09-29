@@ -30,6 +30,83 @@ pub fn encryption_key_from_env() -> Result<[u8; 32], BotError> {
     Ok(key)
 }
 
+/// Default display zone for notification timestamps.
+pub fn default_timezone() -> String {
+    "Asia/Shanghai".into()
+}
+
+/// The only zones this build can render. Each is a fixed-offset zone with no
+/// daylight-saving transitions, so a stored offset is correct year round.
+///
+/// Only zones with a permanent offset are listed. The IANA database is not
+/// available in this build (no `chrono-tz`), so a DST zone would silently
+/// report the wrong wall clock time for part of the year. Adding one here is
+/// therefore a silent-correctness bug, not a feature.
+pub(crate) const SUPPORTED_TIMEZONES: &[(&str, &str, &str)] = &[
+    ("Etc/UTC", "UTC", "+00:00"),
+    ("Africa/Cairo", "埃及开罗", "+02:00"),
+    ("Europe/Istanbul", "土耳其伊斯坦布尔", "+03:00"),
+    ("Africa/Nairobi", "肯尼亚内罗毕", "+03:00"),
+    ("Asia/Dubai", "阿联酋迪拜", "+04:00"),
+    ("Asia/Karachi", "巴基斯坦卡拉奇", "+05:00"),
+    ("Asia/Kolkata", "印度加尔各答", "+05:30"),
+    ("Asia/Bangkok", "泰国曼谷", "+07:00"),
+    ("Asia/Ho_Chi_Minh", "越南河内", "+07:00"),
+    ("Asia/Shanghai", "中国上海", "+08:00"),
+    ("Asia/Hong_Kong", "中国香港", "+08:00"),
+    ("Asia/Taipei", "中国台北", "+08:00"),
+    ("Asia/Singapore", "新加坡", "+08:00"),
+    ("Asia/Manila", "菲律宾马尼拉", "+08:00"),
+    ("Asia/Tokyo", "日本东京", "+09:00"),
+    ("Asia/Seoul", "韩国首尔", "+09:00"),
+];
+
+/// Resolve one supported zone to its fixed offset, in seconds east of UTC.
+/// Returns `None` when the name is not in the table.
+pub(crate) fn resolve_timezone(iana: &str) -> Option<i32> {
+    SUPPORTED_TIMEZONES
+        .iter()
+        .find(|(name, _, _)| *name == iana)
+        .map(|(_, _, offset)| {
+            parse_offset_seconds(offset)
+                .expect("static offsets in SUPPORTED_TIMEZONES parse as ±HH:MM")
+        })
+}
+
+/// Parse a `±HH:MM` offset into seconds east of UTC. `None` for a malformed
+/// string; the table entries are all well formed, so a failure here is a bug.
+pub(crate) fn parse_offset_seconds(offset: &str) -> Option<i32> {
+    let sign = if offset.starts_with('-') {
+        -1_i32
+    } else if offset.starts_with('+') {
+        1_i32
+    } else {
+        return None;
+    };
+    let rest = &offset[1..];
+    let (hours, minutes) = rest.split_once(':')?;
+    let hours: i32 = hours.parse().ok()?;
+    let minutes: i32 = minutes.parse().ok()?;
+    if hours > 23 || minutes > 59 {
+        return None;
+    }
+    Some(sign * (hours * 3600 + minutes * 60))
+}
+
+/// Default notification display zone, as a fixed offset in seconds east of UTC.
+pub(crate) fn default_timezone_offset() -> i32 {
+    resolve_timezone(&default_timezone()).expect("the default zone is in the table")
+}
+
+/// Fixed offset for a zone already accepted by `TryFrom<BusinessConfigWire>`.
+///
+/// Configs only reach a worker after the zone name was validated against the table,
+/// so the fallback is unreachable; it keeps the helper infallible rather than panicking
+/// in a worker construction path.
+pub(crate) fn timezone_offset_of(zone: &str) -> i32 {
+    resolve_timezone(zone).unwrap_or_else(default_timezone_offset)
+}
+
 /// Runtime-only settings. SecretString prevents accidental formatting/logging of credentials.
 /// C-AUTH-APP-BASIC and REQ-SINGLE-ACCOUNT are intentionally represented explicitly.
 pub struct Config {
@@ -39,6 +116,8 @@ pub struct Config {
     pub llm: LlmConfig,
     pub auth: AuthSecrets,
     pub worker_token: SecretString,
+    /// Display zone mirrored from `BusinessConfig`; the worker renders timestamps in it.
+    pub timezone: String,
 }
 
 /// Runtime-only endpoint credentials; never format or log these values.
@@ -79,6 +158,8 @@ pub struct BusinessConfig {
     pub telegram_chat_id: i64,
     pub chat_allowlist: Vec<i64>,
     pub telegram_webhook_secret: SecretString,
+    /// Display zone for notification timestamps; always one of SUPPORTED_TIMEZONES.
+    pub timezone: String,
     pub jmap_session_url: String,
     pub jmap_username: String,
     pub jmap_password: SecretString,
@@ -100,6 +181,8 @@ pub(crate) struct BusinessConfigWire {
     pub telegram_chat_id: i64,
     pub chat_allowlist: Vec<i64>,
     pub telegram_webhook_secret: String,
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
     pub jmap_session_url: String,
     pub jmap_username: String,
     pub jmap_password: String,
@@ -121,6 +204,7 @@ impl From<BusinessConfig> for BusinessConfigWire {
             telegram_chat_id: value.telegram_chat_id,
             chat_allowlist: value.chat_allowlist,
             telegram_webhook_secret: value.telegram_webhook_secret.expose_secret().to_owned(),
+            timezone: value.timezone,
             jmap_session_url: value.jmap_session_url,
             jmap_username: value.jmap_username,
             jmap_password: value.jmap_password.expose_secret().to_owned(),
@@ -147,6 +231,11 @@ impl TryFrom<BusinessConfigWire> for BusinessConfig {
         validate_nonblank("TG_WEBHOOK_SECRET", &value.telegram_webhook_secret)?;
         validate_nonblank("RECONCILE_TOKEN", &value.reconcile_token)?;
         validate_nonblank("WORKER_TOKEN", &value.worker_token)?;
+        if resolve_timezone(&value.timezone).is_none() {
+            return Err(BotError::Config(
+                "TIMEZONE must be one of the supported time zones".into(),
+            ));
+        }
         if let Some(key) = value.llm_api_key.as_deref() {
             validate_nonblank("LLM_API_KEY", key)?;
         }
@@ -166,6 +255,7 @@ impl TryFrom<BusinessConfigWire> for BusinessConfig {
             llm_model: value.llm_model,
             reconcile_token: SecretString::new(value.reconcile_token),
             worker_token: SecretString::new(value.worker_token),
+            timezone: value.timezone,
         })
     }
 }
@@ -240,6 +330,7 @@ impl Config {
                 telegram_webhook_secret: empty(),
             },
             worker_token: empty(),
+            timezone: default_timezone(),
         }
     }
 
@@ -271,6 +362,7 @@ impl Config {
                 telegram_webhook_secret: value.telegram_webhook_secret,
             },
             worker_token: value.worker_token,
+            timezone: value.timezone,
         }
     }
 
@@ -307,6 +399,7 @@ mod tests {
             telegram_chat_id: 1,
             chat_allowlist: vec![1],
             telegram_webhook_secret: "hook".into(),
+            timezone: "Asia/Shanghai".into(),
             jmap_session_url: "https://example.invalid".into(),
             jmap_username: "u".into(),
             jmap_password: AUTH_SECRET_VALUE.into(),
@@ -338,6 +431,7 @@ mod tests {
             telegram_chat_id: 1,
             chat_allowlist: Vec::new(),
             telegram_webhook_secret: "hook".into(),
+            timezone: "Asia/Shanghai".into(),
             jmap_session_url: "https://example.invalid".into(),
             jmap_username: "u".into(),
             jmap_password: "p".into(),
@@ -361,6 +455,7 @@ mod tests {
             telegram_chat_id: 1,
             chat_allowlist: vec![1, 2],
             telegram_webhook_secret: "hook".into(),
+            timezone: "Asia/Shanghai".into(),
             jmap_session_url: "https://example.invalid".into(),
             jmap_username: "u".into(),
             jmap_password: "p".into(),
@@ -391,5 +486,126 @@ mod tests {
                 format!("configuration error: missing or blank {name}")
             );
         }
+    }
+
+    /// A zone outside the table fails validation with the exact message the SPA
+    /// will surface.
+    #[test]
+    fn unsupported_timezone_is_rejected() {
+        let wire = BusinessConfigWire {
+            bot_token: "bot".into(),
+            telegram_chat_id: 1,
+            chat_allowlist: vec![1],
+            telegram_webhook_secret: "hook".into(),
+            timezone: "Europe/London".into(),
+            jmap_session_url: "https://example.invalid".into(),
+            jmap_username: "u".into(),
+            jmap_password: "p".into(),
+            account_id: None,
+            llm_enabled: false,
+            llm_allow_net: false,
+            llm_api_key: None,
+            llm_base_url: None,
+            llm_model: None,
+            reconcile_token: "r".into(),
+            worker_token: "w".into(),
+        };
+        let error = validate_business_wire(wire).expect_err("unsupported zone must fail");
+        assert_eq!(
+            error.to_string(),
+            "configuration error: TIMEZONE must be one of the supported time zones"
+        );
+    }
+
+    /// Every listed zone must validate.
+    #[test]
+    fn supported_timezones_are_accepted() {
+        for (iana, _, offset) in SUPPORTED_TIMEZONES {
+            let wire = BusinessConfigWire {
+                bot_token: "bot".into(),
+                telegram_chat_id: 1,
+                chat_allowlist: vec![1],
+                telegram_webhook_secret: "hook".into(),
+                timezone: (*iana).to_owned(),
+                jmap_session_url: "https://example.invalid".into(),
+                jmap_username: "u".into(),
+                jmap_password: "p".into(),
+                account_id: None,
+                llm_enabled: false,
+                llm_allow_net: false,
+                llm_api_key: None,
+                llm_base_url: None,
+                llm_model: None,
+                reconcile_token: "r".into(),
+                worker_token: "w".into(),
+            };
+            validate_business_wire(wire)
+                .unwrap_or_else(|e| panic!("{iana} ({offset}) must validate: {e:?}"));
+        }
+
+        assert_eq!(default_timezone(), "Asia/Shanghai");
+        assert_eq!(parse_offset_seconds("+08:00"), Some(8 * 3600));
+        assert_eq!(parse_offset_seconds("+05:30"), Some(5 * 3600 + 30 * 60));
+        assert_eq!(parse_offset_seconds("+00:00"), Some(0));
+        assert_eq!(parse_offset_seconds("-04:00"), Some(-4 * 3600));
+        assert!(parse_offset_seconds("not-an-offset").is_none());
+    }
+
+    /// Persisted configs written before this field existed must still load, with
+    /// the default zone applied rather than a deserialization error.
+    #[test]
+    fn missing_timezone_defaults_to_shanghai() {
+        let value: BusinessConfigWire = serde_json::from_value(serde_json::json!({
+            "bot_token": "bot",
+            "telegram_chat_id": 1,
+            "chat_allowlist": [1],
+            "telegram_webhook_secret": "hook",
+            "jmap_session_url": "https://example.invalid",
+            "jmap_username": "u",
+            "jmap_password": "p",
+            "llm_enabled": false,
+            "llm_allow_net": false,
+            "reconcile_token": "r",
+            "worker_token": "w",
+        }))
+        .expect("a config without timezone must deserialize");
+
+        assert_eq!(value.timezone, "Asia/Shanghai");
+        validate_business_wire(value.clone()).expect("a defaulted zone must validate");
+        let config: BusinessConfig = value.try_into().expect("a valid wire must convert");
+        assert_eq!(config.timezone, "Asia/Shanghai");
+        assert_eq!(
+            resolve_timezone(&config.timezone),
+            Some(default_timezone_offset())
+        );
+    }
+
+    #[test]
+    fn timezone_survives_the_wire_roundtrip() {
+        let config = BusinessConfig {
+            bot_token: secrecy::SecretString::new("bot".into()),
+            telegram_chat_id: 1,
+            chat_allowlist: vec![1],
+            telegram_webhook_secret: secrecy::SecretString::new("hook".into()),
+            timezone: "Asia/Kolkata".into(),
+            jmap_session_url: "https://example.invalid".into(),
+            jmap_username: "u".into(),
+            jmap_password: secrecy::SecretString::new("p".into()),
+            account_id: None,
+            llm_enabled: false,
+            llm_allow_net: false,
+            llm_api_key: None,
+            llm_base_url: None,
+            llm_model: None,
+            reconcile_token: secrecy::SecretString::new("r".into()),
+            worker_token: secrecy::SecretString::new("w".into()),
+        };
+
+        let wire = BusinessConfigWire::from(config);
+        assert_eq!(wire.timezone, "Asia/Kolkata");
+        assert_eq!(
+            serde_json::to_value(&wire).unwrap()["timezone"],
+            "Asia/Kolkata"
+        );
     }
 }

@@ -176,6 +176,7 @@ async fn main() -> Result<(), error::BotError> {
                         chat_id,
                         worker_state,
                         llm,
+                        crate::config::timezone_offset_of(&config.timezone),
                     )) as Arc<dyn WorkerHandler>,
                     Err(_) => {
                         tracing::warn!(
