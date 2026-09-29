@@ -14,6 +14,7 @@
 FROM rust:1-slim-bookworm AS builder
 WORKDIR /build
 ENV CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://mirrors.ustc.edu.cn/crates.io-index/
+COPY build.rs .
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY web ./web

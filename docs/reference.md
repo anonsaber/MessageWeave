@@ -218,6 +218,7 @@ three of this table — `/healthz`, `/ready` and `/api/status` — and no busine
 | GET, PUT | `/api/config` | `get_config` / `put_config` |
 | GET, PUT | `/api/enabled` | `get_enabled` / `put_enabled` |
 | PUT | `/api/business-config` | `put_business_config` |
+| POST | `/api/business-config/preflight` | `preflight_business_config` |
 | POST | `/api/bootstrap` | `bootstrap` |
 | POST | `/api/admin/session/revoke` | `revoke_admin_session` |
 | POST | `/api/admin/session` | `create_admin_session` |
@@ -259,10 +260,12 @@ Response conventions:
   `probe_telegram_get_me`) also used by the remote-debug path, so they must not be duplicated.
   The JMAP probe deliberately authenticates against the *normalized origin*: probing the raw
   session URL unauthenticated would report not-ready forever and make ingress stop routing.
-- `GET /api/status` (**always 200**, `notify.rs:166-174`) returns
-  `{"ready": <bool>, "mode": "env"|"redis", "missing": [...]}`. `ready` is `false` and
-  `missing` lists the absent required keys (`REDIS_URL`, `CONFIG_ENCRYPTION_KEY`) when a
-  variable is absent — the route itself never errors, so it is safe to poll.
+- `GET /api/status` (**always 200**, `notify.rs:214-223`) returns
+  `{"ready": <bool>, "mode": "configured"|"configuration-setup", "missing": [...], "version": "<build-fingerprint>"}`.
+  `ready` is `false` and `missing` lists the absent required keys (`REDIS_URL`,
+  `CONFIG_ENCRYPTION_KEY`) when a variable is absent — the route itself never errors, so it is
+  safe to poll. `version` is the `BUILD_VERSION` string baked in by `build.rs`
+  (`<git-sha-or-nogit>+<UTC build time>`) and is how the SPA footer proves a deploy landed.
 - `/debug/*` returns **503** in exactly one place: `POST /debug/notify` when the business
   config is not loaded or there is no outbound client — `service_unavailable` with
   `Retry-After: 30` (`src/debug.rs:56-58`). The three probe endpoints instead report failure
@@ -361,6 +364,40 @@ successful write creates the configuration, later writes hot-reload it. The same
 also exposed as a one-shot `POST /api/bootstrap` against the backend origin for automation.
 The process never reads these from the environment in normal operation.
 
+**Persist-and-report, not persist-if-connectable.** Validation is the only gate on the write:
+`validate_business_wire` runs first and a rejection is a genuine `422`. Once the wire is valid
+the configuration is *always* persisted, and only then are the clients built and the running
+worker swapped. A failed build therefore returns **200** with `persisted: true`,
+`runtime_applied: false` and a `warnings` array of `{component, step, detail}` objects, where
+`component` is `jmap` or `llm` and `step` is `connect`, `account`, `config` or `build`, rather
+than a 503. The configuration is saved and the outage is reported instead of hidden.
+`runtime_applied` is
+`true` only when the reload was committed. This is deliberate: an unreachable JMAP must not
+turn a valid configuration into a silent data loss. `PUT /api/business-config` and
+`POST /api/bootstrap` both follow this contract; the revision header is still returned in both
+cases.
+
+`POST /api/business-config/preflight` (`notify.rs:808-871`) runs the identical validation and
+client build against the submitted wire and returns the per-component verdict without writing
+anything and without touching the running worker:
+
+```json
+{
+  "persisted": false,
+  "validation": { "ok": true, "errors": [] },
+  "components": {
+    "jmap": { "ok": false, "errors": [{ "component": "jmap", "step": "connect", "detail": "..." }] },
+    "llm": null
+  }
+}
+```
+
+`components` is `null` when validation already failed (there is no point probing clients from a
+wire that was rejected), and `llm` is `null` when `llm_enabled`/`llm_allow_net` are false
+rather than vacuously `ok`. A preflight whose answer is "the configuration is bad" is a
+**200**, because that is the answer the caller asked for. Authentication is the same
+`config_authorized` gate as the write path; it is deliberately **not** behind `DEBUG_TOKEN`.
+
 ### 5.3 No legacy environment path
 
 `Config::from_env()` and its helpers (`required_secret`, `required_nonblank`, `env_bool`) are
@@ -401,10 +438,10 @@ endpoint.
 
 | Parameter | Default | Range / cap | Source |
 |---|---|---|---|
-| `jmap_timeout_ms` | 15_000 | 100..=300_000 | default state.rs:56; validated notify.rs:492 |
-| `telegram_timeout_ms` | 10_000 | 100..=300_000 | default state.rs:57; validated notify.rs:493 |
-| `llm_timeout_ms` | 30_000 | 100..=300_000 | default state.rs:58; validated notify.rs:494 |
-| `max_retries` | 3 | hard cap 5 | default state.rs:59; rejected at notify.rs:495; re-clamped at channel.rs:138 |
+| `jmap_timeout_ms` | 15_000 | 100..=300_000 | default state.rs:56; validated notify.rs:541 |
+| `telegram_timeout_ms` | 10_000 | 100..=300_000 | default state.rs:57; validated notify.rs:542 |
+| `llm_timeout_ms` | 30_000 | 100..=300_000 | default state.rs:58; validated notify.rs:543 |
+| `max_retries` | 3 | hard cap 5 | default state.rs:59; rejected at notify.rs:544; re-clamped at channel.rs:138 |
 
 There is **no** `LLM_MAX_RETRIES` environment variable; retry count lives in
 `config:outbound` and is bounded at 5 regardless of what is written.

@@ -3,12 +3,13 @@ use axum::{
     body::Bytes,
     extract::State,
     http::{header, HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Json, Response},
     routing::{get, post, put},
     Router,
 };
 use ring::rand::SecureRandom;
 use secrecy::{ExposeSecret, SecretString};
+use serde_json::{json, Value};
 use std::{
     collections::HashSet,
     sync::{
@@ -24,11 +25,58 @@ use crate::config::{
     session_digest, validate_business_wire, AuthSecrets, BusinessConfig, BusinessConfigWire,
 };
 use crate::domain::jmap::{client::JmapClientBackend, JmapService};
+use crate::error::BotError;
 use crate::state::MemoryState;
 use crate::state::{runtime_provider, OutboundConfig, ReliableState, RuntimeConfigProvider};
 pub use crate::worker::{
     MetadataWorker, NoopWorker, ReloadCoordinator, WorkerHandle, WorkerHandler,
 };
+
+/// Build fingerprint baked in by `build.rs` (git SHA plus UTC build time, when available).
+///
+/// The SPA is `include_str!`-baked into this binary, so this is the only surface an operator
+/// has to confirm that a deploy actually landed. See `build.rs` for the fallback chain.
+pub(crate) const BUILD_VERSION: &str = env!("BUILD_VERSION");
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct WorkerBuildFailure {
+    component: String,
+    step: String,
+    detail: String,
+}
+
+impl WorkerBuildFailure {
+    fn new(component: &str, step: &str, detail: String) -> Self {
+        Self {
+            component: component.to_owned(),
+            step: step.to_owned(),
+            detail: redact_credentials(&detail),
+        }
+    }
+}
+
+/// Removes URL credentials before a transport error reaches logs or a client.
+///
+/// jmap-client aborts redirects it does not trust and echoes the host it was pointed at;
+/// Stalwart additionally bakes `user:pass` into the 307 `Location`. Anything of that shape
+/// must not reach the log line or a preflight response body.
+fn redact_credentials(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(marker) = rest.find("://") {
+        let scheme_end = marker + 3;
+        let Some(cred_start) = rest[scheme_end..].find('@') else {
+            out.push_str(rest);
+            return out;
+        };
+        let absolute_start = scheme_end + cred_start;
+        out.push_str(&rest[..absolute_start]);
+        out.push_str("<credentials>");
+        rest = &rest[absolute_start + 1..];
+    }
+    out.push_str(rest);
+    out
+}
 
 #[derive(Clone)]
 struct AuthState {
@@ -169,6 +217,7 @@ async fn setup_status(State(app): State<AppState>) -> Response {
         "ready": ready,
         "mode": if ready { "configured" } else { "configuration-setup" },
         "missing": app.setup_missing.as_ref(),
+        "version": BUILD_VERSION,
     }))
     .into_response()
 }
@@ -542,8 +591,22 @@ async fn business_enabled(app: &AppState) -> bool {
     app.state.is_enabled().await.unwrap_or(false)
 }
 
-/// Replace the complete encrypted business configuration. Client construction is performed
-/// before persistence and swap, so malformed/unreachable settings leave the old worker live.
+/// Replace the complete encrypted business configuration.
+///
+/// Persistence is gated by *validation*, not by connectivity. A configuration that is
+/// syntactically valid is always written, even if no client can currently be built for it:
+/// an operator must be able to save a half-migrated target, or one whose JMAP/LLM endpoint is
+/// not reachable yet, and finish the wiring when the endpoint comes back. Requiring a live
+/// connection for the write to succeed turns an unreachable dependency into a data-loss trap —
+/// nothing could be saved while it is down, and there would be no log line saying why.
+///
+/// Validation failure and a genuine persistence failure still reject, because both would
+/// contradict the write that was requested. A failed rebuild is reported in the response body
+/// and in a redacted log line, and the previous runtime keeps serving: `business_config` is
+/// updated either way (so `/api/config` and `/debug/config` can show what was saved) while
+/// `business_runtime` — the configuration the live worker actually speaks — is replaced only
+/// on success. The revision is advanced in both cases so `refresh_business_config` does not
+/// rebuild on every request until the dependency recovers.
 async fn put_business_config(
     State(app): State<AppState>,
     headers: HeaderMap,
@@ -577,31 +640,65 @@ async fn put_business_config(
             false,
         );
     };
-    let Ok(worker) = build_worker(config.clone(), app.clone()).await else {
-        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
-    };
     if app.state.set_business_config(&value).await.is_err() {
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
     }
-    if app.reload.commit(config.clone(), worker).is_err() {
-        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
-    }
+    let (warnings, runtime_applied) = match build_worker_report(config.clone(), app.clone()).await {
+        Ok(worker) => match app.reload.commit(config.clone(), worker) {
+            Ok(()) => (Vec::new(), true),
+            Err(()) => {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true)
+            }
+        },
+        Err(failures) => {
+            for failure in &failures {
+                tracing::warn!(
+                    component = %failure.component,
+                    step = %failure.step,
+                    detail = %failure.detail,
+                    "business configuration persisted but its runtime could not be rebuilt; the previous runtime keeps serving"
+                );
+            }
+            (failures, false)
+        }
+    };
     if let Ok(mut current) = app.business_config.write() {
         *current = Some(value);
     }
-    if let Ok(mut current) = app.business_runtime.write() {
-        *current = Some(config);
-    }
-    if let Ok(revision) = app.state.business_config_revision().await {
-        if let Ok(mut current) = app.business_revision.write() {
-            *current = revision;
+    if runtime_applied {
+        if let Ok(mut current) = app.business_runtime.write() {
+            *current = Some(config);
         }
     }
-    StatusCode::NO_CONTENT.into_response()
+    let revision = match app.state.business_config_revision().await {
+        Ok(revision) => revision,
+        Err(_) => {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true)
+        }
+    };
+    if let Ok(mut current) = app.business_revision.write() {
+        *current = revision;
+    }
+    (
+        StatusCode::OK,
+        [("x-business-config-revision", revision.to_string())],
+        Json(json!({
+            "persisted": true,
+            "runtime_applied": runtime_applied,
+            "warnings": warnings,
+        })),
+    )
+        .into_response()
 }
 
 /// One-shot business-config bootstrap. The admin credential is only compared in constant time
 /// and is never included in the response; SET-NX in ReliableState closes the init race.
+///
+/// Like `put_business_config`, persistence is gated by validation rather than connectivity.
+/// SET-NX consumes the one-shot slot regardless of whether a live worker was built, which is
+/// deliberate: the configuration is saved, the failure is reported and logged, and the same
+/// body can be retried through `PUT /api/business-config` — which has no one-shot limit.
+#[allow(clippy::too_many_lines)]
 async fn bootstrap(State(app): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     if !worker_authorized(&headers, app.admin_token.expose_secret()) {
         return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
@@ -630,43 +727,177 @@ async fn bootstrap(State(app): State<AppState>, headers: HeaderMap, body: Bytes)
             false,
         );
     };
-    // Build and connect all clients before SET-NX: an unreachable JMAP must not consume
-    // the one-shot bootstrap slot or leave an unusable encrypted snapshot in Redis.
-    let Ok(next_worker) = build_worker(next_config.clone(), app.clone()).await else {
-        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
-    };
     match app.state.initialize_business_config(&config).await {
         Ok(true) => {
-            if app.reload.commit(next_config.clone(), next_worker).is_err() {
-                return error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "service_unavailable",
-                    true,
-                );
-            }
+            let (warnings, runtime_applied) = match build_worker_report(
+                next_config.clone(),
+                app.clone(),
+            )
+            .await
+            {
+                Ok(next_worker) => match app.reload.commit(next_config.clone(), next_worker) {
+                    Ok(()) => (Vec::new(), true),
+                    Err(()) => {
+                        return error_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "service_unavailable",
+                            true,
+                        )
+                    }
+                },
+                Err(failures) => {
+                    for failure in &failures {
+                        tracing::warn!(
+                            component = %failure.component,
+                            step = %failure.step,
+                            detail = %failure.detail,
+                            "business configuration persisted but its runtime could not be rebuilt; the previous runtime keeps serving"
+                        );
+                    }
+                    (failures, false)
+                }
+            };
             if let Ok(mut current) = app.business_config.write() {
                 *current = Some(config);
             }
-            if let Ok(mut current) = app.business_runtime.write() {
-                *current = Some(next_config);
-            }
-            if let Ok(revision) = app.state.business_config_revision().await {
-                if let Ok(mut current) = app.business_revision.write() {
-                    *current = revision;
+            if runtime_applied {
+                if let Ok(mut current) = app.business_runtime.write() {
+                    *current = Some(next_config);
                 }
             }
-            StatusCode::NO_CONTENT.into_response()
+            let revision = match app.state.business_config_revision().await {
+                Ok(revision) => revision,
+                Err(_) => {
+                    return error_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "service_unavailable",
+                        true,
+                    )
+                }
+            };
+            if let Ok(mut current) = app.business_revision.write() {
+                *current = revision;
+            }
+            (
+                StatusCode::OK,
+                [("x-business-config-revision", revision.to_string())],
+                Json(json!({
+                    "persisted": true,
+                    "runtime_applied": runtime_applied,
+                    "warnings": warnings,
+                })),
+            )
+                .into_response()
         }
         Ok(false) => error_response(StatusCode::CONFLICT, "conflict", false),
         Err(_) => error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true),
     }
 }
 
-async fn build_worker(
+/// Test a business configuration without saving it.
+///
+/// Same admin-session gate as the write endpoint, but nothing is persisted and no worker is
+/// installed. It answers "why would saving this fail?" by running the exact validation and the
+/// exact client construction the write path uses, and reports the result per component so one
+/// broken endpoint does not hide the other. `components` is `null` when validation already
+/// failed — building clients from an invalid wire format is meaningless.
+///
+/// This endpoint never fails the whole request for a configuration problem: a preflight whose
+/// answer is "the configuration is bad" is a successful preflight, so the SPA can render the
+/// reason instead of a generic HTTP error.
+async fn preflight_business_config(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !config_authorized(&app, &headers).await {
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return Json(json!({
+            "persisted": false,
+            "validation": { "ok": false, "errors": ["请求体不是有效的 JSON"] },
+            "components": Value::Null,
+        }))
+        .into_response();
+    };
+    let Ok(wire) = serde_json::from_value::<BusinessConfigWire>(value.clone()) else {
+        return Json(json!({
+            "persisted": false,
+            "validation": { "ok": false, "errors": ["JSON 不是有效的业务配置对象"] },
+            "components": Value::Null,
+        }))
+        .into_response();
+    };
+    let errors = match validate_business_wire(wire.clone()) {
+        Ok(()) => Vec::new(),
+        Err(BotError::Config(message)) => vec![message],
+        Err(error) => vec![error.to_string()],
+    };
+    if !errors.is_empty() {
+        return Json(json!({
+            "persisted": false,
+            "validation": { "ok": false, "errors": errors },
+            "components": Value::Null,
+        }))
+        .into_response();
+    }
+    let Ok(config): Result<BusinessConfig, _> = wire.try_into() else {
+        return Json(json!({
+            "persisted": false,
+            "validation": { "ok": false, "errors": ["配置转换失败"] },
+            "components": Value::Null,
+        }))
+        .into_response();
+    };
+    let llm_enabled = config.llm_enabled && config.llm_allow_net;
+    let failures = match build_worker_report(config, app.clone()).await {
+        Ok(_) => Vec::new(),
+        Err(failures) => failures,
+    };
+    Json(json!({
+        "persisted": false,
+        "validation": { "ok": true, "errors": [] },
+        "components": {
+            "jmap": component_result(&failures, "jmap"),
+            "llm": if llm_enabled {
+                Some(component_result(&failures, "llm"))
+            } else {
+                None
+            },
+        },
+    }))
+    .into_response()
+}
+
+/// Projects the collected build failures onto one component. An empty projection means that
+/// component built successfully, which is the only honest way to say "this one is fine".
+fn component_result(failures: &[WorkerBuildFailure], component: &str) -> Value {
+    let own: Vec<&WorkerBuildFailure> = failures
+        .iter()
+        .filter(|failure| failure.component == component)
+        .collect();
+    if own.is_empty() {
+        json!({ "ok": true })
+    } else {
+        json!({ "ok": false, "errors": own })
+    }
+}
+
+/// Builds the runtime backend chain, reporting *which components and steps* failed.
+///
+/// JMAP and LLM are probed independently rather than short-circuiting on the first failure:
+/// the two clients share nothing, and an operator who saved a new JMAP endpoint wants to know
+/// that the LLM endpoint was also rejected at the same time. `None` in the result therefore
+/// means "no failure", and an empty vector in the error means "all components built".
+///
+/// `build_worker` is the compatibility wrapper for callers that do not need the detail.
+async fn build_worker_report(
     config: crate::config::BusinessConfig,
     app: AppState,
-) -> Result<Arc<dyn WorkerHandler>, ()> {
-    let backend = JmapClientBackend::connect_with_runtime(
+) -> Result<Arc<dyn WorkerHandler>, Vec<WorkerBuildFailure>> {
+    let mut failures = Vec::new();
+    let jmap = match JmapClientBackend::connect_with_runtime(
         &config.jmap_session_url,
         &config.jmap_username,
         config.jmap_password.expose_secret(),
@@ -674,25 +905,45 @@ async fn build_worker(
         app.runtime.clone(),
     )
     .await
-    .map_err(|_| ())?;
-    let account = backend.account_id().to_owned();
-    let jmap = JmapService::new(backend, account).map_err(|_| ())?;
-    let telegram = TelegramClient::with_runtime(config.bot_token, app.runtime.clone());
+    {
+        Ok(backend) => {
+            let account = backend.account_id().to_owned();
+            match JmapService::new(backend, account) {
+                Ok(service) => Some(service),
+                Err(error) => {
+                    failures.push(WorkerBuildFailure::new(
+                        "jmap",
+                        "account",
+                        format!("{error:?}"),
+                    ));
+                    None
+                }
+            }
+        }
+        Err(error) => {
+            failures.push(WorkerBuildFailure::new(
+                "jmap",
+                "connect",
+                format!("{error:?}"),
+            ));
+            None
+        }
+    };
     let llm = if config.llm_enabled && config.llm_allow_net {
-        let key = config.llm_api_key.ok_or(())?;
-        Some(Arc::new(
-            LlmClient::with_runtime(
-                config.llm_base_url.ok_or(())?,
-                key,
-                config.llm_model.ok_or(())?,
-                300,
-                app.runtime,
-            )
-            .map_err(|_| ())?,
-        ))
+        match build_llm_client(config.clone(), app.runtime.clone()) {
+            Ok(client) => Some(client),
+            Err(failure) => {
+                failures.push(failure);
+                None
+            }
+        }
     } else {
         None
     };
+    let Some(jmap) = jmap else {
+        return Err(failures);
+    };
+    let telegram = TelegramClient::with_runtime(config.bot_token, app.runtime.clone());
     Ok(Arc::new(MetadataWorker::new(
         jmap,
         telegram,
@@ -700,6 +951,34 @@ async fn build_worker(
         app.state,
         llm,
     )))
+}
+
+/// Builds the optional LLM client, separating its own configuration problems from its build
+/// problems so the caller can report the exact gap.
+fn build_llm_client(
+    config: crate::config::BusinessConfig,
+    runtime: RuntimeConfigProvider,
+) -> Result<Arc<LlmClient>, WorkerBuildFailure> {
+    let key = config
+        .llm_api_key
+        .ok_or_else(|| WorkerBuildFailure::new("llm", "config", "llm_api_key 缺失".to_owned()))?;
+    let base_url = config
+        .llm_base_url
+        .ok_or_else(|| WorkerBuildFailure::new("llm", "config", "llm_base_url 缺失".to_owned()))?;
+    let model = config
+        .llm_model
+        .ok_or_else(|| WorkerBuildFailure::new("llm", "config", "llm_model 缺失".to_owned()))?;
+    LlmClient::with_runtime(base_url, key, model, 300, runtime)
+        .map(Arc::new)
+        .map_err(|error| WorkerBuildFailure::new("llm", "build", format!("{error:?}")))
+}
+
+/// Compatibility wrapper: rebuild failures here are not surfaced to the caller.
+async fn build_worker(
+    config: crate::config::BusinessConfig,
+    app: AppState,
+) -> Result<Arc<dyn WorkerHandler>, ()> {
+    build_worker_report(config, app).await.map_err(|_| ())
 }
 
 /// Request-boundary refresh for multi-instance deployments. A failed remote rebuild advances the
@@ -1330,6 +1609,10 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/enabled", get(get_enabled).put(put_enabled))
         .route("/api/business-config", put(put_business_config))
+        .route(
+            "/api/business-config/preflight",
+            post(preflight_business_config),
+        )
         .route("/api/bootstrap", post(bootstrap))
         .route("/api/admin/session/revoke", post(revoke_admin_session))
         .route("/api/admin/session", post(create_admin_session))
@@ -1544,7 +1827,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_bootstrap_does_not_consume_initialization_slot() {
+    async fn failed_bootstrap_persists_and_reports_instead_of_silently_failing() {
         let app = router_with_worker_state_runtime_bootstrap(
             AuthSecrets {
                 reconcile_token: SecretString::new("r".into()),
@@ -1558,25 +1841,51 @@ mod tests {
             SecretString::new("acl-root".into()),
             None,
         );
-        // 本用例验证的是"失败的 bootstrap 不消耗一次性初始化槽位"，失败原因应是
-        // JMAP 不可达（127.0.0.1:1 → 503），因此 allowlist 必须合法，避免被
+        // 本用例验证的是"失败的 bootstrap 仍会持久化并如实上报"，失败原因应是
+        // JMAP 不可达（127.0.0.1:1 → warning），因此 allowlist 必须合法，避免被
         // SAF-CHAT-ALLOWLIST 的非空校验提前拦成 422。
-        let body = r#"{"bot_token":"bot","telegram_chat_id":1,"chat_allowlist":[1],"telegram_webhook_secret":"hook","jmap_session_url":"https://127.0.0.1:1","jmap_username":"u","jmap_password":"p","account_id":null,"llm_enabled":false,"llm_allow_net":false,"llm_api_key":null,"llm_base_url":null,"llm_model":null,"reconcile_token":"r","worker_token":"w"}"#;
-        for _ in 0..2 {
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/api/bootstrap")
-                        .header("authorization", "Bearer acl-root")
-                        .body(Body::from(body))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        }
+        let payload = r#"{"bot_token":"bot","telegram_chat_id":1,"chat_allowlist":[1],"telegram_webhook_secret":"hook","jmap_session_url":"https://127.0.0.1:1","jmap_username":"u","jmap_password":"p","account_id":null,"llm_enabled":false,"llm_allow_net":false,"llm_api_key":null,"llm_base_url":null,"llm_model":null,"reconcile_token":"r","worker_token":"w"}"#;
+        let persisted = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/bootstrap")
+                    .header("authorization", "Bearer acl-root")
+                    .body(Body::from(payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(persisted.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(persisted.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["persisted"], true);
+        assert_eq!(value["runtime_applied"], false);
+        let warnings = value["warnings"].as_array().expect("warnings array");
+        assert!(
+            !warnings.is_empty(),
+            "an unreachable JMAP must be reported, not swallowed"
+        );
+        assert_eq!(warnings[0]["component"], "jmap");
+        assert_eq!(warnings[0]["step"], "connect");
+        assert!(warnings[0]["detail"].is_string());
+        // The one-shot slot is now consumed by the write itself, so a retry cannot silently
+        // overwrite a configuration whose runtime never came up.
+        let conflicting = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/bootstrap")
+                    .header("authorization", "Bearer acl-root")
+                    .body(Body::from(payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(conflicting.status(), StatusCode::CONFLICT);
     }
 
     #[tokio::test]
@@ -1838,6 +2147,131 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// Preflight is a diagnostic endpoint, not a write: it must never persist, never install a
+    /// worker, and must never turn a configuration problem into a transport error. "The
+    /// configuration is bad" is a successful preflight, because that is the answer the caller
+    /// asked for.
+    #[tokio::test]
+    async fn business_config_preflight_reports_validation_failure_without_writing() {
+        let app = test_router();
+        let unauthenticated = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/business-config/preflight")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+        // A complete wire so that deserialization succeeds and only the validator rejects
+        // it: that is the case preflight has to answer rather than echoing a generic 422.
+        let body = r#"{"bot_token":"bot","telegram_chat_id":1,"chat_allowlist":[1],"telegram_webhook_secret":"hook","jmap_session_url":"http://not-https","jmap_username":"u","jmap_password":"p","llm_enabled":false,"llm_allow_net":false,"llm_api_key":null,"llm_base_url":null,"llm_model":null,"reconcile_token":"r","worker_token":"w"}"#;
+        let invalid = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/business-config/preflight")
+                    .header("authorization", "Bearer worker-secret")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(invalid.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["persisted"], false);
+        assert_eq!(value["validation"]["ok"], false);
+        assert!(value["validation"]["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error.as_str().unwrap_or_default().contains("HTTPS") }));
+        // Components are null: there is no meaningful way to probe clients from a wire
+        // that validation already rejected.
+        assert!(value["components"].is_null());
+        // "Not written" is proven by the live config snapshot: it must still be the timeout-only
+        // default, carrying none of the submitted wire. (/api/bootstrap cannot be used as
+        // evidence here — test_router has no admin credential, so it answers 401 unconditionally.)
+        assert_preflight_wrote_nothing(app).await;
+    }
+
+    #[tokio::test]
+    async fn business_config_preflight_reports_component_failure_and_writes_nothing() {
+        let app = test_router();
+        // account_id is deliberately absent: it is optional and defaults to the session
+        // primary account, which is the behaviour the SPA now relies on.
+        let body = r#"{"bot_token":"bot","telegram_chat_id":1,"chat_allowlist":[1],"telegram_webhook_secret":"hook","jmap_session_url":"https://127.0.0.1:1","jmap_username":"u","jmap_password":"p","llm_enabled":false,"llm_allow_net":false,"llm_api_key":null,"llm_base_url":null,"llm_model":null,"reconcile_token":"r","worker_token":"w"}"#;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/business-config/preflight")
+                    .header("authorization", "Bearer worker-secret")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["persisted"], false);
+        assert_eq!(value["validation"]["ok"], true);
+        assert_eq!(value["components"]["jmap"]["ok"], false);
+        let errors = value["components"]["jmap"]["errors"]
+            .as_array()
+            .expect("jmap failure list");
+        assert_eq!(errors[0]["component"], "jmap");
+        assert_eq!(errors[0]["step"], "connect");
+        assert!(errors[0]["detail"]
+            .as_str()
+            .map(|detail| !detail.is_empty())
+            .unwrap_or(false));
+        // LLM was not requested, so it is absent rather than vacuously "ok".
+        assert!(value["components"]["llm"].is_null());
+        // "Not written" is proven by the live config snapshot, not by the preflight echo.
+        assert_preflight_wrote_nothing(app).await;
+    }
+
+    /// Preflight must leave the live configuration untouched. `test_router` has no admin
+    /// credential, so `/api/bootstrap` cannot be used as a free-slot probe; the authoritative
+    /// evidence is the snapshot the router actually serves, which must still be the timeout-only
+    /// default rather than whatever the preflight body proposed.
+    async fn assert_preflight_wrote_nothing(app: Router) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/config")
+                    .header("authorization", "Bearer worker-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            value.get("jmap_session_url").is_none(),
+            "preflight persisted a JMAP URL: {}",
+            value["jmap_session_url"]
+        );
+        assert!(value.get("telegram_chat_id").is_none());
     }
 
     // ── /api/push/register 与 /api/push/disable（handoff #51）──

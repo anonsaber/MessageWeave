@@ -418,7 +418,7 @@ message-weave/
 
 ### 7.3.1 配置管理 API
 - `GET /` 提供嵌入 Rust 二进制的 SPA；`/assets/config.js` 与 `/assets/styles.css` 提供页面资源。服务不在运行时读取或写入本地文件（`C-NO-LOCAL-WRITE`）。
-- `GET /api/status` 公开返回 `{ "ready": boolean, "mode": "configured" | "configuration-setup", "missing": string[] }`，只列缺少的环境变量名称。缺少 `REDIS_URL` 或 `CONFIG_ENCRYPTION_KEY` 时，SPA 只显示配置引导状态与缺失变量；服务状态确认 ready=true 后才显示管理会话授权区。
+- `GET /api/status` 公开返回 `{ "ready": boolean, "mode": "configured" | "configuration-setup", "missing": string[], "version": string }`，只列缺少的环境变量名称。缺少 `REDIS_URL` 或 `CONFIG_ENCRYPTION_KEY` 时，SPA 只显示配置引导状态与缺失变量；服务状态确认 ready=true 后才显示管理会话授权区。`version` 是 `build.rs` 在编译期烘焙的 `BUILD_VERSION`（`<git-sha 或 nogit>+<UTC 构建时间>`），SPA 页脚据此确认部署是否真正落地。
 - `POST /api/admin/session` 接受 `Authorization: Bearer <CONFIG_ENCRYPTION_KEY>`，返回 `{ "session": "<opaque>", "expires_in": 900 }`；admin session 仅存 Redis 中的摘要并在 900 秒后过期。`POST /api/admin/session/revoke` 撤销当前 session，成功返回 `204`。
 - 管理页面仅在 JavaScript 内存中保存 session。请求设置 `credentials: omit`、`cache: no-store`，不使用 Cookie、localStorage 或 sessionStorage。管理 API 接受有效 admin session；兼容路径也接受 `WORKER_TOKEN`。Worker 原样透传鉴权头（`SAF-LB-PASSTHRU`）。
 - `GET /api/config` 与 `PUT /api/config` 只读取和写入非敏感运行参数：
@@ -431,8 +431,10 @@ message-weave/
   }
   ```
 - 三个 timeout 单位均为毫秒；默认值、取值范围与 `max_retries` 的硬上限以 `docs/reference.md` §6.1 为唯一权威（下表与上面的示例响应体只做示意，不重复数值）。`max_retries` 表示首次请求之外的最大重试次数。Redis 中尚无配置时 GET 返回默认值对象；PUT 成功返回保存后的相同对象并持久化到 Redis（`C-REDIS-ONLY-STATE`）。
-- `PUT /api/business-config` 接受完整 `BusinessConfigWire`，完整替换加密保存的业务配置，先构建客户端再切换运行 worker；Push verification 不属于 Wire，由 Stalwart 动态生成并由后端回写。成功返回 `204 No Content`，不会返回配置或密钥。
-- `PUT /api/config` 的运行参数错误使用 `401`（未授权）、`400`（JSON 无效）、`422`（范围错误）、`503`（Redis 不可用）；GET 读取失败时也以 `503` 表示 Redis 不可用。业务 PUT 使用 `401`、`400`、`422` 与 `503`（Redis 写入或依赖客户端构建失败）；其余错误不回显敏感数据。Redis/会话初始化未完成时管理页面显示 `503` 状态；运行参数在重新读取成功前禁用保存（`C-REDIS-ONLY-STATE`）。LLM 启用时，业务配置要求提供 HTTPS Base URL、非空 API key 和模型名。
+- `PUT /api/business-config` 接受完整 `BusinessConfigWire`，完整替换加密保存的业务配置；Push verification 不属于 Wire，由 Stalwart 动态生成并由后端回写。**校验是唯一写入闸门**：`validate_business_wire` 先跑，拒绝时返回真实的 `422`；Wire 合法则配置**一定**被持久化，之后才构建客户端并切换运行 worker。因此依赖连不通时返回 `200` + `{ "persisted": true, "runtime_applied": false, "warnings": [{"component", "step", "detail"}] }`，而不是 `503` —— 配置已保存、故障被如实上报，而不是被一个不可达的 JMAP 静默吞掉。`runtime_applied` 仅在 reload 提交成功时为 `true`；两种情况都返回 `x-business-config-revision` 头。响应从不回显配置或密钥。
+- `POST /api/business-config/preflight` 对提交体执行完全相同的校验与客户端构建，返回逐组件结论，**不写入、不触碰运行 worker**：`{ "persisted": false, "validation": { "ok", "errors" }, "components": { "jmap": {...}, "llm": ... } }`。校验已失败时 `components` 为 `null`（被拒的 Wire 无需再探客户端）；`llm_enabled`/`llm_allow_net` 为 false 时 `llm` 为 `null` 而非虚假的 `ok`。鉴权与管理会话门（`config_authorized`）一致，刻意不挂在 `DEBUG_TOKEN` 之后。
+- `POST /api/bootstrap` 与 PUT 共用上述契约：失败也持久化并回 `200` + warnings。
+- `PUT /api/config` 的运行参数错误使用 `401`（未授权）、`400`（JSON 无效）、`422`（范围错误）、`503`（Redis 不可用）；GET 读取失败时也以 `503` 表示 Redis 不可用。业务 PUT 使用 `401`（未授权）、`400`（JSON 无效）、`422`（Wire 校验失败）与 `503`（Redis 写入或 revision 读取失败）；依赖客户端构建失败**不**返回错误状态码，而是 `200` + warnings（见上条）。其余错误不回显敏感数据。Redis/会话初始化未完成时管理页面显示 `503` 状态；运行参数在重新读取成功前禁用保存（`C-REDIS-ONLY-STATE`）。LLM 启用时，业务配置要求提供 HTTPS Base URL、非空 API key 和模型名。
 
 ### 7.4 TLS（代码/依赖行为）
 - TLS provider 由依赖 feature 决定：**jmap-client 0.4.2 默认含 `aws_lc_rs`（并引入 `rustls`）**，`default-features = true` 时并非"rustls 默认"。**本项目实际 `default-features = false, features = ["async","rustls"]`**（不启用 `aws_lc_rs`/`websockets`），最终以 `Cargo.toml` 为准。

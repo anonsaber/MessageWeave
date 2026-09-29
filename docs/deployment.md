@@ -159,6 +159,12 @@ HostStack 使用仓库根目录 `hoststack.yaml`：`runtime: rust` 的 agent 在
 或代码仓库。**本仓库的 Dockerfile 不由该路径执行**——runner 镜像是 HostStack 自带的
 `debian:trixie-slim`，不是本文件的 `debian:bookworm-slim`，见 §3 与 §8.1 的说明。
 
+**构建指纹 `BUILD_VERSION`（`build.rs`）**：编译期用 `git rev-parse --short HEAD` + `date -u`
+拼出 `<sha>+<UTC 时间戳>` 并写入 `BUILD_VERSION`。`git` 在构建镜像里通常不存在，
+此时退回 `nogit+<时间戳>` —— 时间戳部分是真正可用的判据，不会静默退化成固定值。
+镜像里的 `cargo build` 会自动执行该 build script（Cargo 对 workspace 根 build.rs 无条件执行，
+无需额外配置）。SPA 页脚与 `GET /api/status` 的 `version` 字段都取自它，用来确认部署是否真正落地。
+
 **配置优先级（三层，从 HostStack agent 源码实测确认）**：部署时 agent 先把控制台
 services 表里已存的值填进 payload，再用 `hoststack.yaml` 声明的值覆盖，最后才用运行时
 框架默认值补缺。源码判定条件是 `if (svcConfig.install?.command)` 才覆盖，且没有
@@ -284,11 +290,15 @@ TLS 必须由 Cloudflare 或受信任反向代理终结；代理到容器的链�
 # 平台公网 URL: https://bot.example.com  → 反代 → 容器 127.0.0.1:8080
 GET  /                  业务配置与运行参数管理 SPA
 GET  /assets/config.js  SPA 脚本；GET /assets/styles.css  SPA 样式
-GET  /api/status              公开启动状态；只返回 ready/mode/missing 环境变量名
+GET  /api/status              公开启动状态；只返回 ready/mode/missing 环境变量名 + version 构建指纹
 POST /api/admin/session       Bearer CONFIG_ENCRYPTION_KEY；成功返回 900 秒 admin session
 POST /api/admin/session/revoke Bearer admin session；成功返回 204
 GET|PUT /api/config           Bearer admin session 或 WORKER_TOKEN；Redis 错误返回 503
-PUT /api/business-config      Bearer admin session 或 WORKER_TOKEN；完整替换，成功返回 204
+PUT /api/business-config      Bearer admin session 或 WORKER_TOKEN；校验通过后必持久化，
+                              客户端构建失败返回 200+warnings（不阻断保存），reload 成功才 runtime_applied=true
+POST /api/business-config/preflight Bearer admin session 或 WORKER_TOKEN；同样的校验与客户端构建，
+                              不写入、不换 worker；返回 200 + 逐组件结论
+POST /api/bootstrap           与 PUT 同契约（失败也持久化并回 200+warnings）
 POST /webhook/tg      TG Webhook → [鉴权 SAF-AUTH-TG-WEBHOOK: 头 X-Telegram-Bot-Api-Secret-Token]
                       → 快速 2xx ACK → 幂等去重(MOD-DEDUP) → 命令处理 → 同步回复（快路径）
 POST /push/jmap       Stalwart Push 回调 → [鉴权 SAF-AUTH-JMAP-PUSH: Body pushSubscriptionId + verificationCode]
@@ -494,7 +504,7 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 |---|---|---|
 | `GET /healthz` | 无条件 200 | 存活探测（进程还活着） |
 | `GET /ready` | 配置、Redis 或上游探针失败时 503 | 就绪探测、负载均衡摘除、Uptime Kuma |
-| `GET /api/status` | 恒 200；返回 `{"ready":bool,"mode":"configured"\|"configuration-setup","missing":[...]}`，只列缺少的环境变量名称 | 排查"起来了但没干活" |
+| `GET /api/status` | 恒 200；返回 `{"ready":bool,"mode":"configured"\|"configuration-setup","missing":[...],"version":"<构建指纹>"}`，只列缺少的环境变量名称；`version` 为 `BUILD_VERSION`（`<git-sha 或 nogit>+<UTC 构建时间>`） | 排查"起来了但没干活"；`version` 用于确认部署是否落地 |
 
 > **由平台 ingress 探测 `/ready`。**镜像现已内置 `curl`（见 Dockerfile `runtime` 阶段），
 > 所以在 Dockerfile 部署路径下容器内写 `HEALTHCHECK` 在技术上可行（HostStack 的 `runtime: rust`

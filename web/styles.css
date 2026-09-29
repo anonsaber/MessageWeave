@@ -24,13 +24,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .ambient-one { top: 7rem; right: -13rem; width: 31rem; height: 31rem; background: radial-gradient(circle, rgba(185, 177, 255, .2), rgba(185, 177, 255, 0) 68%); }
 .ambient-two { top: 44rem; left: -17rem; width: 36rem; height: 36rem; background: radial-gradient(circle, rgba(125, 210, 196, .13), rgba(125, 210, 196, 0) 70%); }
 
-.topbar { width: min(1100px, calc(100% - 48px)); height: 86px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(224, 224, 238, .72); }
+.topbar { width: min(1100px, calc(100% - 48px)); height: 86px; margin: 0 auto; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid rgba(224, 224, 238, .72); }
 .brand { display: inline-flex; align-items: center; gap: 12px; color: inherit; text-decoration: none; }
 .brand-mark { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 12px; background: linear-gradient(145deg, #7466e5, #5443c5); color: white; font-size: 21px; font-weight: 760; box-shadow: 0 5px 12px rgba(93, 75, 203, .2); }
 .brand-copy { display: grid; gap: 1px; }
 .brand-copy strong { font-size: 14px; letter-spacing: -.2px; }
 .brand-copy > span { color: #85869a; font-size: 11px; letter-spacing: .05em; }
-.topbar-note { display: inline-flex; align-items: center; gap: 8px; color: #77798e; font-size: 12px; }
+.topbar-note { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; color: #77798e; font-size: 12px; }
+.topbar-version { display: none; color: #a1a1b0; font-size: 10px; padding: 4px 8px; border: 1px solid #e6e6ef; border-radius: 999px; background: rgba(255, 255, 255, .8); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+@media (min-width: 900px) { .topbar-version { display: inline-block; } }
 .secure-dot, .persist-dot { width: 7px; height: 7px; border-radius: 50%; background: #48ae86; box-shadow: 0 0 0 3px rgba(72, 174, 134, .12); }
 
 .layout { width: min(960px, calc(100% - 40px)); margin: 0 auto; padding: 54px 0 56px; }
@@ -63,6 +65,7 @@ h3 { margin-bottom: 4px; color: #35364e; font-size: 15px; }
 .setup-panel .panel-copy { margin-bottom: 14px; }
 .setup-missing { margin: 0 0 17px; padding: 12px 14px; border: 1px solid #f2e9c8; border-radius: 8px; background: #fffbef; color: #796132; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .setup-privacy { margin: 0 0 17px; color: #858697; font-size: 12px; line-height: 1.65; }
+.build-version { margin: 20px 0 0; padding-top: 15px; border-top: 1px solid #efeff5; color: #a1a1b0; font-size: 10px; line-height: 1.5; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 code { padding: 2px 5px; border-radius: 4px; background: #f1f0fa; color: #534a9c; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
 .auth-form > label, .field > label, .setting-card > label { display: block; margin-bottom: 7px; color: #47485f; font-size: 12px; font-weight: 700; }
 .token-row { display: flex; gap: 10px; }
@@ -144,6 +147,7 @@ fieldset:disabled .field input, fieldset:disabled .field textarea { background: 
 .privacy-note strong { color: #64657a; font-weight: 680; }
 .footer { width: min(1100px, calc(100% - 48px)); display: flex; justify-content: space-between; margin: 0 auto; padding: 18px 0 23px; border-top: 1px solid rgba(224, 224, 238, .72); color: #a5a5b2; font-size: 9px; letter-spacing: .08em; }
 .footer span:last-child { letter-spacing: 0; }
+.footer-version { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); border: 0; }
 
 @media (max-width: 720px) {
@@ -167,7 +171,7 @@ fieldset:disabled .field input, fieldset:disabled .field textarea { background: 
   .field-grid, .toggle-grid, .settings-grid { grid-template-columns: minmax(0, 1fr); }
   .field-wide { grid-column: auto; }
   .form-footer { align-items: flex-start; flex-direction: column; padding: 14px 17px; }
-  .form-footer > .button, .form-actions { width: 100%; }
+  .form-footer > .form-actions { width: 100%; }
   .form-actions .button { flex: 1; }
   .runtime-section .settings-grid { padding: 0 14px 17px; }
   .section-copy { margin: -3px 17px 16px; }

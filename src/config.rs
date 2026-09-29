@@ -103,6 +103,7 @@ pub(crate) struct BusinessConfigWire {
     pub jmap_session_url: String,
     pub jmap_username: String,
     pub jmap_password: String,
+    #[serde(default)]
     pub account_id: Option<String>,
     pub llm_enabled: bool,
     pub llm_allow_net: bool,

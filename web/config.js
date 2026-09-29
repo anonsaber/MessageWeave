@@ -59,15 +59,14 @@
       "business.title": "Business connections and auth",
       "business.persist": "Encrypted in Redis",
       "callout.title": "Business configuration is not read from the server.",
-      "callout.bodyPre": " To avoid secret echo, the API does not expose a business configuration GET. Every submission must re-fill the complete configuration, including all required secrets; optional account ID and LLM fields are sent as ",
-      "callout.bodyPost": " when left blank.",
+      "callout.bodyPre": " To avoid secret echo, the API does not expose a business configuration GET. Every submission must re-fill the complete configuration, including all required secrets; optional LLM fields are sent as ",
+      "callout.bodyPost": " when left blank. The mailbox primary account is always used.",
       "legend.business": "Full business configuration",
       "jmap.title": "JMAP mailbox",
       "jmap.desc": "The server must use HTTPS; the URL must not contain credentials, query parameters or fragments.",
       "jmap.urlHint": "HTTPS address without username, password, query parameters or #fragment.",
       "jmap.userLabel": "Email username",
       "jmap.passLabel": "App-specific password",
-      "jmap.accountPh": "Leave blank to use the session primary account",
       "secret.reenter": "Re-enter on each full save",
       "telegram.title": "Telegram and access auth",
       "telegram.desc": "Only chat IDs in the allowlist may trigger bot operations.",
@@ -97,6 +96,16 @@
       "business.dirty": "The form has unsubmitted content; each submission fully replaces the existing business configuration.",
       "business.unsaved": "No save-success confirmation received; check the service status.",
       "business.submittingToast": "Submitting the full business configuration; the backend builds clients first, then saves and swaps the running instance…",
+      "business.preflight": "Test connection",
+      "business.preflightBusy": "Testing connection…",
+      "business.preflightRunning": "Testing the JMAP and LLM endpoints; nothing is saved.",
+      "business.preflightFailed": "The preflight request failed; the saved configuration is unchanged.",
+      "business.preflightInvalid": "Not accepted by the backend validator:",
+      "business.preflightOk": "All components connected successfully. The running configuration is unchanged.",
+      "business.preflightPartial": "These components failed to build:",
+      "business.preflightUnknown": "No component-level result was returned; the backend may predate the preflight endpoint.",
+      "business.preflightPersisted": "Unexpected: the preflight response claims it persisted a configuration.",
+      "business.savedWarning": "Saved, but not hot-reloaded: these components could not be built, so the running instance keeps the previous configuration until they do:",
       "runtime.eyebrow": "Outbound requests",
       "runtime.title": "Timeouts and retries",
       "runtime.persist": "Stored in Redis",
@@ -136,6 +145,8 @@
       "footer.note": "Configuration managed by your server",
       "common.required": "Required",
       "common.optional": "Optional",
+      "common.buildVersion": "Build version",
+      "common.buildVersionUnknown": "Build version unavailable",
       "common.atLeastOne": "At least one",
       "common.ms": "ms",
       "common.times": "times",
@@ -169,7 +180,7 @@
       "berr.401": "The admin session is no longer valid. The session and form contents have been cleared from the page; please re-authorize.",
       "berr.400": "The backend could not parse the submitted JSON (HTTP 400); check the fields and retry.",
       "berr.422": "Business configuration validation failed (HTTP 422). Check required fields, HTTPS URLs, LLM settings and the chat ID allowlist. The server does not return secrets or error details.",
-      "berr.503": "Business configuration was not confirmed saved (HTTP 503). Redis may not be ready, or the backend could not build the JMAP/LLM client; the page keeps this input for review and retry.",
+      "berr.503": "The write could not be confirmed (HTTP 503): Redis could not persist the configuration or the hot reload could not be committed. A JMAP/LLM connection failure does not produce this error — those save anyway and are reported as warnings. The page keeps this input for review and retry.",
       "berr.status": "Business configuration request failed (HTTP {status}). Retry shortly.",
       "berr.fail": "{message} The request result may be unconfirmed; after checking, re-submit the complete configuration.",
       "berr.failDefault": "Business configuration request failed.",
@@ -232,15 +243,14 @@
       "business.title": "业务连接与鉴权",
       "business.persist": "Redis 加密保存",
       "callout.title": "业务配置不会从服务器读取。",
-      "callout.bodyPre": " 为避免密钥回显，API 不提供业务配置 GET。每次提交都必须重新填写完整配置，包括所有必填密钥；可选的 account ID 与 LLM 字段留空时会发送为 ",
-      "callout.bodyPost": "。",
+      "callout.bodyPre": " 为避免密钥回显，API 不提供业务配置 GET。每次提交都必须重新填写完整配置，包括所有必填密钥；可选的 LLM 字段留空时会发送为 ",
+      "callout.bodyPost": "。始终使用邮箱主账户。",
       "legend.business": "完整业务配置",
       "jmap.title": "JMAP 邮箱",
       "jmap.desc": "服务端必须使用 HTTPS，URL 中不能包含凭据、查询参数或片段。",
       "jmap.urlHint": "HTTPS 地址，不含用户名、密码、查询参数或 #片段。",
       "jmap.userLabel": "邮箱用户名",
       "jmap.passLabel": "应用专用密码",
-      "jmap.accountPh": "留空使用 session 主账户",
       "secret.reenter": "每次完整保存时重新输入",
       "telegram.title": "Telegram 与访问鉴权",
       "telegram.desc": "仅允许白名单中的 chat ID 触发机器人操作。",
@@ -270,6 +280,16 @@
       "business.dirty": "表单包含未提交内容；每次提交会完整替换现有业务配置。",
       "business.unsaved": "未收到保存成功确认；请检查服务状态。",
       "business.submittingToast": "正在提交完整业务配置；后端会先构建客户端，再保存并切换运行实例…",
+      "business.preflight": "测试连接",
+      "business.preflightBusy": "正在测试连接…",
+      "business.preflightRunning": "正在测试 JMAP 与 LLM 端点；不会写入任何配置。",
+      "business.preflightFailed": "预检请求失败；已保存的配置未受影响。",
+      "business.preflightInvalid": "后端校验未通过：",
+      "business.preflightOk": "各组件连接成功。当前运行配置未被修改。",
+      "business.preflightPartial": "以下组件构建失败：",
+      "business.preflightUnknown": "后端未返回组件级结果；可能运行的是不含预检接口的旧版本。",
+      "business.preflightPersisted": "异常：预检响应声称已写入配置。",
+      "business.savedWarning": "已保存，但未热加载：以下组件无法构建，运行实例将继续沿用旧配置，直到它们可以构建：",
       "runtime.eyebrow": "出站请求",
       "runtime.title": "超时与重试",
       "runtime.persist": "Redis 保存",
@@ -309,6 +329,8 @@
       "footer.note": "配置由你的服务端管理",
       "common.required": "必填",
       "common.optional": "可选",
+      "common.buildVersion": "构建版本",
+      "common.buildVersionUnknown": "构建版本未知",
       "common.atLeastOne": "至少一项",
       "common.ms": "毫秒",
       "common.times": "次",
@@ -342,7 +364,7 @@
       "berr.401": "管理会话已失效。页面已清除会话和表单内容，请重新授权。",
       "berr.400": "后端无法解析提交的 JSON（HTTP 400）；请检查字段后重试。",
       "berr.422": "业务配置校验失败（HTTP 422）。请检查必填项、HTTPS URL、LLM 设置和 chat ID 白名单。服务端没有返回密钥或错误详情。",
-      "berr.503": "业务配置未获成功确认（HTTP 503）。Redis 可能尚未就绪，或后端无法建立 JMAP/LLM 客户端；页面保留本次输入供检查和重试。",
+      "berr.503": "写入未能确认（HTTP 503）：Redis 未能持久化配置，或热加载提交失败。JMAP/LLM 连接失败不会返回此错误——它们会照常保存并以下发告警的形式报告。页面保留本次输入供检查和重试。",
       "berr.status": "业务配置请求失败（HTTP {status}）。请稍后重试。",
       "berr.fail": "{message} 请求结果可能无法确认；检查后可重新提交完整配置。",
       "berr.failDefault": "业务配置请求失败。",
@@ -469,6 +491,10 @@
   const llmBaseUrl = document.querySelector("#llm-base-url");
   const llmModel = document.querySelector("#llm-model");
   const notice = document.querySelector("#notice");
+  const preflightButton = document.querySelector("#business-preflight-button");
+  const versionFooter = document.querySelector("#build-version");
+  const versionTop = document.querySelector("#build-version-top");
+  const versionSetup = document.querySelector("#build-version-setup");
 
   // C-NO-LOCAL-WRITE / C-REDIS-ONLY-STATE: credentials and configuration stay in page memory.
   let adminSession = "";
@@ -497,14 +523,17 @@
     reloadButton.disabled = busy || !adminSession;
     logoutButton.disabled = busy || !adminSession;
     businessSaveButton.disabled = busy || !adminSession;
+    preflightButton.disabled = busy || !adminSession;
     runtimeSaveButton.disabled = busy || !runtimeLoaded || !adminSession;
     defaultsButton.disabled = busy || !runtimeLoaded || !adminSession;
     businessSaveButton.classList.toggle("is-busy", busy && busyAction === "business-save");
     runtimeSaveButton.classList.toggle("is-busy", busy && busyAction === "runtime-save");
+    preflightButton.classList.toggle("is-busy", busy && busyAction === "business-preflight");
     connectButton.textContent = busy && busyAction === "login" ? t("auth.submitBusy") : t("auth.submit");
     reloadButton.textContent = busy && busyAction === "runtime-load" ? t("reload.busy") : t("reload.button");
     businessSaveButton.querySelector(".button-label").textContent = busy && busyAction === "business-save" ? t("business.saveBusy") : t("business.save");
     runtimeSaveButton.querySelector(".button-label").textContent = busy && busyAction === "runtime-save" ? t("runtime.saveBusy") : t("runtime.save");
+    preflightButton.textContent = busy && busyAction === "business-preflight" ? t("business.preflightBusy") : t("business.preflight");
   }
 
   function setBusy(action = "") {
@@ -548,12 +577,24 @@
     return parseResponseText(responseText, response.status);
   }
 
-  async function showSetupStatus() {
+  // The build fingerprint comes from /api/status so the SPA never hard-codes one: the binary
+  // supplies it at compile time and the page just echoes it. Absent means the backend is older
+  // than the version endpoint, which is itself useful information for an operator.
+  function renderVersion(version) {
+    const value = typeof version === "string" && version.trim() ? version.trim() : "";
+    const label = t("common.buildVersion");
+    if (versionFooter) versionFooter.textContent = value ? `${label} ${value}` : t("common.buildVersionUnknown");
+    if (versionTop) versionTop.textContent = value;
+    if (versionSetup) versionSetup.textContent = value ? `${label} ${value}` : "";
+  }
+
+  async function showSetupStatus(options = {}) {
     showSetupView(t("setup.checking"));
     statusRetryButton.disabled = true;
     statusRetryButton.textContent = t("setup.checkingBtn");
     try {
       const status = await request("/api/status", "GET", undefined, "");
+      renderVersion(status && status.version);
       if (status && status.ready === true) {
         setupMode = false;
         setupCard.hidden = true;
@@ -848,7 +889,6 @@
         jmap_session_url: validateHttpsUrl(jmapUrlInput, "JMAP Session URL", { noCredentials: true, noQuery: true }),
         jmap_username: requireText("jmap-username", t("jmap.userLabel")),
         jmap_password: requireText("jmap-password", t("jmap.passLabel"), true),
-        account_id: document.getElementById("account-id").value.trim() || null,
         llm_enabled: enabled,
         llm_allow_net: document.getElementById("llm-allow-net").checked,
         llm_api_key: isBlank(llmKeyValue) ? null : llmKeyValue,
@@ -1007,6 +1047,65 @@
 
   llmEnabled.addEventListener("change", updateLLMRequirements);
 
+  // "Test connection" posts to the preflight endpoint, which never writes: the previous
+  // configuration stays live either way. It reuses readBusinessConfig() so preflight and save
+  // can never disagree about whether the form is complete.
+  preflightButton.addEventListener("click", runBusinessPreflight);
+
+  async function runBusinessPreflight() {
+    if (!adminSession || busyAction) return;
+    const config = readBusinessConfig();
+    if (!config) return;
+    setBusy("business-preflight");
+    businessSaveState.textContent = t("business.preflightRunning");
+    businessSaveState.classList.remove("is-ok", "is-warn");
+    try {
+      const result = await request("/api/business-config/preflight", "POST", stringifyWithBigInt(config));
+      const verdict = describePreflight(result);
+      businessSaveState.textContent = verdict.text;
+      businessSaveState.classList.remove("is-dirty");
+      businessSaveState.classList.add(verdict.tone === "ok" ? "is-ok" : "is-warn");
+      showNotice(verdict.tone === "ok" ? "success" : "info", verdict.text);
+      updateButtons();
+    } catch (error) {
+      if (error.status === 401) {
+        expireSession(t("session.invalidBusiness"));
+        return;
+      }
+      businessSaveState.textContent = t("business.preflightFailed");
+      businessSaveState.classList.add("is-warn");
+      showNotice("error", businessErrorMessage(error));
+    } finally {
+      if (adminSession) setBusy("");
+    }
+  }
+
+  // Preflight answers three distinct questions and they must stay separate in the UI: is the
+  // form valid, and if so, which *component* failed to build? A single boolean would hide the
+  // second failure behind the first.
+  function describePreflight(result) {
+    if (result && result.persisted === true) {
+      return { tone: "warn", text: t("business.preflightPersisted") };
+    }
+    const validation = result && result.validation;
+    if (validation && validation.ok === false) {
+      const details = Array.isArray(validation.errors) ? validation.errors.filter(Boolean).join(" · ") : "";
+      return { tone: "warn", text: [t("business.preflightInvalid"), details].filter(Boolean).join(" ") };
+    }
+    const components = result && result.components;
+    if (!components) return { tone: "warn", text: t("business.preflightUnknown") };
+    const failed = Object.entries(components)
+      .filter(([, component]) => component && component.ok === false)
+      .map(([name, component]) => {
+        const errors = Array.isArray(component.errors)
+          ? component.errors.map((item) => `${item.step || "build"}: ${item.detail || ""}`.trim())
+          : [];
+        return [name, errors.filter(Boolean).join(" · ")].filter(Boolean).join(" ");
+      });
+    if (!failed.length) return { tone: "ok", text: t("business.preflightOk") };
+    return { tone: "warn", text: [t("business.preflightPartial"), failed.join(" | ")].filter(Boolean).join(" ") };
+  }
+
   businessForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!adminSession || busyAction) return;
@@ -1015,11 +1114,25 @@
     setBusy("business-save");
     showNotice("info", t("business.submittingToast"));
     try {
-      await request("/api/business-config", "PUT", stringifyWithBigInt(config));
+      const result = await request("/api/business-config", "PUT", stringifyWithBigInt(config));
       clearSecretFields();
-      businessSaveState.textContent = t("business.saved");
-      businessSaveState.classList.remove("is-dirty");
-      showNotice("success", t("business.savedToast"));
+      // Saving and applying are separate outcomes: the backend persists a validated
+      // configuration even when no client could be built, so "saved" alone would overclaim.
+      const warnings = result && Array.isArray(result.warnings) ? result.warnings : [];
+      if (result && result.runtime_applied === false && warnings.length) {
+        const details = warnings
+          .map((item) => [item.component, item.step, item.detail].filter(Boolean).join(": "))
+          .filter(Boolean);
+        const text = [t("business.savedWarning"), details.join(" | ")].filter(Boolean).join(" ");
+        businessSaveState.textContent = text;
+        businessSaveState.classList.remove("is-dirty");
+        businessSaveState.classList.add("is-warn");
+        showNotice("info", text);
+      } else {
+        businessSaveState.textContent = t("business.saved");
+        businessSaveState.classList.remove("is-dirty");
+        showNotice("success", t("business.savedToast"));
+      }
       updateButtons();
     } catch (error) {
       if (error.status === 401) {
