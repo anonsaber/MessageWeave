@@ -303,7 +303,7 @@ backend pool returns **503** rather than passing the request through (index.js:8
 | Path | Why it is absent from the gateway |
 |---|---|
 | `POST /api/bootstrap` | One-shot trust bootstrap; kept off the public path |
-| `POST /worker` | Operator-invoked worker trigger (Bearer-auth'd, `notify.rs:331`); not part of the public gateway path |
+| `POST /worker` | Queue drain endpoint — driven by the external scheduler, not a human (Bearer-auth'd, `notify.rs:380`; the cron is spelled out in deployment.md §6.3.1); not part of the public gateway path |
 | `GET /healthz` | Liveness is aggregated by the gateway itself |
 | `/debug/*` (7 routes) | Opt-in remote-debug surface (`SAF-DEBUG-GATE`); absent from `SAFE_ROUTES`, so it is reachable **only** by talking to the backend origin directly |
 

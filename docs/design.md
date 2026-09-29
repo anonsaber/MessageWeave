@@ -684,8 +684,8 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 - 影响：`Credentials::Basic` 构造；无需 OAuth client / token 自动刷新模块。
 
 ### 11.2 实时通道（已定，见 deployment.md）
-- 通道 = **JMAP Push HTTPS 回调 + 外部 Cron `/reconcile` 对账**（`C-NO-LONG-CONN`/`C-HTTPS-INBOUND`）；EventSource/SSE/WebSocket 均**非目标**（`NG-POLLING-SSE`）。Push 注册通过受保护的 `POST /api/push/register` 显式触发，外部 Cron 仍是必须的可靠补偿通道。
-- 两条尚需在真实 Stalwart 上校准的点——账号角色是否具备 `PushSubscription` 权限、以及 Stalwart 回调重试次数与 TTL/对账间隔的匹配——已作为验收项登记在 `docs/opengaps.md`，不在本文以问题形式留存。
+- 通道 = **JMAP Push HTTPS 回调 + 外部 Cron 对账与排空**（`C-NO-LONG-CONN`/`C-HTTPS-INBOUND`）；EventSource/SSE/WebSocket 均**非目标**（`NG-POLLING-SSE`）。Push 注册通过受保护的 `POST /api/push/register` 显式触发；外部 Cron 必须同时调 `/reconcile`（增量入队）与 `/worker`（排空并发通知）——**只调对账会让通知永远发不出去**（deployment.md §6.3.1）。
+- Stalwart 侧接入已在真实环境验证：内置角色具备 `PushSubscription` 权限，注册、验证往返与真实回调投递全部走通。剩下待校准的是 Stalwart 回调重试次数与 TTL / 对账间隔的匹配，作为验收项登记在 `docs/opengaps.md`，不在本文以问题形式留存。
 
 ### 11.3 部署形态（已确认，架构相关）
 - **已确认**：**单账户实现**（`REQ-SINGLE-ACCOUNT`）；多账户暂用**多个 bot 实例**（各自 token/配置），**不做多账户单实例**（因此无需 chat→account 路由与 `JmapService` 池化）。

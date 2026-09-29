@@ -9,7 +9,7 @@
 >
 > 三者冲突时：**可核对事实以 `reference.md` 为准，项目约束以本文件为准，质量规则以 `../AGENTS.md` 为准。**
 
-> **代码基线** `b2dbe7c`（src/ 行号锚点）｜`b2dbe7c`（文档）。
+> **代码基线** `fc686ab`（src/ 行号锚点）｜`fc686ab`（文档）。
 
 ---
 
@@ -155,13 +155,12 @@ cd /home/okabe/Repo/messageweave/cloudflare-worker && node --test test/*.test.js
 
 ### 6.6 外部依赖测试
 
-Stalwart 与 Telegram 的业务凭据已在真机联调通过（出站与查询方向），托管 Redis 已连接；
-**尚未验证的是入站回调方向**（见下方阻塞项）。真实环境集成测试必须用 `#[ignore]` 标注，
-缺凭据时静默跳过（不泄露凭据、不判失败）。
+Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查询与**入站回调**两个方向
+均已验证（`setWebhook` 与 `PushSubscription` 的注册、回调、验证往返全部走通），托管 Redis
+已连接。真实环境集成测试必须用 `#[ignore]` 标注，缺凭据时静默跳过（不泄露凭据、不判失败）。
 
 **环境阻塞项**（未验证，不得声称已验证）见 [`opengaps.md`](opengaps.md)「阻塞」区：
-真实 Stalwart、真实 Telegram Bot、`Email/changes` 的 `newState` 语义、
-Push callback 公网映射。
+`Email/changes` 的 `newState` 语义、五个键的 TTL 实测。
 
 ## 7. 文档边界
 

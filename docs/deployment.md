@@ -140,6 +140,69 @@
 - **多实例 LB/HA 时登记的是 Worker URL 而非各后端 URL**（`C-LB-SINGLE-REG-URL`，§10）：Telegram / Stalwart / Cron 只认 Worker 的稳定域名；后端平台入口不对外登记。
 - Secrets 运行期注入（环境变量/容器平台 secret），见 §5（同文件内章节链接）
 
+### 4.1 接通两侧回调（操作步骤，已在真机联调验证）
+
+后端起来、`/ready` 全绿之后，还需要**手动执行两件事**邮件才会进来。两步都由本服务执行
+Telegram / JMAP 侧的写操作，运维只提供 URL 与 token。
+
+**第一步：Telegram 入站（`setWebhook`）**
+
+```bash
+curl -fsS -X POST "https://api.telegram.org/bot<你的BOT_TOKEN>/setWebhook" \
+  -H "content-type: application/json" \
+  -d '{
+    "url": "https://<你的平台URL>/webhook/tg",
+    "secret_token": "<必须与业务配置 TG_WEBHOOK_SECRET 逐字符一致>",
+    "allowed_updates": ["message"]
+  }'
+```
+
+预期回执 `{"ok":true,"result":true,"description":"Webhook was set"}`。
+
+- `secret_token` 必须与 `TG_WEBHOOK_SECRET` **逐字符一致**：Telegram 把它放进请求头
+  `X-Telegram-Bot-Api-Secret-Token`，后端常数时间比对，不等即 401 且无任何副作用。
+- `allowed_updates` **必须显式包含 `message`**。漏掉时 Telegram 不推送普通消息，队列里
+  什么也没有——看起来像「回调没通」，实际是订阅范围不对。
+- 回调地址走 Worker 域名（`/webhook/tg` 在 safelist 内）还是后端 origin 直连都可以；
+  前面有 Worker 时按 §10 只登记 Worker 的稳定 URL。
+- 确认已登记：`curl -fsS https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo`，看
+  `result.url`。Telegram 不回显 `secret_token`，所以 secret 写对没有只能靠最后一步反证。
+- **轮换注意**：在 SPA 改了 `TG_WEBHOOK_SECRET` 而**没有**重跑 `setWebhook`，Telegram
+  手里就是旧值——之后所有真实回调都会被 401 拒掉，不报错、无告警，只是静默收不到消息。
+  改了就重跑本步。
+
+**第二步：Stalwart 出站订阅（`POST /api/push/register`）**
+
+```bash
+curl -fsS -X POST "https://<你的平台URL>/api/push/register" \
+  -H "Authorization: Bearer <admin session 或 WORKER_TOKEN>" \
+  -H "content-type: application/json" \
+  -d '{"callback_url":"https://<你的平台URL>/push/jmap"}'
+```
+
+注册动作由**本服务自己**向 JMAP 发起，不是在 Stalwart 后台点。Stalwart 随后推送验证码，
+后端用 JMAP 自动回写——**验证码不由运维提供，也不会从 SPA 配置接受**（`src/notify.rs:1163`）。
+
+- `callback_url` 必须是 HTTPS 且**不含用户名 / 密码**，否则 400 `invalid_request`
+  （`src/notify.rs:1174`）。
+- 同一个 `callback_url` 重复调用**幂等复用**已有订阅，不会重复注册。
+- 注册期间持 `lock:push-register:{sha256(callback_url)}` 360 s 单飞锁
+  （`src/notify.rs:1178` / `src/notify.rs:1186`），撞锁返回 409 `conflict`。
+- 成功 → `200 {"push_subscription_id":"..."}`，状态置 `pending`，在等 Stalwart 回来验证。
+  反向确认：`POST /api/push/disable` 在从未注册过该地址时回 `404 push_subscription_not_found`。
+- 订阅权限通常内置 `user` 角色已含；若返回 `forbidden`，到 Stalwart
+  `/admin → Management → Directory → Accounts/Roles` 检查。
+- **撤销**：带 `{"callback_url":"..."}` 打 `POST /api/push/disable`。
+
+**第三步：排空（`POST /worker`）**
+
+前两步只负责把事件送进队列。把邮件从队列取出来并发成 Telegram 消息，靠外部 cron 周期性
+调用 `POST /worker` 完成——见 §6.3.1。**缺这一步，邮件会持续积压在 `stalwart:jmap`，
+一行通知都不会发出来。**
+
+**验证**：群内发 `/help`，`/worker` 排空后应收到自动回复（入站方向）；给自己发一封新邮件，
+排空后应收到该邮件通知（出站方向）。
+
 ---
 
 ## 5. Secret 管理与环境变量
@@ -315,12 +378,12 @@ GET  /ready          公开就绪探针；检查配置完整性 + Redis 可达�
 
 ### 6.2 Redis Streams / worker（MOD-STREAMS）
 - Push 回调只做：校验 → 去重 → 入队 → ACK；不阻塞
-- worker（同容器后台 task 或独立 worker 容器，2 选 1 均由 compose/编排决定）：
-  `XREADGROUP → Email/changes → 推送 TG → 推进 sinceState → XACK`
+- worker：**不是后台 task，也不是独立 worker 容器**。本服务没有常驻消费循环，两条 stream 的唯一消费入口是 `POST /worker`（处理函数 `src/notify.rs:380`，路由 `src/notify.rs:1608`）。全代码库仅两处 `tokio::spawn`——发送重试（`src/channel.rs:205`）与对账锁续租心跳（`src/notify.rs:298`）——都不消费队列；因此**排空必须由外部调度触发**（§6.3.1）。
+- 单次 `/worker` 调用语义：对 `stalwart:jmap` 与 `stalwart:telegram` 两条 stream 各取一批（上限 10，`src/notify.rs:397`；批量读取在 `src/state.rs:444`），逐条处理后确认消费（`src/state.rs:324`）；处理失败转重试 / DLQ（`src/notify.rs:478`）。`Email/changes` 增量拉取与 `sinceState` 推进属于 `POST /reconcile`，不在 worker 内。
 - 消费组 at-least-once：未 ACK 消息自动重投；处理幂等（MOD-DEDUP 二次兜底）
 
 ### 6.3 外部 HTTPS Cron 对账（FLOW-RECONCILE）
-- **"外部 Cron"是什么**（已确认）：bot **不自建定时器、不持有调度**（`C-NO-LONG-CONN`，无 `tokio-cron`）。由**外部调度器**周期性发起 `POST https://<平台URL>/reconcile`（带 `RECONCILE_TOKEN`）。端点执行鉴权、全局开关检查与 Redis 单飞锁，调用 JMAP `Email/changes` 分页并将事件幂等入 Streams；全部入队成功后才持久化 `state:jmap:since`，依赖失败返回 `503` 供调度器重试。
+- **"外部 Cron"是什么**（已确认）：bot **不自建定时器、不持有调度**（`C-NO-LONG-CONN`，无 `tokio-cron`）。由**外部调度器**周期性发起 `POST https://<平台URL>/reconcile`（带 `RECONCILE_TOKEN`）。端点执行鉴权、全局开关检查与 Redis 单飞锁，调用 JMAP `Email/changes` 分页并将事件幂等入 Streams；全部入队成功后才持久化 `state:jmap:since`，依赖失败返回 `503` 供调度器重试。**对账只入队、不消费**——它全程不调用 `read_batch`（全代码库唯一的 `read_batch` 调用点在 `src/notify.rs:410`，属于 worker）；排空由另一个端点 `POST /worker` 承担，两个都要排（§6.3.1）。
 - **建议间隔 5–10 分钟**（`NFR-RECONCILE-INTERVAL`）：兼顾"少延迟"与"低开销"；这是可用性的兜底频率。
 - 可用调度器（任选其一，均为外部）：系统 crontab+curl / k8s CronJob / GitHub Actions scheduled / 第三方 cron 服务。
 - 对账逻辑：用 `sinceState` 调 `Email/changes` 拉增量 → 与已处理 email_id 求差 → 补发通知 → 推进 `sinceState`。
@@ -328,78 +391,136 @@ GET  /ready          公开就绪探针；检查配置完整性 + Redis 可达�
 
 #### 6.3.1 用户侧调度示例（copy-paste 可用）
 
-端点：`POST https://<你的平台URL>/reconcile`。鉴权：`Authorization: Bearer <RECONCILE_TOKEN>`
-（`src/config.rs:147` fail-closed 必填，服务端常数时间比较，`notify.rs:228-231`）。
+端点有两个：`POST /reconcile`（路由 `src/notify.rs:1607`）与 `POST /worker`（路由
+`src/notify.rs:1608`），同容器暴露、无端口或协议差异。**两个都必须被外部调度，顺序是先对账、
+再排空。** 两者职责不重叠：`/reconcile` 只做 `Email/changes` 增量入队并推进游标，全程不调用
+`read_batch`；`/worker` 只做消费，全代码库唯一的 `read_batch` 调用点在 `src/notify.rs:410`。
+**只排对账等于邮件持续进队列、通知永远发不出去**——这是照抄调度配置时最容易踩的坑。
 
-最小示例：
+最小可运行版本（推荐起点）：
+
+| 项 | `/reconcile` | `/worker` |
+| --- | --- | --- |
+| 作用 | 增量入队 + 推进游标 | 排空两条 stream 并发通知 |
+| 调度顺序 | 先 | 紧随其后 |
+| 鉴权 | Bearer + `reconcile_token` | Bearer + `worker_token` |
+| 可走 Worker 吗 | 可以（在 `SAFE_ROUTES` 内） | 不行，必须直连后端 origin |
+| 幂等 | `SET NX lock:reconcile 300s` 单飞锁，撞锁回 409 | 无单飞锁，靠逐条 `delivery:*` 去重声明防重投 |
+| 单次上限 | 100 条变更（`src/notify.rs:293`） | 10 条消息（`src/notify.rs:397`） |
+| 常态返回 | 204 | 204（**不能当成功信号**） |
+
+两个 token 都是 Redis 业务配置字段（§5），不再从环境变量读取；外部 cron 从自己的 secret
+存储取同一个值即可（下方 k8s 示例即此做法）。`/worker` 只认 Bearer token、**没有
+admin-session 兜底**（`src/notify.rs:386`），这是有意的：cron 不需要先登录拿 session。
+token 轮换后**无需重启**——worker 处理函数开头先 `refresh_business_config`，再从热更新快照
+取值（`src/notify.rs:1425`）。
+
+`/worker` 不在 Worker 转发白名单里（`SAFE_ROUTES`：`/reconcile` 在内、`/worker` 不在），
+走 Worker 会被 404 `route not forwarded` 挡掉，必须打后端 origin。见 §10.4。
+
+最小示例（curl 直连 Worker）：
 
 ```bash
-curl -sS -o /dev/null -w '%{http_code}\n' \
-  -X POST https://<你的平台URL>/reconcile \
-  -H "Authorization: Bearer $RECONCILE_TOKEN" \
-  --max-time 60
+curl -fsS -X POST "https://<你的平台URL>/reconcile" \
+  -H "Authorization: Bearer <RECONCILE_TOKEN>" \
+  -H "content-type: application/json" \
+  -d '{"since":"<STATE>"}'
 ```
 
-调度器任选其一（均为外部，容器不自建定时器）：
+最小调度（两步一条 cron，顺序不能反）：
 
-```cron
-# 系统 crontab，每 5 分钟
-*/5 * * * * curl -fsS -m 60 -X POST https://<你的平台URL>/reconcile -H "Authorization: Bearer $RECONCILE_TOKEN" >/dev/null
 ```
+# 每 5 分钟：先对账入队，再排空队列
+*/5 * * * * curl -fsS -m 60 -X POST https://<你的平台URL>/reconcile \
+    -H "Authorization: Bearer $RECONCILE_TOKEN" >/dev/null ; \
+  curl -fsS -m 60 -X POST https://<后端origin直连地址>/worker \
+    -H "Authorization: Bearer $WORKER_TOKEN" >/dev/null
+```
+
+- 两条之间用 `;` 而不是 `&&`：对账撞锁拿 409、或临时 503，都不该阻断排空——上一次对账
+  入队的消息同样需要被消费。
+- 排空那条必须是**后端 origin 的直连地址**，不是 Worker 域名。
+- 请求体可带 `{"batch":N}`；`N` 会被压回上限 10，不会因传大值而报错（`src/notify.rs:397`）。
+  传非法 JSON 才是 400 `invalid_request`（`src/notify.rs:402`）。
+
+Kubernetes CronJob 示例：
 
 ```yaml
-# Kubernetes CronJob，每 5 分钟
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: messageweave-reconcile
+  name: messageweave-drain
 spec:
   schedule: "*/5 * * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 1
+  startingDeadlineSeconds: 120
   jobTemplate:
     spec:
       template:
         spec:
           restartPolicy: Never
           containers:
-            - name: reconcile
+            - name: drain
               image: curlimages/curl:8
-              # 用 shell 启动，才能展开 $RECONCILE_TOKEN；直接 exec curl 时 $(…) 不会被替换
               command: ["/bin/sh", "-c"]
               args:
-                - 'curl -fsS -m 60 -X POST "https://<你的平台URL>/reconcile" -H "Authorization: Bearer $RECONCILE_TOKEN"'
+                - |
+                  curl -fsS -m 60 -X POST "${APP_URL}/reconcile" \
+                    -H "Authorization: Bearer ${RECONCILE_TOKEN}" >/dev/null
+                  curl -fsS -m 60 -X POST "${WORKER_ORIGIN}/worker" \
+                    -H "Authorization: Bearer ${WORKER_TOKEN}" >/dev/null
               env:
+                - name: APP_URL
+                  value: "https://<你的平台URL>"
+                - name: WORKER_ORIGIN
+                  value: "https://<后端origin直连地址>"
                 - name: RECONCILE_TOKEN
                   valueFrom:
-                    secretKeyRef:
-                      name: messageweave
-                      key: reconcile-token
+                    secretKeyRef: {name: messageweave, key: reconcile-token}
+                - name: WORKER_TOKEN
+                  valueFrom:
+                    secretKeyRef: {name: messageweave, key: worker-token}
 ```
 
-**期望状态码**
+期望状态码：
 
-| 状态码 | 含义 | 调度器怎么办 |
-|---|---|---|
-| `204` | 成功，游标已推进（无响应体） | 正常，不做任何处理 |
-| `401` | `RECONCILE_TOKEN` 缺失或错误 | 不要重试；检查凭据 |
-| `409` | 单飞锁被占用，另有实例正在对账 | 不要重试；等下一个调度周期 |
-| `503` | 业务开关关闭，或 JMAP/Redis 故障 | 按 `Retry-After: 30` 头重试，或等下一个周期 |
+| 状态码 | 含义 | 处理 |
+| --- | --- | --- |
+| `/reconcile` 204 | 对账完成（含 since 游标前进 0 条） | 正常，不需要动作 |
+| `/worker` 204 | 本次调用正常结束 | **不能当成功信号**：无消息可读、全部撞去重都回 204，`src/notify.rs:491` 无条件返回 |
+| `/reconcile` 400 | `since` 不是合法游标 | 检查请求体，不要盲重试 |
+| `/worker` 400 | 请求体不是合法 JSON（`src/notify.rs:402`） | 修 curl |
+| `/reconcile` 401 | `Authorization` 头缺失或 `reconcile_token` 不匹配（`src/notify.rs:279`） | 检查 cron 的 token 值；重启不解决 |
+| `/worker` 401 | Bearer 值与 `worker_token` 不匹配（`src/notify.rs:386`） | 同上；`/worker` 无 admin-session 兜底 |
+| `/reconcile` 409 | 单飞锁 `lock:reconcile` 被占（`src/notify.rs:289`） | 直接跳过本次 tick，不要重试 |
+| 503 | 业务配置此刻不可用，或 Redis / JMAP 请求失败 | 可重试；响应带 `Retry-After: 30`（`src/notify.rs:374`） |
 
-失败响应体统一为 `{"error": <code>, "request_id": <实例 owner id>}`，可直接落日志。
+重试建议：
 
-**重试建议**
-
-- 对账逻辑本身是幂等的：重复调用只会重复走 `Email/changes` 增量并二次去重入队（`MOD-DEDUP`
-  兜底），不会重复通知。所以对 `503` 可以放心重试。
+- **不要**在客户端实现重试循环。**调度器每 5 分钟触发一次已经足够**，因为：
+  - 单次调用**幂等**：`/reconcile` 有 `SET NX lock:reconcile 300s` 单飞锁
+    （`src/notify.rs:289`，长对账中每 90s 续租 `src/notify.rs:302`，成功后释放
+    `src/notify.rs:338`）；`/worker` 靠逐条去重声明防重投，重复触发无害。
+  - 客户端拿到 `409 conflict` 时**不要重试**，直接跳过本次 tick——锁在 TTL 或任务完成后
+    自然释放，下一次调度会重试。
+- 超时设置建议 ≥ 单飞锁 TTL 的 1/3（即 ≥ 100s）以吸收长对账，但客户端超时不应超过
+  调度间隔。
+- 如果你的调度器自带重试能力，把它限制为：**只对 5xx 与超时重试**，指数退避
+  2s / 4s / 8s，上限 60s，总次数 ≤ 3；`204` 与 `409` **永远不重试**。调度器没有自带能力
+  就不要额外实现——下一个 tick 自然会重试。
+- **积压会自然堆到下一次 tick。** `/worker` 单次最多消费 10 条（`src/notify.rs:397`）；
+  积压超过 10 条时需要连续多个 tick 才能清完。想更快就调高 cron 频率，**不要**靠加长
+  curl 超时——那只会抬高挂死概率，不会让更多消息被消费。
 - `204` 与 `409` 都是正常结果，不要把它们当失败重试——尤其别对 `409` 做紧密循环重试。
-- 调度间隔按 `NFR-RECONCILE-INTERVAL` 取 **5–10 分钟**即可。Push 是主路径，对账只是兜底。
+- 调度间隔按 `NFR-RECONCILE-INTERVAL` 取 **5–10 分钟**。Push 是主路径，对账是兜底；
+  但**排空不是兜底项**——没有它，邮件只会一直进队列，一行通知都不会发出来。
 - 走 Worker 转发**无需特殊设置**：网关已为 `POST /reconcile` 单独覆盖超时与尝试次数——超时取
   `LB_RECONCILE_TIMEOUT_MS`（默认 `320000` ms，大于单飞锁租期 300 s + 心跳余量；锁续租逻辑见
-  `notify.rs:240`/`252`），且 `maxAttempts=1` **绝不故障转移**（故障转移只会让第二实例立刻返回
+  `src/notify.rs:302`），且 `maxAttempts=1` **绝不故障转移**（故障转移只会让第二实例立刻返回
   `409`）。其余快路径仍用全局 `LB_REQUEST_TIMEOUT_MS`（默认 `10000` ms）与 `LB_MAX_ATTEMPTS`
-  （默认 `2`），不受影响。
+  （默认 `2`），不受影响。`POST /worker` 走不了 Worker，不受这些参数影响。
 
 ### 6.4 可靠性策略（Reliability）
 
@@ -600,7 +721,7 @@ Stalwart PushSub ────┼─▶ https://lb.<you>.workers.dev      ← 唯
 
 ### 10.4 路由与故障转移
 
-- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **15 条**（`SAFE_ROUTES` at `backends.js:9-25` + `ROUTE_METHODS` at `index.js:45-61`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`PUT /api/business-config`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`GET|PUT /api/enabled`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 4 类不在 safelist**：`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`POST /worker`（运维手工触发的 worker 端点，Bearer 鉴权）、`GET /healthz`（网关自行聚合，不转发）、`/debug/*`（7 条远程联调面，`SAF-DEBUG-GATE`，只能直连后端 origin，见 §2.1）——**这 4 类都不承载外部业务流量，因此后端实例前不需要第二道入口**。`GET|PUT /api/enabled` 属于必须透传的例外：管理 SPA 本身只部署在 Worker 域名下，业务总开关由它读取与切换（`loadEnabled` 在 `web/config.js:586` 读、开关写入在 `:958`），缺了这条白名单，SPA 里那个开关在后端直连模式下可用、经网关部署时恒 404；该路由已强制 admin-session Bearer 鉴权，暴露面与同在白名单内的 `/api/admin/session` 完全一致。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
+- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **15 条**（`SAFE_ROUTES` at `backends.js:9-25` + `ROUTE_METHODS` at `index.js:45-61`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`PUT /api/business-config`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`GET|PUT /api/enabled`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 4 类不在 safelist**：`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`POST /worker`（队列排空端点，由外部调度周期性调用而非人工触发，Bearer 鉴权，见 §6.3.1）、`GET /healthz`（网关自行聚合，不转发）、`/debug/*`（7 条远程联调面，`SAF-DEBUG-GATE`，只能直连后端 origin，见 §2.1）——**这 4 类都不承载外部业务流量，因此后端实例前不需要第二道入口**。`GET|PUT /api/enabled` 属于必须透传的例外：管理 SPA 本身只部署在 Worker 域名下，业务总开关由它读取与切换（`loadEnabled` 在 `web/config.js:586` 读、开关写入在 `:958`），缺了这条白名单，SPA 里那个开关在后端直连模式下可用、经网关部署时恒 404；该路由已强制 admin-session Bearer 鉴权，暴露面与同在白名单内的 `/api/admin/session` 完全一致。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
 - **健康聚合（`MOD-HEALTH-AGG`）**：Worker 自行承载 `GET /healthz`，按 TTL 缓存（默认 30s，`LB_HEALTH_TTL_MS` 可调）探测各后端 `/healthz`，返回 `{status, available, total, backends:[{origin,up,status}]}`；≥1 后端 up → 200，全 down → 503。`/ready` 透传给后端，做配置 + Redis + 出站只读探测（JMAP session、TG getMe，各 3s、并行，最坏约 3s），不触发业务副作用。
 - **故障转移（`forwardWithFailover`）**：每次请求最多 `min(LB_MAX_ATTEMPTS, origins.length)` 次尝试；**仅**超时（AbortError）或 5xx 触发换下一个 origin；4xx/2xx/3xx 直接返回；默认 `LB_MAX_ATTEMPTS=2`（首次 + 1 次故障转移）。**例外：`POST /reconcile` 固定 `maxAttempts=1`，绝不故障转移**——它持集群级单飞锁，切实例只会立刻撞 `409`；其单请求超时取 `LB_RECONCILE_TIMEOUT_MS`（默认 `320000` ms），其余路由不受影响。
 - **随机分摊**：起点 origin 按 `Math.random` 随机化，实现双活；单 origin 配置时退化为确定性。
