@@ -23,7 +23,7 @@
 | 多步对话 FSM（`Idle` / `AwaitClarify` / `AwaitConfirm` / `Analyzing` / `AwaitFallback`） | 目标设计，未落地 | 当前 AI 授权只需一个布尔+过期时间，多步态属过度设计 | Redis TTL 授权态，键与 TTL 见 `docs/reference.md` 的 AI 授权态一节 |
 | 把领域 / 渠道 / 通知 / util 各层拆成独立目录（子模块拆分方案） | 目标形态目录，未落地 | 代码量未到需要拆分的规模 | 实际结构见 `docs/design.md` 的工程结构一节：领域层是 `src/domain.rs` + `src/domain/jmap/`（仅 `client.rs`）；LLM 在 `src/ai.rs`；通知在 `src/notify.rs`；加密与工具逻辑内联在 `src/state.rs` / `src/config.rs`，没有独立的 util 层，也没有集成测试目录 |
 | teloxide 风格的出站消息派发集成测试 | 目标形态测试，未落地 | 依附 teloxide 测试模式 | `src/channel.rs` 的单元测试（`#[test]`） |
-| docker-compose `healthcheck` 示例（`message-weave health --addr ...`） | 已删除的示例 | 运行镜像 `debian:bookworm-slim` 内无 `curl`/`wget`，且 `src/main.rs` 无 CLI 子命令解析，示例照抄必失败 | 由平台 ingress 探测 `/ready`；说明见 `docs/deployment.md` 的就绪探测一节 |
+| docker-compose `healthcheck` 示例（`message-weave health --addr ...`） | 已删除的示例 | `src/main.rs` 无 CLI 子命令解析，该子命令不存在，照抄必失败（早期还叠加了镜像内无 `curl` 的问题，现已内置 `curl`） | 由平台 ingress 探测 `/ready`；说明见 `docs/deployment.md` 的就绪探测一节 |
 
 | SPA 管理凭据 = `REDIS_URL` 的 Redis ACL 密码 | 未采用路线 | 混淆基础设施凭据与 UI 管理密码；Redis 无 ACL 密码（TLS-only 托管 Redis）时 `bootstrap_token` 的 `.is_empty()` 守卫让 SPA 永久 401 | 改用 `CONFIG_ENCRYPTION_KEY`（启动必填的 32 字节高熵 hex，常数时间比较） |
 

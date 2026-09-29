@@ -124,9 +124,12 @@
 
 ### 5.1 HostStack 原生 Rust 部署
 
-HostStack 使用仓库根目录 `hoststack.yaml`：Rust runtime 执行
-`cargo build --release --locked`，服务命令为 `./target/release/message-weave`，监听单个
-HTTP 端口并以 `/healthz` 做 interval 30 秒、timeout 5 秒的健康检查。`REDIS_URL` 与
+HostStack 使用仓库根目录 `hoststack.yaml`：Rust runtime 先执行安装命令
+`cargo fetch --locked`，再执行构建命令 `cargo build --release --locked`，服务命令为
+`./target/release/message-weave`，监听单个
+HTTP 端口并以 `/healthz` 做 interval 30 秒、timeout 5 秒的健康检查。服务命令里**不带**
+`--debug`——远程联调开关只应临时加上（改法见 `hoststack.yaml` 的注释，双因子见 §2.1）。
+`REDIS_URL` 与
 `CONFIG_ENCRYPTION_KEY` 必须配置为 HostStack Secret；不得将密钥值写入 YAML、镜像、日志
 或代码仓库。现有 Dockerfile 部署方式仍受支持。
 
@@ -364,9 +367,11 @@ spec:
 
 > **本仓库没有 `docker-compose.yml`。**此前本节给过一段 compose 片段，其中的 `healthcheck` 写成
 > `message-weave health --addr 127.0.0.1:8080` —— 这个子命令不存在（`src/main.rs` 无任何 CLI
-> 参数解析，二进制只起 axum 服务），而且 runtime 阶段是 `debian:bookworm-slim`，只装了
-> `ca-certificates tini`，镜像里没有 curl/wget。照抄那段示例必然得到两个结果之一：healthcheck
-> 永久失败，或容器被判定 healthy 却什么都不做。示例已删除，改为下面的事实约定。
+> 参数解析，二进制只起 axum 服务）。照抄那段示例必然得到：healthcheck 永久失败，或容器被判定
+> healthy 却什么都不做。示例已删除，改为下面的事实约定。
+>
+> 镜像现已内置 `curl`，因此用 `HEALTHCHECK` 探活在技术上可行；但本节仍建议由平台 ingress/探针
+> 探活——`/ready` 是唯一同时校验 redis/jmap/telegram 的信号，`HEALTHCHECK` 只能证明进程活着。
 
 **运行**
 
@@ -377,8 +382,11 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 ```
 
 - 单端口 8080；平台 ingress/反代映射 HTTPS → 8080（`C-HTTPS-INBOUND`）。
-- runtime 阶段为 `debian:bookworm-slim`，非 root（uid 1000）；无本地 volume、无数据库引擎
-  （`C-NO-LOCAL-WRITE` / `C-NO-DB`）。
+- runtime 阶段为 `debian:bookworm-slim`，非 root（`useradd --system`，实测 uid 999，非 1000）；
+  无本地 volume、无数据库引擎（`C-NO-LOCAL-WRITE` / `C-NO-DB`）。
+- 镜像内置只读诊断工具：`curl`、`procps`（`ps`/`pgrep`/`free`）、`iproute2`（`ss`/`ip`）、`jq`、
+  `bind9-dnsutils`（`dig`）、`netcat-openbsd`（`nc`）。容器 rootfs 只读，这些工具**只能在构建期装入**，
+  运行期无法 `apt` 安装——这也是它们写进 Dockerfile 而不是留给运维现场装的原因。
 - Redis 由外部已认证实例提供，不与此服务同容器运行（`C-REDIS-EXTERNAL`）。
 
 **就绪探测：用 `/ready`，不要用 `/healthz`**
@@ -389,8 +397,9 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 | `GET /ready` | 配置、Redis 或上游探针失败时 503 | 就绪探测、负载均衡摘除、Uptime Kuma |
 | `GET /api/status` | 缺必需环境变量时 503 + `{"status":"configuration-setup","missing":[...]}` | 排查"起来了但没干活" |
 
-> **由平台 ingress 探测 `/ready`。**镜像内没有 curl/wget、也没有 CLI 子命令，不要依赖容器内
-> healthcheck。
+> **由平台 ingress 探测 `/ready`。**镜像现已内置 `curl`（见 Dockerfile `runtime` 阶段），
+> 所以容器内写 `HEALTHCHECK` 在技术上可行；但 `/healthz` 只能证明进程活着，
+> `/ready` 才同时校验 Redis 与上游，因此仍以平台探针为准。
 
 **缺必需环境变量不会崩溃，但也不会干活。**缺 `REDIS_URL` 或 `CONFIG_ENCRYPTION_KEY` 时，进程
 降级为只读配置路由（内存态、空 token、`NoopWorker`），容器继续应答请求但不做任何业务。排查这类
