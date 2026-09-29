@@ -38,15 +38,23 @@ What it does NOT prove
   (this check is defined by string patterns, after all); those are not
   documentation claims.
 
-Non-path shapes that look like paths are excluded by is_noise(), and a
-`seg/` token only counts as a directory reference when it is the whole
-inline-code span. Both rules are structural rather than denylisted: is_noise
-recognises the shapes that cannot be repo-relative paths (absolute paths and
-URIs, dot-prefixed URL parts, dotted hosts, media types, JMAP method names,
-all-numeric pairs, shell and glob fragments), and the whole-span rule means
-`Email/changes`, `application/json` and `method/path/origin/失败类别` are never
-mistaken for a directory. Adding a special case to either should make you
-suspect the document instead.
+Non-path shapes that look like paths are excluded by two structural rules
+rather than a denylist:
+
+- A `seg/` token only counts as a directory reference when it IS the whole
+  inline-code span. TOKEN happily returns the `Email/` prefix of
+  `Email/changes`, the `application/` of `application/json` and the
+  `api.telegram.org/` of `api.telegram.org/bot`; none of those are the whole
+  span, so they are dropped here. This is what keeps JMAP methods, media
+  types, dotted hosts, `{jmap_origin}/.well-known/jmap` templates and
+  `method/path/origin/失败类别` log formats out. Absolute paths are excluded
+  one step earlier by TOKEN's lookbehind, which refuses to start a match after
+  a '/', so `/api/status` never reaches the scanner at all.
+- is_noise() then catches the remainder that survives that test: dot-prefixed
+  URL parts (`.well-known/jmap`), and, for whole-span `seg/` tokens, media
+  types, dotted hosts, all-numeric pairs and shell/glob fragments. That last
+  list is fallback, not the main defence — if you find yourself wanting to add
+  a case there, suspect the document instead.
 """
 
 import os
@@ -81,10 +89,13 @@ ROOT_DIRS = [
 EXTS = "rs|js|mjs|ts|tsx|json|toml|ya?ml|md|sh|sql|cfg|lock|html|css|proto|txt"
 
 # A file token (ends in a known extension) or a directory token (ends in '/').
+# ',' is in the segment class so a brace glob like `{mod,commands}.rs` is kept
+# whole and expanded by variants(); drop it and the glob is mangled into two
+# bogus tokens, one of which does not resolve and reports the wrong filename.
 TOKEN = re.compile(
     r"(?<![\w./:-])(?:"
-    r"(?:[A-Za-z0-9_.{}\-]+/)*[A-Za-z0-9_.{}\-]+\.(?:" + EXTS + r")"
-    r"|(?:[A-Za-z0-9_.{}\-]+/){1,}"
+    r"(?:[A-Za-z0-9_.{},\-]+/)*[A-Za-z0-9_.{},\-]+\.(?:" + EXTS + r")"
+    r"|(?:[A-Za-z0-9_.{},\-]+/){1,}"
     r")"
 )
 INLINE_CODE = re.compile(r"`([^`\n]+)`")
@@ -114,8 +125,9 @@ JMAP_METHOD = re.compile(r"^[A-Z][A-Za-z]*\/[a-z][A-Za-z]*$")
 # Dotted domains (api.telegram.org, crates.io) and numeric code pairs
 # (200/503) are classified structurally inside is_noise.
 #
-# Shell or glob placeholders that are not real paths.
-PLACEHOLDER = re.compile(r"[\s()*,?]")
+# Shell or glob placeholders that are not real paths. No ',' here: brace globs
+# legitimately contain commas (see TOKEN) and must reach resolve(), not noise.
+PLACEHOLDER = re.compile(r"[\s()*?]")
 
 
 def is_noise(tok):
@@ -213,7 +225,11 @@ def main():
                             or ("conventional name" if v in CONVENTIONAL else None)
                         )
                         if not verdict:
-                            errors.append(f"{rel}:{i} `{v}` does not resolve "
+                            # Show the expansion too, or a brace glob would
+                            # report only its first alternative and hide the
+                            # rest.
+                            shown = v if v == tok else f"{tok} -> {v}"
+                            errors.append(f"{rel}:{i} `{shown}` does not resolve "
                                           f"(ROOT_DIRS, git history, or CONVENTIONAL)")
                             break
     print(f"=== PATH AUDIT ({len(errors)} errors, "
