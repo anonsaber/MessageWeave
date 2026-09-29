@@ -6,15 +6,13 @@
 ## 阶段目标
 
 `GATE-P0` 已过（fmt / clippy / check / test，Debian 容器内）。真实邮箱与真实 Telegram Bot 的**出站与查询方向**已在真机联调通过（见下文各条的「已验证」括注）。
-剩余目标收窄为：**在 Telegram 侧执行 `setWebhook`** 与 **`PushSubscription` 回调链路**，消掉下面 5 条阻塞项。
+剩余目标收窄为：**在 Telegram 侧执行 `setWebhook`** 与 **`PushSubscription` 回调链路**，消掉下面 4 条阻塞项。
 
 ## 阻塞（需要真实环境，当前无法验证）
 
 - **真实 Stalwart `PushSubscription`** — `Email/changes` 与 `Email/query` 搜索已在真实账号跑通（2026-09-28：`POST /reconcile` 持久化了 `baseline:` 游标，而该游标只在 `reconcile()` 返回 `Ok(new_state)` 之后写入（`notify.rs:331`），即 `fetchChanges` 端到端成功）。**未验证**：账号角色是否具备 push 权限、Stalwart 回调重试次数、TTL/对账间隔的匹配。**阻塞原因**：无真实推送回调可观察。禁止使用测试账号或伪造结果。
 
 - **真实 Telegram 回调（Telegram→本服务方向）** — 应用侧入站 secret 头校验 + chat 白名单（`notify.rs:225-263`）、出站 `sendMessage`（`channel.rs`）、出站重试预算与重试耗尽终局错误（`channel.rs:182`）已在真实 Bot 上验证（2026-09-28：`POST /debug/notify` 投递成功；伪造 update 全链路「入队→worker→JMAP `Email/query` 搜索→回帖」通过；以上两条均经用户确认收到）。**未验证**：真实的 Telegram→本服务回调从未到达——向 Telegram 注册 webhook URL 是运维步骤（调 `setWebhook`），应用内不实现，**目前尚未执行**，因此 Telegram 侧既不知道本服务的 webhook URL，也不持有 secret 值。另：长轮询 `getUpdates` 从未实现（见 `docs/retired.md`）。**阻塞原因**：需在 Telegram 侧执行 `setWebhook`（`url=<公网地址>/webhook/tg`、`secret_token=<业务配置里的值>`，两者必须一致）并触发一次真实回调。
-
-- **真实 Redis TLS 连接** — `rediss://` 握手、密码特殊字符 URL 编码、Redis ACL 密码均未实测。**阻塞原因**：无托管 Redis 实例。注：`CONFIG_ENCRYPTION_KEY` 与 `REDIS_URL` 只在启动时读取（`src/config.rs:17`、`src/main.rs:54`），本系统不存在这两项的热更新路径，也不在本系统的待办范围内。
 
 - **`Email/changes` 的 `newState` 语义** — 客户端已用「同 `sinceState` 翻倍 `maxChanges` 扩窗」消除按页漏批；2026-09-28 在真实账号上跑通 `fetchChanges` 并拿到 `baseline:` 游标，但 `newState` 是否表示"全部待报变更之后"仍需**停机积压后恢复**的场景才能判定，否则积压边界仍无法确证。**阻塞原因**：无可控的真实积压场景。
 

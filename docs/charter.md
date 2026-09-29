@@ -155,11 +155,12 @@ cd /home/okabe/Repo/messageweave/cloudflare-worker && node --test test/*.test.js
 
 ### 6.6 外部依赖测试
 
-无 Stalwart / Telegram / 托管 Redis 凭据。真实环境集成测试必须用 `#[ignore]` 标注，
+Stalwart 与 Telegram 的业务凭据已在真机联调通过（出站与查询方向），托管 Redis 已连接；
+**尚未验证的是入站回调方向**（见下方阻塞项）。真实环境集成测试必须用 `#[ignore]` 标注，
 缺凭据时静默跳过（不泄露凭据、不判失败）。
 
 **环境阻塞项**（未验证，不得声称已验证）见 [`opengaps.md`](opengaps.md)「阻塞」区：
-真实 Stalwart、真实 Telegram Bot、真实 Redis TLS、`Email/changes` 的 `newState` 语义、
+真实 Stalwart、真实 Telegram Bot、`Email/changes` 的 `newState` 语义、
 Push callback 公网映射。
 
 ## 7. 文档边界
