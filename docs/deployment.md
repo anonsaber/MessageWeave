@@ -124,14 +124,32 @@
 
 ### 5.1 HostStack 原生 Rust 部署
 
-HostStack 使用仓库根目录 `hoststack.yaml`：Rust runtime 先执行安装命令
-`cargo fetch --locked`，再执行构建命令 `cargo build --release --locked`，服务命令为
-`./target/release/message-weave`，监听单个
-HTTP 端口并以 `/healthz` 做 interval 30 秒、timeout 5 秒的健康检查。服务命令里**不带**
-`--debug`——远程联调开关只应临时加上（改法见 `hoststack.yaml` 的注释，双因子见 §2.1）。
-`REDIS_URL` 与
+HostStack 使用仓库根目录 `hoststack.yaml`：`runtime: rust` 的 agent 在
+`rust:slim-trixie` 里执行 `install.command`（`cargo fetch --locked`）与
+`build.command`（`cargo build --release --locked`），把产物拷进
+`debian:trixie-slim` 的 runner 容器，以 `start.command`（`./target/release/message-weave`）
+启动，监听单个 HTTP 端口，并以 `/healthz` 做 interval 30 秒、timeout 5 秒的健康检查。
+`install:` **是**合法的 schema 键——`install` / `build` / `start` 是三条独立命令，
+依赖获取不写进 `build.command`。服务命令里**不带** `--debug`——远程联调开关只应临时加上
+（改法见 `hoststack.yaml` 的注释，双因子见 §2.1）。`REDIS_URL` 与
 `CONFIG_ENCRYPTION_KEY` 必须配置为 HostStack Secret；不得将密钥值写入 YAML、镜像、日志
-或代码仓库。现有 Dockerfile 部署方式仍受支持。
+或代码仓库。**本仓库的 Dockerfile 不由该路径执行**——runner 镜像是 HostStack 自带的
+`debian:trixie-slim`，不是本文件的 `debian:bookworm-slim`，见 §3 与 §8.1 的说明。
+
+**该 YAML 是运行时配置的真源，且不能删除**：YAML 声明的字段**覆盖**控制台已存的同名
+配置，YAML 省略的字段**回落到运行时框架默认值**——Rust 的默认值是 `cargo fetch` /
+`cargo build --release` / `./target/release/app`。最后那个默认值由 HostStack 自带、
+与本仓库包名无关：`Cargo.toml` 只声明一个 `[[bin]]`（名字 `message-weave`，
+路径 `src/main.rs`），仓库里既没有 `app` 这个二进制目标也没有对应源文件。删掉本文件后
+Start Command 回落为 `./target/release/app`，进程在绑定端口前就以 `not found` 退出。
+线上实测印证了此行为：控制台 UI 显示的是默认值 `./target/release/app`，而实际 PID 1 是
+`./target/release/message-weave`——说明在生效的是 YAML，不是控制台。
+
+**校验是宽松的，不是拒绝式的**：agent 的部署路径不应用 zod schema 校验，
+`install` / `build` / `start` 等都是可选对象，**未知键会被静默丢弃而不是报错**，
+拼错一个键名（如 `healthcheck` 全小写）不会让部署失败，只会让对应配置悄悄失效。
+因此 `hoststack validate`（本地类型检查，不发起 API 调用）是唯一有效的防线，
+应放进 CI；本机无 Node 环境时至少保留一次人工 review。
 
 全局业务开关通过受保护的 `GET|PUT /api/enabled` 管理，持久化 Redis key 为
 `config:enabled`，默认关闭且读取失败 fail-closed。关闭时 `/webhook/tg`、`/push/jmap`、
@@ -345,7 +363,7 @@ spec:
 - `GET /ready` → 端到端就绪探针（`ARCH-READY-BASELINE`）：检查配置完整性 + Redis 可达性 + 出站只读探测（`GET {jmap_origin}/.well-known/jmap` 带 Basic 认证、`GET https://api.telegram.org/bot<token>/getMe`，各 3s 超时、**并行**（`tokio::join!`），最坏约 3s）；四者全过 `200`（就绪报告 JSON 含真实 `jmap`/`telegram` 字段），任一失败 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`）。因此**LB / ingress 的探针超时必须 > 3s（建议 ≥10s）**。Uptime Kuma 按状态码（期望 200）监控，不受响应体变化影响。
 - 两者均为**公开探针**（`SAF-PROBE-PUBLIC`）：无鉴权、仅返回健康状态、**不含敏感信息**。
 - `/ready` 已对 JMAP session 与 Telegram getMe 做**真实出站探测**（3s/个），但不覆盖真实消息投递验收；编排与 Uptime Kuma 可用它做端到端就绪探测，注意其最坏约 3s，LB 探测超时需 > 3s（见上）。
-- Docker `HEALTHCHECK` 指向同一监听端口（app 内置 `health` 子命令或 wget 同端口），**不依赖独立端口**（`C-NO-TCP-EXPOSE`）
+- Docker `HEALTHCHECK` 指向同一监听端口（`wget`/`curl` 探同端口），**不依赖独立端口**（`C-NO-TCP-EXPOSE`）。二进制没有 `health` 子命令可指，见 §8.1 的说明
 - 仅保留通用平台映射（compose `HEALTHCHECK`、k8s probe）；不写 Cloud Run/Fly 等特指内容（`NG-SERVERLESS-BIND`）
 
 ---
@@ -365,13 +383,24 @@ spec:
 
 ### 8.1 运行方式与就绪探测
 
+> **本节的两条部署路径不要混淆**：上面的构建/运行命令是本仓库 **Dockerfile 路径**（本地 `docker run`
+> 或其他容器宿主机）；线上 HostStack 部署走 §5.1 的 `hoststack.yaml` + `runtime: rust` agent，
+> 在 `rust:slim-trixie` 里构建、拷进 `debian:trixie-slim` 的 runner 容器运行，
+> **完全不执行本 Dockerfile**——两者连 Debian 版本都不同（bookworm vs trixie）。
+> 服务 argv 是 `./target/release/message-weave` 而不是镜像里的
+> `tini -- /usr/local/bin/message-weave`，因此镜像内的诊断工具与 `ENTRYPOINT` 在线上都不生效。
+> 判定当前跑的是哪条路径，看容器内 `/proc/1/cmdline` 与 `/etc/os-release`。
+
 > **本仓库没有 `docker-compose.yml`。**此前本节给过一段 compose 片段，其中的 `healthcheck` 写成
 > `message-weave health --addr 127.0.0.1:8080` —— 这个子命令不存在（`src/main.rs` 无任何 CLI
 > 参数解析，二进制只起 axum 服务）。照抄那段示例必然得到：healthcheck 永久失败，或容器被判定
 > healthy 却什么都不做。示例已删除，改为下面的事实约定。
 >
-> 镜像现已内置 `curl`，因此用 `HEALTHCHECK` 探活在技术上可行；但本节仍建议由平台 ingress/探针
-> 探活——`/ready` 是唯一同时校验 redis/jmap/telegram 的信号，`HEALTHCHECK` 只能证明进程活着。
+> 镜像（`runtime` 阶段）现已内置 `curl`，因此在 **Dockerfile 部署路径**下用 `HEALTHCHECK` 探活在
+> 技术上可行；HostStack 官方文档也把 Dockerfile `HEALTHCHECK` 定为把新副本加入 Traefik 池前的
+> readiness 关卡。但 `runtime: rust` 的 HostStack agent 不走本 Dockerfile，该路径的 readiness 由
+> `hoststack.yaml` 的 `healthCheck.path` 决定，所以仍以平台探针为准——`/ready` 是唯一同时校验
+> redis/jmap/telegram 的信号，`HEALTHCHECK` 只能证明进程活着。
 
 **运行**
 
@@ -385,8 +414,23 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 - runtime 阶段为 `debian:bookworm-slim`，非 root（`useradd --system`，实测 uid 999，非 1000）；
   无本地 volume、无数据库引擎（`C-NO-LOCAL-WRITE` / `C-NO-DB`）。
 - 镜像内置只读诊断工具：`curl`、`procps`（`ps`/`pgrep`/`free`）、`iproute2`（`ss`/`ip`）、`jq`、
-  `bind9-dnsutils`（`dig`）、`netcat-openbsd`（`nc`）。容器 rootfs 只读，这些工具**只能在构建期装入**，
+  `netcat-openbsd`（`nc`），合计实测 **19.7 MB**（全量文件系统 `du` 对比
+  `debian:bookworm-slim`）。容器 rootfs 只读，这些工具**只能在构建期装入**，
   运行期无法 `apt` 安装——这也是它们写进 Dockerfile 而不是留给运维现场装的原因。
+  刻意**不装** `bind9-dnsutils`（`dig`）：它连带 `libicudata.so.72` 等多级依赖要多花
+  **42.7 MB**，是其余 7 个工具总和的两倍多；DNS 解析用基础镜像自带的 `getent` 即可
+  （`getent hosts <h>` 出 A 记录，`getent ahostsv4` / `getent ahostsv6` 分开取）。
+  **但这条只对 Dockerfile 部署路径成立**：`runtime: rust` 的 agent 在
+  `rust:slim-trixie` 里构建、把产物拷进 `debian:trixie-slim` 的 runner 容器运行，
+  **完全不执行本 Dockerfile**，因此这些工具在 HostStack 服务里并不存在（线上实测
+  `pgrep: not found`）。该路径下改用内核接口诊断：`/proc/1/cmdline`（实际 argv）、
+  `/proc/1/environ`（实际 env）、`/proc/net/tcp`、`/proc/<pid>/fd`。
+  HostStack 生产部署的容器安全档（由 agent 镜像内的部署执行器源码实测确认）为
+  `readonlyRootfs: true` + `dropCapabilities: true` + `noNewPrivileges: true` +
+  `pidsLimit: 256`；`/tmp` 与 `/var/tmp` 是 `rw,nosuid,nodev,size=64m` 的 tmpfs——
+  注意**没有** `noexec`，但重启即清空，所以不要在那里放可执行文件或期望重启后仍在的文件。
+  **dev 环境与此不同**：dev 档为 `readonlyRootfs: false`、`noNewPrivileges: false`，
+  rootfs 可写，同一个二进制在 dev 与生产的可写行为可能不同。
 - Redis 由外部已认证实例提供，不与此服务同容器运行（`C-REDIS-EXTERNAL`）。
 
 **就绪探测：用 `/ready`，不要用 `/healthz`**
@@ -398,8 +442,9 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 | `GET /api/status` | 缺必需环境变量时 503 + `{"status":"configuration-setup","missing":[...]}` | 排查"起来了但没干活" |
 
 > **由平台 ingress 探测 `/ready`。**镜像现已内置 `curl`（见 Dockerfile `runtime` 阶段），
-> 所以容器内写 `HEALTHCHECK` 在技术上可行；但 `/healthz` 只能证明进程活着，
-> `/ready` 才同时校验 Redis 与上游，因此仍以平台探针为准。
+> 所以在 Dockerfile 部署路径下容器内写 `HEALTHCHECK` 在技术上可行（HostStack 的 `runtime: rust`
+> 路径不走该 Dockerfile，readiness 由 `hoststack.yaml` 的 `healthCheck.path` 决定）；但
+> `/healthz` 只能证明进程活着，`/ready` 才同时校验 Redis 与上游，因此仍以平台探针为准。
 
 **缺必需环境变量不会崩溃，但也不会干活。**缺 `REDIS_URL` 或 `CONFIG_ENCRYPTION_KEY` 时，进程
 降级为只读配置路由（内存态、空 token、`NoopWorker`），容器继续应答请求但不做任何业务。排查这类

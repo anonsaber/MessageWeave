@@ -7,9 +7,18 @@
 # chat allowlist, LLM settings) is NOT read from environment variables at all.
 # It is written to Redis via /api/bootstrap or admin PUT on /api/config.
 #
-# Container rootfs is read-only, so diagnostic tools must be installed at image
-# build time (see the `runtime` stage of Dockerfile): curl, procps (ps/pgrep),
-# iproute2 (ss/ip), jq, bind9-dnsutils (dig), netcat-openbsd (nc).
+# Precedence (verified in the HostStack agent source, deploy-executor.ts):
+# a value declared here wins; a field omitted here falls back to the
+# per-runtime framework default. For runtime: rust those defaults are
+# `cargo fetch` / `cargo build --release` / `./target/release/app`.
+#
+# That last default is why start.command MUST be declared below: `app` is not
+# this package's binary name. Cargo.toml declares [[bin]] name = "message-weave"
+# with path = "src/main.rs"; there is no `app` target and no src/app.rs.
+# Deleting this file reverts the service to a start command that exits with
+# `./target/release/app: not found` before it can bind the port.
+#
+# Do NOT add --debug here for production. See the note above start.command.
 services:
   web:
     type: web_service
@@ -17,6 +26,7 @@ services:
     install:
       command: cargo fetch --locked
     build:
+      # --locked on both steps: fail rather than rewriting Cargo.lock mid-deploy.
       command: cargo build --release --locked
     start:
       # Binary is named after the Cargo package: `message-weave`, not `app`.
@@ -24,10 +34,12 @@ services:
       command: ./target/release/message-weave
       # Temporary diagnosis only: change the line above to
       #   command: ./target/release/message-weave --debug
-      # and set the DEBUG_TOKEN secret. Then probe the debug surface from
-      # inside the container, never through the public domain:
+      # and set the DEBUG_TOKEN secret. The debug surface is gated by BOTH
+      # factors — the argv flag AND a non-empty DEBUG_TOKEN — read once at
+      # process start. Then probe it from inside the container, never through
+      # the public domain:
       #   curl -s -i -H "Authorization: Bearer <token>" http://127.0.0.1:8080/debug/config
-      # Debug routes are gated by BOTH factors (see docs/deployment.md §2.1).
+      # See docs/deployment.md §2.1 for the double-factor gate.
     healthCheck:
       # /healthz only, never /ready. /ready also probes redis, the JMAP session
       # and Telegram getMe, so a transient upstream blip would restart the
