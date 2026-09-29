@@ -87,6 +87,9 @@
       "llm.modelLabel": "Model name",
       "llm.modelPh": "Leave blank for null",
       "llm.keyPh": "Required when LLM is enabled; never echoed",
+      "timezone.title": "Notification display",
+      "timezone.desc": "Received times in Telegram notifications are rendered in this time zone.",
+      "timezone.hint": "Only fixed-offset zones are supported; DST is not tracked.",
       "business.saveStateInitial": "You can fill in the full configuration after the admin session is verified.",
       "business.saveStateReady": "Fill in the complete BusinessConfigWire to submit. Secrets are never echoed.",
       "business.save": "Save business config and hot-reload",
@@ -376,8 +379,43 @@
       "login.503": "Redis 不可用或初始化尚未完成，暂时无法创建管理会话。请稍后重试。",
       "login.status": "无法创建管理会话（HTTP {status}）。",
       "login.fail": "无法连接管理服务，请检查网络后重试。",
+      "timezone.title": "通知显示",
+      "timezone.desc": "Telegram 通知中的收件时间按此时区渲染。",
+      "timezone.hint": "仅支持固定偏移时区；不跟踪夏令时。",
     },
   });
+
+  // 后端 timezone 字段的白名单（全部固定偏移，按偏移升序；Asia/Shanghai 为默认值）
+  const DEFAULT_TIMEZONE = Object.freeze("Asia/Shanghai");
+  const TIMEZONES = Object.freeze([
+    Object.freeze({ iana: "Etc/UTC", offset: "+0", label: Object.freeze({ en: "UTC (UTC+0)", zh: "协调世界时 (UTC+0)" }) }),
+    Object.freeze({ iana: "Africa/Cairo", offset: "+2", label: Object.freeze({ en: "Cairo, Egypt (UTC+2)", zh: "埃及开罗 (UTC+2)" }) }),
+    Object.freeze({ iana: "Europe/Istanbul", offset: "+3", label: Object.freeze({ en: "Istanbul, Turkey (UTC+3)", zh: "土耳其伊斯坦布尔 (UTC+3)" }) }),
+    Object.freeze({ iana: "Africa/Nairobi", offset: "+3", label: Object.freeze({ en: "Nairobi, Kenya (UTC+3)", zh: "肯尼亚内罗毕 (UTC+3)" }) }),
+    Object.freeze({ iana: "Asia/Dubai", offset: "+4", label: Object.freeze({ en: "Dubai, UAE (UTC+4)", zh: "阿联酋迪拜 (UTC+4)" }) }),
+    Object.freeze({ iana: "Asia/Karachi", offset: "+5", label: Object.freeze({ en: "Karachi, Pakistan (UTC+5)", zh: "巴基斯坦卡拉奇 (UTC+5)" }) }),
+    Object.freeze({ iana: "Asia/Kolkata", offset: "+5:30", label: Object.freeze({ en: "Kolkata, India (UTC+5:30)", zh: "印度加尔各答 (UTC+5:30)" }) }),
+    Object.freeze({ iana: "Asia/Bangkok", offset: "+7", label: Object.freeze({ en: "Bangkok, Thailand (UTC+7)", zh: "泰国曼谷 (UTC+7)" }) }),
+    Object.freeze({ iana: "Asia/Ho_Chi_Minh", offset: "+7", label: Object.freeze({ en: "Ho Chi Minh City, Vietnam (UTC+7)", zh: "越南胡志明市 (UTC+7)" }) }),
+    Object.freeze({ iana: "Asia/Shanghai", offset: "+8", label: Object.freeze({ en: "Shanghai, China (UTC+8)", zh: "中国上海 (UTC+8)" }) }),
+    Object.freeze({ iana: "Asia/Hong_Kong", offset: "+8", label: Object.freeze({ en: "Hong Kong (UTC+8)", zh: "中国香港 (UTC+8)" }) }),
+    Object.freeze({ iana: "Asia/Taipei", offset: "+8", label: Object.freeze({ en: "Taipei, Taiwan (UTC+8)", zh: "中国台北 (UTC+8)" }) }),
+    Object.freeze({ iana: "Asia/Singapore", offset: "+8", label: Object.freeze({ en: "Singapore (UTC+8)", zh: "新加坡 (UTC+8)" }) }),
+    Object.freeze({ iana: "Asia/Manila", offset: "+8", label: Object.freeze({ en: "Manila, Philippines (UTC+8)", zh: "菲律宾马尼拉 (UTC+8)" }) }),
+    Object.freeze({ iana: "Asia/Tokyo", offset: "+9", label: Object.freeze({ en: "Tokyo, Japan (UTC+9)", zh: "日本东京 (UTC+9)" }) }),
+    Object.freeze({ iana: "Asia/Seoul", offset: "+9", label: Object.freeze({ en: "Seoul, South Korea (UTC+9)", zh: "韩国首尔 (UTC+9)" }) }),
+  ]);
+
+  function populateTimezones() {
+    const select = document.querySelector("#timezone");
+    for (const zone of TIMEZONES) {
+      const option = document.createElement("option");
+      option.value = zone.iana;
+      option.textContent = zone.label[locale] || zone.label.en;
+      option.selected = zone.iana === DEFAULT_TIMEZONE;
+      select.appendChild(option);
+    }
+  }
 
   function detectLocale() {
     let pref = "";
@@ -434,10 +472,20 @@
 
   // Expose a tiny debug surface for runtime inspection and tests.
   if (typeof window !== "undefined") {
-    window.__mw = { t, detectLocale, getLocale: () => locale, messages: MESSAGES, joinList };
+    window.__mw = {
+      t,
+      detectLocale,
+      getLocale: () => locale,
+      messages: MESSAGES,
+      joinList,
+      timezones: TIMEZONES,
+      defaultTimezone: DEFAULT_TIMEZONE,
+      readBusinessConfig,
+    };
   }
 
   applyI18n();
+  populateTimezones();
   // ─────────────────────────────────────────────────────────────────────────
 
   const RUNTIME_DEFAULTS = Object.freeze({
@@ -896,6 +944,7 @@
         llm_model: llmModelValue || null,
         reconcile_token: requireText("reconcile-token", "Reconcile Token", true),
         worker_token: requireText("worker-token", "Worker Token", true),
+        timezone: document.getElementById("timezone").value,
       };
       return business;
     } catch (error) {

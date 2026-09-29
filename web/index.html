@@ -122,6 +122,13 @@
                   <div class="field field-wide"><label for="llm-api-key">LLM API Key <span id="llm-key-required" class="optional-mark" data-i18n="common.optional">Optional</span></label><input id="llm-api-key" name="llm_api_key" type="password" autocomplete="new-password" spellcheck="false" data-i18n-placeholder="llm.keyPh" placeholder="Required when LLM is enabled; never echoed" /></div>
                 </div>
               </section>
+
+              <section class="form-section" aria-labelledby="timezone-title">
+                <div class="form-section-heading"><span class="section-number">04</span><div><h3 id="timezone-title" data-i18n="timezone.title">Notification display</h3><p data-i18n="timezone.desc">Received times in Telegram notifications are rendered in this time zone.</p></div></div>
+                <div class="field-grid">
+                  <div class="field"><label for="timezone">Time zone <span class="required-mark" data-i18n="common.required">Required</span></label><select id="timezone" name="timezone" required></select><small data-i18n="timezone.hint">Only fixed-offset zones are supported; DST is not tracked.</small></div>
+                </div>
+              </section>
             </fieldset>
 
             <div class="form-footer">

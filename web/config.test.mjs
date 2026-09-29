@@ -23,6 +23,7 @@ class FakeElement {
       remove() {},
     };
     this.children = new Map();
+    this.options = [];
   }
 
   addEventListener(type, callback) {
@@ -39,6 +40,7 @@ class FakeElement {
   }
 
   querySelectorAll() { return []; }
+  appendChild(child) { this.options.push(child); }
   focus() {}
   reset() {}
   setCustomValidity() {}
@@ -63,6 +65,7 @@ async function startPage(statusResponse) {
       return elements.get(id);
     },
     querySelectorAll() { return []; },
+    createElement() { return new FakeElement(); },
   };
   const window = {
     addEventListener() {},
@@ -82,7 +85,7 @@ async function startPage(statusResponse) {
     };
   };
 
-  vm.runInNewContext(source, { document, window, fetch, Headers });
+  vm.runInNewContext(source, { document, window, fetch, Headers, URL });
   await new Promise((resolve) => setImmediate(resolve));
   await Promise.resolve();
   return { elements, fetchCalls, window };
@@ -189,4 +192,88 @@ test("every data-i18n key in the markup resolves in both dictionaries", async ()
   assert.match(html, /<html lang="en">/);
   assert.match(html, /data-i18n-placeholder="auth\.placeholder"/);
   assert.match(html, /data-i18n-aria="brand\.aria"/);
+});
+
+test("timezone catalogue is a duplicate-free, fixed-offset-only set with Asia/Shanghai as the default", async () => {
+  const { window } = await startPage({ body: { ready: true, mode: "configured", missing: [] } });
+  const { timezones, defaultTimezone } = window.__mw;
+
+  assert.equal(defaultTimezone, "Asia/Shanghai");
+  assert.equal(timezones.length, 16);
+  assert.equal(new Set(timezones.map((zone) => zone.iana)).size, 16);
+
+  const expected = [
+    "Etc/UTC",
+    "Africa/Cairo",
+    "Europe/Istanbul",
+    "Africa/Nairobi",
+    "Asia/Dubai",
+    "Asia/Karachi",
+    "Asia/Kolkata",
+    "Asia/Bangkok",
+    "Asia/Ho_Chi_Minh",
+    "Asia/Shanghai",
+    "Asia/Hong_Kong",
+    "Asia/Taipei",
+    "Asia/Singapore",
+    "Asia/Manila",
+    "Asia/Tokyo",
+    "Asia/Seoul",
+  ];
+  assert.deepEqual([...timezones.map((zone) => zone.iana)].sort(), [...expected].sort());
+  assert.ok(timezones.some((zone) => zone.iana === defaultTimezone));
+
+  for (const zone of timezones) {
+    assert.match(zone.offset, /^\+\d{1,2}(:30)?$/);
+    assert.equal(zone.label.en.includes(zone.offset), true);
+    assert.equal(zone.label.zh.includes(zone.offset), true);
+  }
+});
+
+test("timezone select is filled with 16 options and pre-selects Asia/Shanghai", async () => {
+  const { elements, window } = await startPage({ body: { ready: true, mode: "configured", missing: [] } });
+  const { timezones, defaultTimezone, getLocale } = window.__mw;
+  const timezoneSelect = elements.get("timezone");
+
+  assert.equal(timezoneSelect.options.length, 16);
+  assert.deepEqual(timezoneSelect.options.map((option) => option.value), Array.from(timezones, (zone) => zone.iana));
+
+  const selected = timezoneSelect.options.filter((option) => option.selected);
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].value, defaultTimezone);
+
+  const defaultZone = timezones.find((zone) => zone.iana === defaultTimezone);
+  assert.equal(defaultZone.label.en, "Shanghai, China (UTC+8)");
+  assert.equal(defaultZone.label.zh, "中国上海 (UTC+8)");
+  assert.equal(selected[0].textContent, defaultZone.label[getLocale()]);
+  // Option labels live per zone and must exist in both languages (test 5 covers dictionary parity).
+  for (const zone of timezones) {
+    assert.equal(zone.label.en.length > 0, true);
+    assert.equal(zone.label.zh.length > 0, true);
+  }
+});
+
+test("readBusinessConfig carries the selected time zone", async () => {
+  const { elements, window: pageWindow } = await startPage({ body: { ready: true, mode: "configured", missing: [] } });
+
+  elements.get("telegram-bot-token").value = "bot-token";
+  elements.get("telegram-chat-id").value = "123456789";
+  elements.get("chat-allowlist").value = "123456789";
+  elements.get("telegram-webhook-secret").value = "webhook-secret";
+  elements.get("jmap-session-url").value = "https://mail.example.com/jmap";
+  elements.get("jmap-username").value = "bot@example.com";
+  elements.get("jmap-password").value = "jmap-password";
+  elements.get("reconcile-token").value = "reconcile-token";
+  elements.get("worker-token").value = "worker-token";
+  elements.get("timezone").value = "Asia/Tokyo";
+
+  const payload = pageWindow.__mw.readBusinessConfig();
+
+  assert.equal(payload.timezone, "Asia/Tokyo");
+  assert.equal(payload.llm_enabled, false);
+  assert.equal(payload.llm_base_url, null);
+  assert.equal(payload.llm_model, null);
+  assert.equal(payload.llm_api_key, null);
+  assert.equal(typeof payload.bot_token, "string");
+  assert.equal(typeof payload.reconcile_token, "string");
 });
