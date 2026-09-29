@@ -286,6 +286,7 @@ impl JmapBackend for JmapClientBackend {
         }
         let mut request = self.client.build();
         let get = request.get_email().ids([email_id]).properties([
+            email::Property::From,
             email::Property::Subject,
             email::Property::Preview,
             email::Property::TextBody,
@@ -488,6 +489,15 @@ fn select_account<'a>(
     Ok(selected.to_owned())
 }
 
+/// One from-address the way RFC 5322 prints it, which is what a reader expects
+/// on a `From:` line. With no display name, the address is the whole thing.
+fn sender_display(address: &jmap_client::email::EmailAddress) -> String {
+    match address.name() {
+        Some(name) => format!("{name} <{}>", address.email()),
+        None => address.email().to_owned(),
+    }
+}
+
 fn metadata(email: &jmap_client::email::Email<Get>) -> EmailMetadata {
     EmailMetadata {
         id: email.id().unwrap_or_default().to_owned(),
@@ -495,7 +505,7 @@ fn metadata(email: &jmap_client::email::Email<Get>) -> EmailMetadata {
         sender: email
             .from()
             .and_then(|addresses| addresses.first())
-            .map(|address| address.email().to_owned()),
+            .map(sender_display),
         received_at: email.received_at(),
         preview: email.preview().map(str::to_owned),
         size: Some(email.size()),
@@ -637,5 +647,69 @@ mod tests {
     fn roles_are_normalized() {
         assert_eq!(role_name(mailbox::Role::Inbox).as_deref(), Some("inbox"));
         assert_eq!(role_name(mailbox::Role::None), None);
+    }
+
+    fn email_with_from(addresses: &[serde_json::Value]) -> email::Email<Get> {
+        serde_json::from_value(serde_json::json!({
+            "id": "m1",
+            "subject": "hello",
+            "preview": "hi",
+            "from": addresses,
+        }))
+        .expect("a minimal Email/get payload must deserialize")
+    }
+
+    #[test]
+    fn sender_keeps_the_display_name_in_rfc5322_form() {
+        let address = serde_json::from_value::<email::EmailAddress>(serde_json::json!({
+            "email": "zhang@example.com",
+            "name": "张三",
+        }))
+        .expect("a minimal from-address must deserialize");
+
+        assert_eq!(sender_display(&address), "张三 <zhang@example.com>");
+    }
+
+    #[test]
+    fn sender_without_a_display_name_is_the_bare_address() {
+        let address = serde_json::from_value::<email::EmailAddress>(serde_json::json!({
+            "email": "noreply@example.com",
+        }))
+        .expect("a nameless from-address must deserialize");
+
+        assert_eq!(sender_display(&address), "noreply@example.com");
+    }
+
+    #[test]
+    fn metadata_takes_the_sender_from_the_from_address() {
+        // The address is only readable if Email/get actually asked for the "from"
+        // property, which is why `metadata` must read it from `from` and not just
+        // keep the bare address.
+        let email =
+            email_with_from(&[serde_json::json!({"email": "zhang@example.com", "name": "张三"})]);
+        let meta = metadata(&email);
+        assert_eq!(meta.sender.as_deref(), Some("张三 <zhang@example.com>"));
+
+        // No display name, so the address stands alone.
+        let email = email_with_from(&[serde_json::json!({"email": "noreply@example.com"})]);
+        assert_eq!(
+            metadata(&email).sender.as_deref(),
+            Some("noreply@example.com")
+        );
+
+        // Multiple addresses: the notification shows the first one.
+        let email = email_with_from(&[
+            serde_json::json!({"email": "first@example.com"}),
+            serde_json::json!({"email": "second@example.com"}),
+        ]);
+        assert_eq!(
+            metadata(&email).sender.as_deref(),
+            Some("first@example.com")
+        );
+
+        // No `from` at all means `sender` stays `None` and the caller supplies
+        // its fallback, so this assertion would also hold before the fix.
+        let email = email_with_from(&[]);
+        assert_eq!(metadata(&email).sender, None);
     }
 }
