@@ -32,7 +32,9 @@
 # To drop this file, first correct all three commands in the dashboard UI,
 # then delete and redeploy to verify. See docs/deployment.md §5.1.
 #
-# Do NOT add --debug here for production. See the note above start.command.
+# Keep this line static. Do NOT add --debug here. The debug surface is
+# toggled with the DEBUG_ENABLED env var (set it truthy in the dashboard and
+# redeploy), so the start command never has to change. See docs/deployment.md §2.1.
 services:
   web:
     type: web_service
@@ -44,16 +46,16 @@ services:
       command: cargo build --release --locked
     start:
       # Binary is named after the Cargo package: `message-weave`, not `app`.
-      # Do NOT add --debug here for production.
+      # Keep this static. Do NOT append --debug for production; the debug
+      # surface is toggled by the DEBUG_ENABLED env var instead, so this line
+      # never changes. DEBUG_TOKEN must also be set for either factor to work.
       command: ./target/release/message-weave
-      # Temporary diagnosis only: change the line above to
-      #   command: ./target/release/message-weave --debug
-      # and set the DEBUG_TOKEN secret. The debug surface is gated by BOTH
-      # factors — the argv flag AND a non-empty DEBUG_TOKEN — read once at
-      # process start. Then probe it from inside the container, never through
-      # the public domain:
+      # To temporarily open the debug surface: set DEBUG_ENABLED=1 and a one-off
+      # DEBUG_TOKEN in the dashboard, redeploy, then probe from inside the
+      # container, never through the public domain:
       #   curl -s -i -H "Authorization: Bearer <token>" http://127.0.0.1:8080/debug/config
-      # See docs/deployment.md §2.1 for the double-factor gate.
+      # Close it by clearing DEBUG_ENABLED and rotating DEBUG_TOKEN. See
+      # docs/deployment.md §2.1 for the double-factor gate.
     healthCheck:
       # /healthz only, never /ready. /ready also probes redis, the JMAP session
       # and Telegram getMe, so a transient upstream blip would restart the

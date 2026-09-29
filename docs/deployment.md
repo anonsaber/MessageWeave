@@ -59,10 +59,22 @@
 
 **双因子启用条件（`SAF-DEBUG-GATE`，两者必须同时成立）**
 
-1. 进程命令行必须带 `--debug`（读取于 `src/main.rs:82`）。
-2. `DEBUG_TOKEN` 环境变量必须存在且非空（读取于 `src/main.rs:82-89`）。
+1. 「开启信号」成立——满足**其一**即可：进程命令行带 `--debug`（本地 / 开发），或
+   `DEBUG_ENABLED` 环境变量为真值（`1` / `true` / `TRUE` / `True` / `yes` / `YES`，大小写
+   严格匹配，其余取值一律视为关闭）。判定逻辑在 `src/main.rs:15-25` 的纯函数
+   `debug_surface_requested`，读取点在 `src/main.rs:102-105`。
+2. `DEBUG_TOKEN` 环境变量必须存在且非空（读取于 `src/main.rs:106-114`）。
 
-缺一即不挂载：`debug_router()` 本身会构造出全部 7 条路由（`src/debug.rs:72-80`），但主入口**只在双因子成立时才合并它**（`src/notify.rs:1321-1322`）。所以未开启时 `/debug/*` 路由根本不存在，请求走 axum 兜底返回普通 `404 not found`——**不是** 401，也不会泄露「此路径存在」。开启成功时打一条 WARN 日志标记该面已打开（`src/main.rs:90-92`，`SAF-LOG-PURITY`：只记开启状态，从不记录 token 值）。
+`DEBUG_ENABLED` 而不是 `DEBUG_TOKEN` 单独生效，是刻意的：**只看 token 是否配置会退化掉双因子**
+——token 是长期存在平台上的 Secret，让它自己开门就等于没有第二道门。`--debug` 与
+`DEBUG_ENABLED` 二选一即可，因为开关信号本身就是一道门，第二道门始终是 token。
+
+**为什么生产用 `DEBUG_ENABLED` 而不是改启动命令加 `--debug`**：这样启动命令保持静态，
+开关就成了控制台上一个环境变量的事，改一次 + 重新部署即可，不用提交、不用改
+`hoststack.yaml`、不用重新构建。判定为纯函数（不直接读全局 env）以便单测覆盖，测试在
+`src/main.rs:217-264`。
+
+缺一即不挂载：`debug_router()` 本身会构造出全部 7 条路由（`src/debug.rs:72-80`），但主入口**只在双因子成立时才合并它**（`src/notify.rs:1321-1322`）。所以未开启时 `/debug/*` 路由根本不存在，请求走 axum 兜底返回普通 `404 not found`——**不是** 401，也不会泄露「此路径存在」。开启成功时打一条 WARN 日志标记该面已打开（`src/main.rs:115-117`，`SAF-LOG-PURITY`：只记开启状态，从不记录 token 值）。
 
 **鉴权**
 
@@ -90,7 +102,9 @@
 - **`/debug/notify` 受 chat 白名单约束，但空白名单不拦截**：它复用生产同一份白名单快照（`src/notify.rs:1142`），判定条件是「白名单**非空**且 `chat_id` 不在其中」才回 `403 chat_not_allowed`（`src/debug.rs:232-235`）。因此已配置白名单时无法绕过业务侧发送限制；若白名单未配置（为空）则此判定不生效，`chat_id` 可任意指定——所以启用本面时应确认业务白名单已真正配置。`text` 缺省为固定联调文案，并按 1024 字符截断（`src/debug.rs:240-245`）。
 - **不在 Worker 白名单内，只能直连 origin**：网关的 15 条安全路由（`cloudflare-worker/src/backends.js:9-25`）不含任何 `/debug/*`，Worker 对未白名单路径返回 `404 route not forwarded: /debug/...`（`cloudflare-worker/src/index.js:81-82`）。因此 `/debug/*` 只能通过直连后端 origin 访问；若必须经代理，请自行在代理层加鉴权，不要让公网可达。
 
-> **建议**：生产环境不开启。需要远程联调时临时开启、用一次性 token，联调结束立即移除 `--debug` 与 `DEBUG_TOKEN` 后重启；长期暴露面走 §5 的 Secret 管理流程单独审批。
+> **建议**：生产环境不开启。需要远程联调时在控制台设置 `DEBUG_ENABLED=1` 与一次性
+> `DEBUG_TOKEN`，重新部署后联调；结束立即把 `DEBUG_ENABLED` 置空并轮换 `DEBUG_TOKEN`。
+> 全程不需要改动启动命令或提交代码。长期暴露面走 §5 的 Secret 管理流程单独审批。
 
 ---
 
@@ -138,8 +152,9 @@ HostStack 使用仓库根目录 `hoststack.yaml`：`runtime: rust` 的 agent 在
 `debian:trixie-slim` 的 runner 容器，以 `start.command`（`./target/release/message-weave`）
 启动，监听单个 HTTP 端口，并以 `/healthz` 做 interval 30 秒、timeout 5 秒的健康检查。
 `install:` **是**合法的 schema 键——`install` / `build` / `start` 是三条独立命令，
-依赖获取不写进 `build.command`。服务命令里**不带** `--debug`——远程联调开关只应临时加上
-（改法见 `hoststack.yaml` 的注释，双因子见 §2.1）。`REDIS_URL` 与
+依赖获取不写进 `build.command`。服务命令里**不带** `--debug`，也**不需要**带——远程联调开关
+用 `DEBUG_ENABLED` 环境变量控制（见 §2.1），改控制台即可，启动命令保持静态。
+`REDIS_URL` 与
 `CONFIG_ENCRYPTION_KEY` 必须配置为 HostStack Secret；不得将密钥值写入 YAML、镜像、日志
 或代码仓库。**本仓库的 Dockerfile 不由该路径执行**——runner 镜像是 HostStack 自带的
 `debian:trixie-slim`，不是本文件的 `debian:bookworm-slim`，见 §3 与 §8.1 的说明。
@@ -212,7 +227,7 @@ services 表里已存的值填进 payload，再用 `hoststack.yaml` 声明的值
 | `RECONCILE_TOKEN` | ✅ | `/reconcile` 的 `Authorization: Bearer <token>` 承载令牌（`SAF-AUTH-RECONCILE`）。因 `/reconcile` 路由**始终挂载**，此字段为**必填**（`SecretString`） |
 | `WORKER_TOKEN` | ✅ | `/worker` 的有界处理令牌；管理 API 兼容接受该 Bearer 值，SPA 使用短期 Redis admin session |
 | `TG_WEBHOOK_SECRET` | ✅ | `/webhook/tg` 校验请求头 `X-Telegram-Bot-Api-Secret-Token`（`SAF-AUTH-TG-WEBHOOK`）。须与 Telegram `setWebhook` 的 `secret_token` **完全一致**（`SecretString`） |
-| `--debug` + `DEBUG_TOKEN` | 可选，默认关闭 | 远程联调面 `/debug/*` 的**双因子开关**（`SAF-DEBUG-GATE`）：命令行必须带 `--debug` **且** `DEBUG_TOKEN` 非空才挂载 7 条路由，缺一即路由不存在、请求走通用 `404`。令牌为 `SecretString`，常数时间比较、不进日志（`SAF-LOG-PURITY`）。生产环境不配置，见 §2.1 |
+| `DEBUG_ENABLED` + `DEBUG_TOKEN` | 可选，默认关闭 | 远程联调面 `/debug/*` 的**双因子开关**（`SAF-DEBUG-GATE`）：`DEBUG_ENABLED` 为真值（或命令行带 `--debug`，用于本地开发）**且** `DEBUG_TOKEN` 非空才挂载 7 条路由，缺一即路由不存在、请求走通用 `404`。令牌为 `SecretString`，常数时间比较、不进日志（`SAF-LOG-PURITY`）。生产环境不配置，见 §2.1 |
 | Push registration/verification | 已接入，需显式注册 | `POST /api/push/register` 接受 HTTPS callback URL 并调用 `PushSubscription/set create`；相同 callback URL 重复请求幂等复用；`/push/jmap` 接收 Stalwart 生成的验证码并自动回写，Redis 保存订阅 ID 和短期验证状态 |
 | `LLM_*` | 可选 | OpenAI-compatible 业务配置字段（`REQ-LLM-OPENAI-COMPAT`）；其中 `LLM_MAX_RETRIES` **不是**业务配置字段而是 Redis 运行参数（回落默认见 `docs/reference.md` §6.1）；**仅当用户明确允许时才把邮件正文外发 AI**（`REQ-AI-EXTERNAL-CONSENT`） |
 | `ACCOUNT_ID` | 默认空 | **单账户**（`REQ-SINGLE-ACCOUNT`）：留空则取 session 主账户；多账户 = 部署多个 bot 实例（各自独立 token/配置），不做多账户单实例 |

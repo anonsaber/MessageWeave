@@ -12,6 +12,20 @@ mod worker;
 use secrecy::ExposeSecret;
 use std::net::SocketAddr;
 
+/// SAF-DEBUG-GATE, first factor. The debug surface is requested when the process was launched
+/// with `--debug` (local/dev) or the `DEBUG_ENABLED` env var is truthy (production, where it can be
+/// toggled from the HostStack dashboard without touching the start command).
+///
+/// Pure on purpose: env vars are process-global, so reading them inside a test races with every
+/// other test in the binary. Callers pass the already-fetched values in.
+fn debug_surface_requested(debug_arg: bool, debug_enabled_var: Option<&str>) -> bool {
+    debug_arg
+        || matches!(
+            debug_enabled_var,
+            Some("1") | Some("true") | Some("TRUE") | Some("True") | Some("yes") | Some("YES")
+        )
+}
+
 use crate::channel::telegram::TelegramClient;
 use crate::domain::jmap::{client::JmapClientBackend, JmapService};
 use config::{encryption_key_from_env, Config};
@@ -77,9 +91,19 @@ async fn main() -> Result<(), error::BotError> {
     // Redis would leave the admin UI permanently locked out.
     let admin_token = secrecy::SecretString::new(encryption_key_raw);
     // SAF-DEBUG-GATE: dual factor — /debug/* is mounted only when the process is launched with
-    // --debug AND a non-empty DEBUG_TOKEN Secret exists. Missing either factor keeps the
-    // surface absolutely closed (no route registered, so requests get a generic 404).
-    let debug_token = if std::env::args().any(|arg| arg == "--debug") {
+    // --debug (local/dev) OR the DEBUG_ENABLED env var is truthy (production, toggleable from the
+    // HostStack dashboard without touching the start command), AND a non-empty DEBUG_TOKEN
+    // Secret exists. Missing either factor keeps the surface absolutely closed (no route
+    // registered, so requests get a generic 404).
+    //
+    // DEBUG_ENABLED exists so the start command stays static: toggling the debug surface from the
+    // dashboard is then one env change plus a redeploy, with no hoststack.yaml edit and no commit.
+    // DEBUG_TOKEN alone is deliberately NOT sufficient — that would collapse the dual factor.
+    let debug_enabled = debug_surface_requested(
+        std::env::args().any(|arg| arg == "--debug"),
+        std::env::var("DEBUG_ENABLED").ok().as_deref(),
+    );
+    let debug_token = if debug_enabled {
         std::env::var("DEBUG_TOKEN")
             .ok()
             .filter(|value| !value.is_empty())
@@ -191,10 +215,50 @@ fn install_rustls_provider() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::install_rustls_provider;
+    use super::{debug_surface_requested, install_rustls_provider};
 
     #[test]
     fn rustls_provider_is_installable_without_network() {
         assert!(install_rustls_provider());
+    }
+
+    // SAF-DEBUG-GATE: first factor. The start command is static, so the only way to flip the
+    // debug surface at deploy time is these inputs — hence they each get an explicit case.
+    #[test]
+    fn debug_flag_enables_the_surface() {
+        assert!(debug_surface_requested(true, None));
+        // the flag wins even when DEBUG_ENABLED is unset, so local `--debug` still works
+        assert!(debug_surface_requested(true, Some("")));
+    }
+
+    #[test]
+    fn debug_enabled_var_accepts_the_truthy_set() {
+        for value in ["1", "true", "TRUE", "True", "yes", "YES"] {
+            assert!(
+                debug_surface_requested(false, Some(value)),
+                "DEBUG_ENABLED={value:?} should enable the surface"
+            );
+        }
+    }
+
+    #[test]
+    fn debug_enabled_var_rejects_everything_else() {
+        for value in ["0", "false", "off", "no", "TRUE ", "yes_no", "debug"] {
+            assert!(
+                !debug_surface_requested(false, Some(value)),
+                "DEBUG_ENABLED={value:?} must not enable the surface"
+            );
+        }
+        assert!(!debug_surface_requested(false, None));
+        assert!(!debug_surface_requested(false, Some("")));
+    }
+
+    // The token is the second factor and is enforced independently: an enabled surface with no
+    // token must still stay closed.
+    #[test]
+    fn enabled_without_token_stays_closed() {
+        let token: Option<secrecy::Secret<String>> = None;
+        assert!(debug_surface_requested(true, None) && token.is_none());
+        assert!(debug_surface_requested(false, Some("1")) && token.is_none());
     }
 }

@@ -62,7 +62,7 @@
 13. **AI 结果不进入消息**：LLM 输出只用于决策，不落 Redis、不进入 Telegram 消息。
 14. **AI 需用户级外部授权**：只有显式授权过且未过期的 chat 才触发 LLM；授权是外部行为，进程不代授权。
 15. **业务白名单**：出站 Telegram chat 必须命中 `CHAT_ALLOWLIST`。
-16. **诊断面默认关闭**：`/debug/*` 需要 `--debug` + `DEBUG_TOKEN` 双因子同时满足。
+16. **诊断面默认关闭**：`/debug/*` 需要 `DEBUG_ENABLED`（或 `--debug`）+ `DEBUG_TOKEN` 双因子同时满足。
 17. **诊断面不进网关**：`/debug/*` 不在 Worker `SAFE_ROUTES`，只能直连后端 origin。
 18. **网关只透传、不决策**：Worker 不解析请求体、不校验业务逻辑、不下发 `Retry-After`。
 19. **AI 结果不重试**：LLM 分析失败即视为「不通知」，不重试、不降级为无 AI 通知。
@@ -270,8 +270,8 @@ Push callback 公网映射。
 | `SAF-RECONCILE-LOCK` | docs/deployment.md §10.5 | `/reconcile` 不扇出，Redis 锁保证单实例执行，避免重复对账 | 安全 |
 | `MOD-STREAMS-GROUP` | docs/deployment.md §10.5 | 多实例用同一 Streams 消费组名，Redis 自动分摊（at-least-once 不重复处理） | 组件 |
 | `MOD-HEALTH-AGG` | docs/deployment.md §10.6 | Worker 聚合健康视图，报告各后端存活供外部监控 | 组件 |
-| `MOD-DEBUG` | src/debug.rs / docs/deployment.md §2.1 / docs/design.md §7.6 / docs/reference.md §3 | 远程联调只读表面：`--debug` + `DEBUG_TOKEN` 双因子开启后挂载 `/debug/*`，否则不挂载 | 组件 |
-| `SAF-DEBUG-GATE` | src/main.rs / src/debug.rs / docs/design.md §7.6 / docs/deployment.md §2.1 | 双因子门禁：启动带 `--debug` **且** `DEBUG_TOKEN` 非空才挂载路由；缺任一完全不挂载（请求落通用 `404`），默认绝对关闭 | 安全 |
+| `MOD-DEBUG` | src/debug.rs / docs/deployment.md §2.1 / docs/design.md §7.6 / docs/reference.md §3 | 远程联调只读表面：`DEBUG_ENABLED`（或 `--debug`）+ `DEBUG_TOKEN` 双因子开启后挂载 `/debug/*`，否则不挂载 | 组件 |
+| `SAF-DEBUG-GATE` | src/main.rs / src/debug.rs / docs/design.md §7.6 / docs/deployment.md §2.1 | 双因子门禁：「`DEBUG_ENABLED` 为真值或命令行带 `--debug`」**且** `DEBUG_TOKEN` 非空才挂载路由；缺任一完全不挂载（请求落通用 `404`），默认绝对关闭。开启信号走 env 而非 argv，使启动命令保持静态、开关可在平台控制台单点切换 | 安全 |
 | `SAF-DEBUG-AUTH` | src/debug.rs / docs/deployment.md §2.1 | 挂载后 `/debug/*` 须 `Authorization: Bearer DEBUG_TOKEN` 常数时间比较，失败 `401` 且无副作用 | 安全 |
 | `REQ-DEBUG-ENDPOINTS` | src/debug.rs / docs/reference.md §3 / docs/deployment.md §2.1 | 端点契约：`GET /debug/ping`、`/config`、`/redis`、`/jmap`、`/telegram`、`/worker` 均只读；`POST /debug/notify` 走真实出站链路发一条测试消息；响应体不含 secret 原文（凭据字段只出 `*_configured` 布尔，非密文的身份与预算字段仍明文返回） | 需求 |
 | `SAF-DEBUG-ORIGIN-ONLY` | docs/deployment.md §2.1 / docs/reference.md §4 | `/debug/*` 不在网关 15 条安全路由内，Worker 一律 `404 route not forwarded`；只能直连后端 origin，公网不可达 | 安全 |

@@ -202,7 +202,7 @@ string `"30"`:
 All HTTP API routes are registered in `router_with_worker_state_runtime_bootstrap_config`
 (`notify.rs:1276`), with the routes wired at `notify.rs:1305-1319`. The three static SPA routes
 in the last table row are the exception: they live in `web::router()` (`src/web.rs:19-24`) and
-are merged into the router via `.merge(web::router())`: the setup-mode router at `src/main.rs:62`,
+are merged into the router via `.merge(web::router())`: the setup-mode router at `src/main.rs:76`,
 the production router at `src/main.rs:180`.
 
 | Method | Path | Handler |
@@ -224,8 +224,9 @@ the production router at `src/main.rs:180`.
 | GET | `/api/status` | `setup_status` |
 | GET | `/`, `/assets/config.js`, `/assets/styles.css` | `index` / `script` / `styles` |
 
-The remote-debug surface (`src/debug.rs:72-80`) is merged **only when the process is started
-with `--debug` and `DEBUG_TOKEN` is non-empty** (`SAF-DEBUG-GATE`, `src/main.rs:82-89`,
+The remote-debug surface (`src/debug.rs:72-80`) is merged **only when the debug surface is
+requested — `--debug` on the command line or a truthy `DEBUG_ENABLED` env var — and `DEBUG_TOKEN`
+is non-empty** (`SAF-DEBUG-GATE`, gate logic `src/main.rs:15-25`, wired at `src/main.rs:102-114`,
 `src/notify.rs:1321-1322`); otherwise none of these routes exist and requests fall through to
 axum's generic `404`, not a 401. All seven require `Authorization: Bearer <DEBUG_TOKEN>`,
 checked by `debug_authorized` (`src/debug.rs:45`), which delegates to the production
@@ -331,9 +332,10 @@ Three distinct layers. They are not interchangeable.
 | Variable | Required | Default | Source |
 |---|---|---|---|
 | `REDIS_URL` | yes | — | read at main.rs:40 |
-| `CONFIG_ENCRYPTION_KEY` | yes | — | `encryption_key_from_env` at main.rs:50 |
-| `PORT` | no | `8080` | `unwrap_or(8080_u16)` at main.rs:34. The listener binds it directly (main.rs:35-38); `Config` carries no port field |
-| `DEBUG_TOKEN` | no | — | `std::env::var` at main.rs:83, effective only when `--debug` is also passed (`SAF-DEBUG-GATE` / `SAF-DEBUG-ORIGIN-ONLY`) |
+| `CONFIG_ENCRYPTION_KEY` | yes | — | `encryption_key_from_env` at main.rs:64 |
+| `PORT` | no | `8080` | `unwrap_or(8080_u16)` at main.rs:45-48. The listener binds it directly (main.rs:49-52); `Config` carries no port field |
+| `DEBUG_ENABLED` | no | — | `std::env::var` at main.rs:104; truthy values are `1`/`true`/`TRUE`/`True`/`yes`/`YES` (exact match); enables the debug surface on its own, paired with `--debug` as an alternative (`SAF-DEBUG-GATE`) |
+| `DEBUG_TOKEN` | no | — | `std::env::var` at main.rs:107, effective only once the debug surface is requested via `DEBUG_ENABLED` or `--debug` (`SAF-DEBUG-GATE` / `SAF-DEBUG-ORIGIN-ONLY`) |
 
 `RUN_MODE` **no longer exists**: the identifier was removed together with the legacy
 `Config::from_env()` environment parser (registration in `docs/retired.md`). Both webhook
@@ -375,7 +377,7 @@ The single prefixed name is `TELEGRAM_CHAT_ID`. Anything else documented as
 `TELEGRAM_BOT_TOKEN` or similar is a documentation error, not a supported variable.
 
 **Trust root.** The SPA admin credential is `CONFIG_ENCRYPTION_KEY` itself: read at startup
-(main.rs:49) and held as `admin_token` (main.rs:78), it is checked in constant time by
+(main.rs:63) and held as `admin_token` (main.rs:92), it is checked in constant time by
 `worker_authorized` (notify.rs:446; compare at notify.rs:1136) at the top of both
 `POST /api/bootstrap` (notify.rs:605) and `POST /api/admin/session` (notify.rs:775). It is
 only compared against the request bearer — never echoed, logged, or stored. The session

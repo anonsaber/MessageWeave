@@ -344,7 +344,7 @@ message-weave/
 | `ai` | reqwest 0.13 | `LlmClient` / `summarize` | mock OpenAI 兼容端点 | 已实现 |
 | `notify` | axum；redis | HTTP 鉴权、全局开关、`/push/jmap` 入队、`Email/changes` 对账和游标提交 | webhook 校验失败路径覆盖 403 | 已覆盖真实对账路径；仍需真实 Stalwart 环境做端到端验收 |
 | `web` | axum | `/config` 静态页 + `include_str!` 嵌入 + CSP | 前端由 `web/config.test.mjs` 覆盖 | 已实现 |
-| `debug` | reqwest 0.13；redis 0.27 | 远端诊断面 `/debug/*`（`src/debug.rs`）：6 条只读探针 `/debug/ping`、`/debug/config`、`/debug/redis`、`/debug/jmap`、`/debug/telegram`、`/debug/worker` + `POST /debug/notify`（走生产出站路径发一条测试消息，无独立实现） | 仅 `--debug` + `DEBUG_TOKEN` 双因子齐备时挂载路由；模块本身无条件编译 | 已实现，不进 Worker 白名单（`SAF-DEBUG-ORIGIN-ONLY`） |
+| `debug` | reqwest 0.13；redis 0.27 | 远端诊断面 `/debug/*`（`src/debug.rs`）：6 条只读探针 `/debug/ping`、`/debug/config`、`/debug/redis`、`/debug/jmap`、`/debug/telegram`、`/debug/worker` + `POST /debug/notify`（走生产出站路径发一条测试消息，无独立实现） | 仅 `DEBUG_ENABLED`（或 `--debug`）+ `DEBUG_TOKEN` 双因子齐备时挂载路由；模块本身无条件编译 | 已实现，不进 Worker 白名单（`SAF-DEBUG-ORIGIN-ONLY`） |
 
 > 注：「现状」列是**模块级**口径（模块已落地），不代表行为完备。行为级缺口不在本表内：`docs/roadmap.md`「代码缺口」中 `/search`、Telegram 429 退避、多实例重复投递窗口均已实现，仅剩 1 条按产品决策保留不改（`SAF-DEBUG-ALLOWLIST`）。`worker` 模块的 `/search` 路径已随 `bfe0fd8` 落地。
 
@@ -363,8 +363,8 @@ message-weave/
 > 使用新配置，失败保留旧实例。该迁移替代下述阶段0环境变量清单，阶段0列表仅作为历史
 > 兼容说明。
 
-> **实际实现**（`ARCH-CONFIG-ENV`）：进程启动只读 **2 个**进程级凭据加监听端口（`src/main.rs:31` / `:40` / `:49`，
-> 另加可选 `DEBUG_TOKEN` 于 `:83`），直接 `std::env::var`，**不使用 figment、不使用 TOML/配置文件**。
+> **实际实现**（`ARCH-CONFIG-ENV`）：进程启动只读 **2 个**进程级凭据加监听端口（`src/main.rs:45` / `:54` / `:63`，
+> 另加可选 `DEBUG_TOKEN` 于 `:107`），直接 `std::env::var`，**不使用 figment、不使用 TOML/配置文件**。
 > **业务配置不再从环境变量读取**：下表字段全部经 Redis 业务配置由 `config` 层以 serde 反序列化装载，
 > 并经 `validate_business_wire` / `validate_nonblank` 做 fail-closed 校验。
 > 历史上存在的 `Config::from_env()` 完整 env 解析路径**已删除**（登记见 `docs/retired.md`），
@@ -455,7 +455,7 @@ message-weave/
 
 ### 7.6 远程联调面为何默认绝对关闭
 
-该面存在的唯一理由是缩短生产排障路径：在无法登录容器、只能靠外部请求观察系统时，需要有人能在不发版的前提下探到 JMAP/Telegram 连通性与当前业务配置。代价是它的入口软度必然高于三条写路径——除只读探测外还保留一次**真实出站发送**，且复用业务白名单而非独立白名单。因此设计选择是「默认关闭」而不是「默认开启、靠网关挡」：进程同时带 `--debug` 且设置了非空 `DEBUG_TOKEN` 时才会挂载这组路由（`SAF-DEBUG-GATE`）；缺一时路由在路由器里**根本不存在**，请求落到 axum 通用 `404`，而非「存在但 401」——后者会泄漏路由存在性。也不存在第三种状态：没有「未配置即开放」的回退，也没有任何配置项能把它设为默认开启。再叠一层位置约束：它不在网关的安全路由白名单内，即便后端开错，经平台入口也会被 fail-closed 拒掉，唯一可达路径是直连后端 origin。这四处——双因子挂载、404 而非 401、无默认开启回退、网关不可达——共同构成「暴露面默认为零」的架构决策。启用方式、逐端点状态码与部署确认清单见 deployment.md §2.1。
+该面存在的唯一理由是缩短生产排障路径：在无法登录容器、只能靠外部请求观察系统时，需要有人能在不发版的前提下探到 JMAP/Telegram 连通性与当前业务配置。代价是它的入口软度必然高于三条写路径——除只读探测外还保留一次**真实出站发送**，且复用业务白名单而非独立白名单。因此设计选择是「默认关闭」而不是「默认开启、靠网关挡」：进程满足「`DEBUG_ENABLED` 为真值或命令行带 `--debug`」**且**设置了非空 `DEBUG_TOKEN` 时才会挂载这组路由（`SAF-DEBUG-GATE`）；缺一时路由在路由器里**根本不存在**，请求落到 axum 通用 `404`，而非「存在但 401」——后者会泄漏路由存在性。也不存在第三种状态：没有「未配置即开放」的回退，也没有任何配置项能把它设为默认开启。`DEBUG_ENABLED` 走环境变量而非启动命令，是为了让开关能在不发版的前提下从平台控制台改一次完成——启动命令保持静态。再叠一层位置约束：它不在网关的安全路由白名单内，即便后端开错，经平台入口也会被 fail-closed 拒掉，唯一可达路径是直连后端 origin。这四处——双因子挂载、404 而非 401、无默认开启回退、网关不可达——共同构成「暴露面默认为零」的架构决策。启用方式、逐端点状态码与部署确认清单见 deployment.md §2.1。
 
 ---
 
@@ -736,7 +736,7 @@ LLM 能力只存在于 `src/ai.rs` 一个文件；**没有**配置 / 回退 / �
 | 变量 | 类型 | 默认 | 用途 |
 |---|---|---|---|
 | `LLM_ENABLED` | bool | `false` | 总开关；默认关闭，未启用时不校验 `LLM_API_KEY`/`LLM_BASE_URL`/`LLM_MODEL` |
-| `LLM_ALLOW_NET` | bool | `false` | 运行时出站许可；`LLM_ENABLED && LLM_ALLOW_NET` 同时为真才构造 `LlmClient`，否则 `llm` 字段为 `None`（`src/main.rs:111-127`） |
+| `LLM_ALLOW_NET` | bool | `false` | 运行时出站许可；`LLM_ENABLED && LLM_ALLOW_NET` 同时为真才构造 `LlmClient`，否则 `llm` 字段为 `None`（`src/main.rs:135-141`） |
 | `LLM_API_KEY` | string | 可省略 | Bearer token；仅 `LLM_ENABLED=true` 时必填 |
 | `LLM_BASE_URL` | URL | 可省略 | 仅启用时必填，且必须 `https`，否则 `AiError::InvalidEndpoint` |
 | `LLM_MODEL` | string | 可省略 | 仅启用时必填；透传给 `/chat/completions` 的 `model` |
