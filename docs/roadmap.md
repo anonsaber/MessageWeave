@@ -11,10 +11,10 @@
 
 ## 阻塞（需要真实环境，当前无法验证）
 
-- **真实 Stalwart 邮箱联调** — 未做任何真实邮箱端到端集成。JMAP adapter 代码与配置校验已完成并通过本地 `cargo test`，但 `Email/changes`、`PushSubscription` 路径未在真实账号上验证。`REQ-JMAP-SESSION-URL` 已实现（`D-G1-1`）但待真机验证。**阻塞原因**：无可用 Stalwart 账号/凭据；禁止使用测试账号或伪造结果。
-- **真实 Telegram Bot 联调** — 入站 `POST /webhook/tg` 的 secret 头校验 + chat 白名单（`notify.rs:225-263`）、出站 `sendMessage`（`channel.rs`）、**出站重试预算与重试耗尽终局错误（`channel.rs:182`）** 均已在代码内并有单元测试，但**都没有在真实 Bot 上跑过**。另：向 Telegram 注册 webhook URL 是运维步骤（调 `setWebhook`），应用内不实现；长轮询 `getUpdates` 从未实现（见 `docs/retired.md`）。**阻塞原因**：无 Bot Token；禁止向真实用户发消息。
-- **真实 Redis TLS 连接** — `rediss://` 握手、密码特殊字符 URL 编码、`CONFIG_ENCRYPTION_KEY` 热更新未实测。**阻塞原因**：无托管 Redis 实例。
-- **`Email/changes` 的 `newState` 语义** — 客户端已用「同 `sinceState` 翻倍 `maxChanges` 扩窗」消除按页漏批，但 `newState` 是否表示"全部待报变更之后"仍需真实 Stalwart 复验，否则停机积压边界无法判定。**阻塞原因**：无可用 Stalwart 账号/凭据。
+- **真实 Stalwart PushSubscription** — `Email/changes` 与 `Email/query` 搜索已在真实账号跑通（2026-09-28：`POST /reconcile` 持久化了 `baseline:` 游标，而该游标只在 `reconcile()` 返回 `Ok(new_state)` 之后写入（`notify.rs:331`），即 `fetchChanges` 端到端成功）。**仍未验证**：`PushSubscription` 路径。**阻塞原因**：无真实推送回调可观察。禁止使用测试账号或伪造结果。
+- **真实 Telegram Push 回调（Telegram→本服务方向）** — 应用侧入站 secret 头校验 + chat 白名单（`notify.rs:225-263`）、出站 `sendMessage`（`channel.rs`）、**出站重试预算与重试耗尽终局错误（`channel.rs:182`）** 已在真实 Bot 上验证（2026-09-28：`POST /debug/notify` 投递成功并由用户确认收到；伪造 update 全链路「入队→worker→JMAP 查询→回帖」通过）。**仍未验证**：真实的 Telegram→本服务回调从未到达——向 Telegram 注册 webhook URL 是运维步骤（调 `setWebhook`），应用内不实现，**目前尚未执行**，因此 Telegram 侧既不知道本服务的 webhook URL，也不持有 secret 值。另：长轮询 `getUpdates` 从未实现（见 `docs/retired.md`）。**阻塞原因**：需在 Telegram 侧执行 `setWebhook` 并触发一次真实回调。
+- **真实 Redis TLS 连接** — `rediss://` 握手与密码特殊字符 URL 编码未实测。**阻塞原因**：无托管 Redis 实例。注：`CONFIG_ENCRYPTION_KEY` 与 `REDIS_URL` 只在启动时读取（`src/config.rs:17`、`src/main.rs:54`），本系统不存在这两项的热更新路径，也不在路线图上，因此不列入待验证项。
+- **`Email/changes` 的 `newState` 语义** — 客户端已用「同 `sinceState` 翻倍 `maxChanges` 扩窗」消除按页漏批；2026-09-28 在真实账号上跑通 `fetchChanges` 并拿到 `baseline:` 游标，但 `newState` 是否表示"全部待报变更之后"仍需**停机积压后恢复**的场景才能判定，否则积压边界仍无法确证。**阻塞原因**：无可控的真实积压场景。
 - **Push callback 公网映射** — 单飞锁 `lock:push-register:{sha256(callback_url)}`（360s）与映射 `push:registration:{sha256(callback_url)}`（7d）的 TTL 需真实回调时序验证。**阻塞原因**：无真实推送回调可观察。
 
 ## 代码缺口（已定位）
@@ -29,5 +29,5 @@
 ## 验收待办
 
 - **真实平台日志采集验收** — 容器不写日志文件、只走 stdout 已由代码审查确认（`C-LOG-STDOUT-ONLY`）；结构化日志字段与脱敏已由代码审查确认（`SAF-LOG-PURITY`）。未验证项：真实平台采集器是否落盘、是否可检索。
-- **`/ready` 端到端依赖探测（已完成）** — JMAP session `GET` 与 Telegram `getMe` 探针已接入 `/ready`（`src/notify.rs` 的 `probe_jmap_session` / `probe_telegram_get_me`，各 `PROBE_TIMEOUT` 3000ms、**并行**（`tokio::join!`），最坏约 3s）：配置完整性 + Redis 可达性 + 两个上游全过返 `200` 与就绪报告，任一失败返 `503` + `Retry-After: 30`。两个探针是可复用纯函数，④ 远程 debug 直接复用同一实现，**不要另写一套**。`ARCH-READY-BASELINE` 语义已更新为端到端就绪。剩余的真实环境验证见上面「真实 Stalwart 邮箱联调」与「真实 Telegram Bot 联调」。
+- **`/ready` 端到端依赖探测（已完成）** — JMAP session `GET` 与 Telegram `getMe` 探针已接入 `/ready`（`src/notify.rs` 的 `probe_jmap_session` / `probe_telegram_get_me`，各 `PROBE_TIMEOUT` 3000ms、**并行**（`tokio::join!`），最坏约 3s）：配置完整性 + Redis 可达性 + 两个上游全过返 `200` 与就绪报告，任一失败返 `503` + `Retry-After: 30`。两个探针是可复用纯函数，④ 远程 debug 直接复用同一实现，**不要另写一套**。`ARCH-READY-BASELINE` 语义已更新为端到端就绪。剩余的真实环境验证见上面「真实 Stalwart PushSubscription」与「真实 Telegram Push 回调（Telegram→本服务方向）」。
 - **JMAP 只读 adapter 真机验证**（`GATE-G1-JMAP-READONLY`）— 代码已实现（mock + `#[ignore]` 真机测试），待 `cargo test -- --ignored jmap::`。
