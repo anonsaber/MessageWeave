@@ -133,6 +133,23 @@
 > （Redis 运行参数 `max_retries`，回落默认见 `docs/reference.md` §6.1），后者是常量
 > （两个构造器内硬编码 300，未进入业务配置 wire）。
 
+### 4.1 引导模式挂载的业务/管理路由
+
+`router_configuration_setup` 原先直接委托全量工厂 `router_with_worker_state_runtime_bootstrap_config`，
+因此 12 条业务与管理路由在引导模式下全部被注册，却**一条也走不通**：引导模式的 `admin_token` 是空值，
+而 `constant_time_eq` 带 `!expected.is_empty()` 守卫，空的期望值会永久拒绝任何候选凭据；即便鉴权通过，
+`MemoryState` 也无法持久化一次 bootstrap 写入。
+
+| 条目 | 类型 | 删除原因 | 现状 |
+|---|---|---|---|
+| `/api/bootstrap`、`/api/admin/session`、`/api/admin/session/revoke`、`/api/config`、`/api/enabled`、`/api/business-config`、`/webhook/tg`、`/push/jmap`、`/api/push/register`、`/api/push/disable`、`/reconcile`、`/worker` | 已删除路由注册 | 永久 401 的路由读起来像"凭据写错了" | 引导模式自建 `AppState`，只挂 `/api/status`、`/ready`、`/healthz`；上述路径返回 `404` |
+
+`401` 与 `404` 的差别不是洁癖：`{"error":"unauthorized"}` 与"凭据填错"完全同形，操作员和探针会把
+"这些端点在此模式下根本不存在"误读成"再换个凭据试试"。现在两者可区分——`/api/status` 仍返回
+`{"missing":[...],"mode":"configuration-setup","ready":false}`（HTTP 200），业务与管理面直接 404。
+回归由 `configuration_setup_mounts_only_status_and_probes` 守护：逐一断言 12 条路径 404，并断言
+`/healthz` 200、`/api/status` 200、`/ready` 503。
+
 ---
 
 ## 5. 如何重启其中一条

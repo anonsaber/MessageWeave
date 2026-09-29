@@ -1185,24 +1185,43 @@ pub fn router_with_state<S: ReliableState + 'static>(
     )
 }
 
-/// Configuration-only listener used when bootstrap credentials are absent. MemoryState is
-/// deliberately not advertised as persistence: all business writes remain unavailable until
-/// Redis is configured.
+/// Configuration-only listener used when bootstrap credentials are absent.
+///
+/// It deliberately mounts only the configuration-status surface and the two probes
+/// (`/api/status`, `/ready`, `/healthz`). The full listener's business and admin routes are
+/// absent on purpose rather than present-but-denied: setup mode has no Redis and no
+/// `CONFIG_ENCRYPTION_KEY`, so `admin_token` is empty and `constant_time_eq` refuses an empty
+/// expected value — every admin route would return 401 forever, and `MemoryState` could not
+/// persist a bootstrap write anyway. Advertising those routes with 401 read as "retry with a
+/// better credential" when the truth is "these endpoints do not exist in this mode"; returning
+/// 404 removes that ambiguity for clients, probes and the SPA alike. The SPA bootstrap card is
+/// driven by `/api/status` alone (`web/config.js` reveals the admin-session card only when
+/// `ready === true`), so nothing the status page renders is lost.
 pub fn router_configuration_setup(missing: Vec<String>) -> Router {
-    router_with_worker_state_runtime_bootstrap_config(
-        AuthSecrets {
+    let worker_handle = Arc::new(WorkerHandle::new(Arc::new(NoopWorker)));
+    let app_state = AppState {
+        auth: AuthState {
             reconcile_token: SecretString::new(String::new()),
             telegram_webhook_secret: SecretString::new(String::new()),
         },
-        SecretString::new(String::new()),
-        MemoryState::default(),
-        HashSet::new(),
-        Arc::new(NoopWorker),
-        runtime_provider(OutboundConfig::default()),
-        SecretString::new(String::new()),
-        None,
-        missing,
-    )
+        worker_token: SecretString::new(String::new()),
+        state: Arc::new(MemoryState::default()),
+        allowlist: Arc::new(HashSet::new()),
+        worker: worker_handle.clone(),
+        runtime: runtime_provider(OutboundConfig::default()),
+        admin_token: SecretString::new(String::new()),
+        debug_token: None,
+        business_config: Arc::new(RwLock::new(None)),
+        business_runtime: Arc::new(RwLock::new(None)),
+        business_revision: Arc::new(RwLock::new(0)),
+        setup_missing: Arc::new(missing),
+        reload: Arc::new(ReloadCoordinator::new(worker_handle, None)),
+    };
+    Router::new()
+        .route("/api/status", get(setup_status))
+        .route("/ready", get(ready))
+        .route("/healthz", get(healthz))
+        .with_state(app_state)
 }
 
 pub fn router_with_worker_state<S: ReliableState + 'static>(
@@ -1347,6 +1366,26 @@ mod tests {
         test_router().oneshot(request).await.unwrap().status()
     }
 
+    async fn configuration_setup_call(
+        router: Router,
+        method: &str,
+        uri: &str,
+        authorization: &str,
+    ) -> StatusCode {
+        router
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("authorization", authorization)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
     #[tokio::test]
     async fn reconcile_requires_bearer_token() {
         assert_eq!(
@@ -1456,6 +1495,52 @@ mod tests {
         assert_eq!(value["missing"].as_array().unwrap().len(), 2);
         assert_eq!(value["missing"][0], "REDIS_URL");
         assert_eq!(value["missing"][1], "CONFIG_ENCRYPTION_KEY");
+    }
+
+    #[tokio::test]
+    async fn configuration_setup_mounts_only_status_and_probes() {
+        let router =
+            router_configuration_setup(vec!["REDIS_URL".into(), "CONFIG_ENCRYPTION_KEY".into()]);
+        let token = "Bearer CONFIG_ENCRYPTION_KEY-candidate";
+
+        // The status surface and both probes stay reachable: the SPA bootstrap card is driven
+        // by /api/status, and liveness/readiness still have to answer.
+        assert_eq!(
+            configuration_setup_call(router.clone(), "GET", "/healthz", token).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            configuration_setup_call(router.clone(), "GET", "/api/status", token).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            configuration_setup_call(router.clone(), "GET", "/ready", token).await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        // The business and admin surface is absent rather than present-but-denied. An empty
+        // CONFIG_ENCRYPTION_KEY makes constant_time_eq reject every candidate forever, so 401
+        // here read as "retry the credential" when the truth was "route does not exist".
+        for (method, uri) in [
+            ("GET", "/api/config"),
+            ("GET", "/api/enabled"),
+            ("POST", "/api/business-config"),
+            ("POST", "/api/bootstrap"),
+            ("POST", "/api/admin/session"),
+            ("POST", "/api/admin/session/revoke"),
+            ("POST", "/webhook/tg"),
+            ("POST", "/push/jmap"),
+            ("POST", "/api/push/register"),
+            ("POST", "/api/push/disable"),
+            ("POST", "/reconcile"),
+            ("POST", "/worker"),
+        ] {
+            assert_eq!(
+                configuration_setup_call(router.clone(), method, uri, token).await,
+                StatusCode::NOT_FOUND,
+                "{method} {uri} must be absent in configuration-setup mode"
+            );
+        }
     }
 
     #[tokio::test]

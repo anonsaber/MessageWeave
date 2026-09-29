@@ -74,7 +74,7 @@
 `hoststack.yaml`、不用重新构建。判定为纯函数（不直接读全局 env）以便单测覆盖，测试在
 `src/main.rs:217-264`。
 
-缺一即不挂载：`debug_router()` 本身会构造出全部 7 条路由（`src/debug.rs:72-80`），但主入口**只在双因子成立时才合并它**（`src/notify.rs:1321-1322`）。所以未开启时 `/debug/*` 路由根本不存在，请求走 axum 兜底返回普通 `404 not found`——**不是** 401，也不会泄露「此路径存在」。开启成功时打一条 WARN 日志标记该面已打开（`src/main.rs:115-117`，`SAF-LOG-PURITY`：只记开启状态，从不记录 token 值）。
+缺一即不挂载：`debug_router()` 本身会构造出全部 7 条路由（`src/debug.rs:72-80`），但主入口**只在双因子成立时才合并它**（`src/notify.rs:1340-1342`）。所以未开启时 `/debug/*` 路由根本不存在，请求走 axum 兜底返回普通 `404 not found`——**不是** 401，也不会泄露「此路径存在」。开启成功时打一条 WARN 日志标记该面已打开（`src/main.rs:115-117`，`SAF-LOG-PURITY`：只记开启状态，从不记录 token 值）。
 
 **鉴权**
 
@@ -494,7 +494,7 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 |---|---|---|
 | `GET /healthz` | 无条件 200 | 存活探测（进程还活着） |
 | `GET /ready` | 配置、Redis 或上游探针失败时 503 | 就绪探测、负载均衡摘除、Uptime Kuma |
-| `GET /api/status` | 缺必需环境变量时 503 + `{"status":"configuration-setup","missing":[...]}` | 排查"起来了但没干活" |
+| `GET /api/status` | 恒 200；返回 `{"ready":bool,"mode":"configured"\|"configuration-setup","missing":[...]}`，只列缺少的环境变量名称 | 排查"起来了但没干活" |
 
 > **由平台 ingress 探测 `/ready`。**镜像现已内置 `curl`（见 Dockerfile `runtime` 阶段），
 > 所以在 Dockerfile 部署路径下容器内写 `HEALTHCHECK` 在技术上可行（HostStack 的 `runtime: rust`

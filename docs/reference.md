@@ -200,10 +200,12 @@ string `"30"`:
 ## 3. Backend routes
 
 All HTTP API routes are registered in `router_with_worker_state_runtime_bootstrap_config`
-(`notify.rs:1276`), with the routes wired at `notify.rs:1305-1319`. The three static SPA routes
+(`notify.rs:1295`), with the routes wired at `notify.rs:1323-1338`. The three static SPA routes
 in the last table row are the exception: they live in `web::router()` (`src/web.rs:19-24`) and
 are merged into the router via `.merge(web::router())`: the setup-mode router at `src/main.rs:76`,
-the production router at `src/main.rs:180`.
+the production router at `src/main.rs:180`. The setup-mode router at `src/main.rs:76` mounts only
+three of this table — `/healthz`, `/ready` and `/api/status` — and no business or admin route;
+§5.1 explains why that is deliberate.
 
 | Method | Path | Handler |
 |---|---|---|
@@ -227,7 +229,7 @@ the production router at `src/main.rs:180`.
 The remote-debug surface (`src/debug.rs:72-80`) is merged **only when the debug surface is
 requested — `--debug` on the command line or a truthy `DEBUG_ENABLED` env var — and `DEBUG_TOKEN`
 is non-empty** (`SAF-DEBUG-GATE`, gate logic `src/main.rs:15-25`, wired at `src/main.rs:102-114`,
-`src/notify.rs:1321-1322`); otherwise none of these routes exist and requests fall through to
+`src/notify.rs:1340-1342`); otherwise none of these routes exist and requests fall through to
 axum's generic `404`, not a 401. All seven require `Authorization: Bearer <DEBUG_TOKEN>`,
 checked by `debug_authorized` (`src/debug.rs:45`), which delegates to the production
 `worker_authorized` so the comparison is constant time (`src/notify.rs:1136`).
@@ -343,10 +345,14 @@ and reconcile traffic share one router and reconcile is a standalone `POST /reco
 endpoint, so the variable never changed any runtime behaviour — there is now nothing to set.
 
 **Missing a required variable does not crash the process.** It logs a warning and serves
-`router_configuration_setup`, which builds a router over `MemoryState` with empty tokens and
-a `NoopWorker` (worker.rs:143-145). The container stays up and answers requests while doing
-no business work. This is a deliberate fail-closed-to-setup posture, and it is the single
-most likely cause of "the container is healthy but nothing happens".
+`router_configuration_setup` (`notify.rs:1200-1223`), which mounts only `/api/status`,
+`/ready` and `/healthz` on top of the static SPA. The business and admin routes from §3 are not
+registered at all: `admin_token` is empty, so `constant_time_eq` (`notify.rs:1136`) would reject
+every candidate forever, and `MemoryState` (`state.rs:875`) could not persist a bootstrap
+write anyway. Posting to `/api/bootstrap` in this mode yields `404` (route absent), not a `401`
+that reads as "retry with a better credential". The container stays up and answers the status
+surface while doing no business work. This is a deliberate fail-closed-to-setup posture, and it
+is the single most likely cause of "the container is healthy but nothing happens".
 
 ### 5.2 Redis-resident business configuration
 
