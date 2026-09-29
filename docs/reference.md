@@ -398,8 +398,10 @@ than a 503. The configuration is saved and the outage is reported instead of hid
 turn a valid configuration into a silent data loss. `PUT /api/business-config` and
 `POST /api/bootstrap` both follow this contract; the revision is returned in both cases as the
 `x-business-config-revision` header, and only `PUT /api/business-config` also returns it in the
-response body, as `"revision"` (a `u64`), which the SPA surfaces in its status line. Bootstrap's
-body carries no `revision` field.
+response body, as `"revision"` (a `u64`). The SPA surfaces it in its status line and sends it
+back in the request body as the `revision` control field, which the backend compares against the
+stored revision and answers `409 conflict` on a mismatch. Bootstrap's
+body carries no `revision` field, and a `PUT` body that omits it keeps last-write-wins.
 
 `POST /api/business-config/preflight` (`preflight_business_config`) runs the identical
 validation and client build against the submitted wire and returns the per-component verdict

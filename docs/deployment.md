@@ -74,11 +74,11 @@
 `hoststack.yaml`、不用重新构建。判定为纯函数（不直接读全局 env）以便单测覆盖，测试在
 `src/main.rs:217-264`。
 
-缺一即不挂载：`debug_router()` 本身会构造出全部 7 条路由（`src/debug.rs:72-80`），但主入口**只在双因子成立时才合并它**（`src/notify.rs:1724`）。所以未开启时 `/debug/*` 路由根本不存在，请求走 axum 兜底返回普通 `404 not found`——**不是** 401，也不会泄露「此路径存在」。开启成功时打一条 WARN 日志标记该面已打开（`src/main.rs:115-117`，`SAF-LOG-PURITY`：只记开启状态，从不记录 token 值）。
+缺一即不挂载：`debug_router()` 本身会构造出全部 7 条路由（`src/debug.rs:72-80`），但主入口**只在双因子成立时才合并它**（`src/notify.rs:1742`）。所以未开启时 `/debug/*` 路由根本不存在，请求走 axum 兜底返回普通 `404 not found`——**不是** 401，也不会泄露「此路径存在」。开启成功时打一条 WARN 日志标记该面已打开（`src/main.rs:115-117`，`SAF-LOG-PURITY`：只记开启状态，从不记录 token 值）。
 
 **鉴权**
 
-7 条路由全部要求 `Authorization: Bearer <DEBUG_TOKEN>`，统一走 `debug_authorized`（`src/debug.rs:45`），它委托生产同款 `worker_authorized`（`src/notify.rs:496`），因此令牌是**常数时间比较**（`src/notify.rs:1512`）。失败回 `401 unauthorized`，且不设 `Retry-After`（`src/debug.rs:52-54`）。
+7 条路由全部要求 `Authorization: Bearer <DEBUG_TOKEN>`，统一走 `debug_authorized`（`src/debug.rs:45`），它委托生产同款 `worker_authorized`（`src/notify.rs:496`），因此令牌是**常数时间比较**（`src/notify.rs:1530`）。失败回 `401 unauthorized`，且不设 `Retry-After`（`src/debug.rs:52-54`）。
 
 **7 条路由与预期状态码**（注册于 `src/debug.rs:72-80`，路径为字面量，无常量抽取）
 
@@ -99,7 +99,7 @@
 **三条约束，部署时务必确认**
 
 - **绝不回显凭据值**：`debug_config`（`src/debug.rs:94`）对每个 Secret 字段只输出 `*_configured` **布尔**——JMAP 密码、bot token、`worker_token`、`reconcile_token`、LLM `api_key` 一律不落响应体（`SAF-DEBUG-AUTH`）。注意这是「不含凭据」，不是「全脱敏」：**非密文的身份与预算字段是明文返回的**（JMAP session URL 与 username、Telegram `chat_id`、LLM `base_url`/`model`、各类超时与重试数），所以该面仍只能放在可信网络上。
-- **`/debug/notify` 受 chat 白名单约束，但空白名单不拦截**：它复用生产同一份白名单快照（`src/notify.rs:1518`），判定条件是「白名单**非空**且 `chat_id` 不在其中」才回 `403 chat_not_allowed`（`src/debug.rs:233-236`）。因此已配置白名单时无法绕过业务侧发送限制；若白名单未配置（为空）则此判定不生效，`chat_id` 可任意指定——所以启用本面时应确认业务白名单已真正配置。`text` 缺省为固定联调文案，并按 1024 字符截断（`src/debug.rs:241-246`）。
+- **`/debug/notify` 受 chat 白名单约束，但空白名单不拦截**：它复用生产同一份白名单快照（`src/notify.rs:1536`），判定条件是「白名单**非空**且 `chat_id` 不在其中」才回 `403 chat_not_allowed`（`src/debug.rs:233-236`）。因此已配置白名单时无法绕过业务侧发送限制；若白名单未配置（为空）则此判定不生效，`chat_id` 可任意指定——所以启用本面时应确认业务白名单已真正配置。`text` 缺省为固定联调文案，并按 1024 字符截断（`src/debug.rs:241-246`）。
 - **不在 Worker 白名单内，只能直连 origin**：网关的 16 条安全路由（`cloudflare-worker/src/backends.js:9-26`）不含任何 `/debug/*`，Worker 对未白名单路径返回 `404 route not forwarded: /debug/...`（`cloudflare-worker/src/index.js:82-85`）。因此 `/debug/*` 只能通过直连后端 origin 访问；若必须经代理，请自行在代理层加鉴权，不要让公网可达。
 
 > **建议**：生产环境不开启。需要远程联调时在控制台设置 `DEBUG_ENABLED=1` 与一次性
@@ -181,13 +181,13 @@ curl -fsS -X POST "https://<你的平台URL>/api/push/register" \
 ```
 
 注册动作由**本服务自己**向 JMAP 发起，不是在 Stalwart 后台点。Stalwart 随后推送验证码，
-后端用 JMAP 自动回写——**验证码不由运维提供，也不会从 SPA 配置接受**（`src/notify.rs:1259`）。
+后端用 JMAP 自动回写——**验证码不由运维提供，也不会从 SPA 配置接受**（`src/notify.rs:1277`）。
 
 - `callback_url` 必须是 HTTPS 且**不含用户名 / 密码**，否则 400 `invalid_request`
-  （`src/notify.rs:1271-1273`）。
+  （`src/notify.rs:1289-1291`）。
 - 同一个 `callback_url` 重复调用**幂等复用**已有订阅，不会重复注册。
 - 注册期间持 `lock:push-register:{sha256(callback_url)}` 360 s 单飞锁
-  （`src/notify.rs:1283` / `src/notify.rs:1286`），撞锁返回 409 `conflict`。
+  （`src/notify.rs:1301` / `src/notify.rs:1304`），撞锁返回 409 `conflict`。
 - 成功 → `200 {"push_subscription_id":"..."}`，状态置 `pending`，在等 Stalwart 回来验证。
   反向确认：`POST /api/push/disable` 在从未注册过该地址时回 `404 push_subscription_not_found`。
 - 订阅权限通常内置 `user` 角色已含；若返回 `forbidden`，到 Stalwart
@@ -381,7 +381,7 @@ GET  /ready          公开就绪探针；检查配置完整性 + Redis 可达�
 
 ### 6.2 Redis Streams / worker（MOD-STREAMS）
 - Push 回调只做：校验 → 去重 → 入队 → ACK；不阻塞
-- worker：**不是后台 task，也不是独立 worker 容器**。本服务没有常驻消费循环，两条 stream 的唯一消费入口是 `POST /worker`（处理函数 `src/notify.rs:381`，路由 `src/notify.rs:1705`）。全代码库仅两处 `tokio::spawn`——发送重试（`src/channel.rs:205`）与对账锁续租心跳（`src/notify.rs:298`）——都不消费队列；因此**排空必须由外部调度触发**（§6.3.1）。
+- worker：**不是后台 task，也不是独立 worker 容器**。本服务没有常驻消费循环，两条 stream 的唯一消费入口是 `POST /worker`（处理函数 `src/notify.rs:381`，路由 `src/notify.rs:1723`）。全代码库仅两处 `tokio::spawn`——发送重试（`src/channel.rs:205`）与对账锁续租心跳（`src/notify.rs:298`）——都不消费队列；因此**排空必须由外部调度触发**（§6.3.1）。
 - 单次 `/worker` 调用语义：对 `stalwart:jmap` 与 `stalwart:telegram` 两条 stream 各取一批（上限 10，`src/notify.rs:398`；批量读取在 `src/state.rs:444`），逐条处理后确认消费（`src/state.rs:324`）；处理失败转重试 / DLQ（`src/notify.rs:479`）。`Email/changes` 增量拉取与 `sinceState` 推进属于 `POST /reconcile`，不在 worker 内。
 - 消费组 at-least-once：未 ACK 消息自动重投；处理幂等（MOD-DEDUP 二次兜底）
 
@@ -394,8 +394,8 @@ GET  /ready          公开就绪探针；检查配置完整性 + Redis 可达�
 
 #### 6.3.1 用户侧调度示例（copy-paste 可用）
 
-端点有两个：`POST /reconcile`（路由 `src/notify.rs:1704`）与 `POST /worker`（路由
-`src/notify.rs:1705`），同容器暴露、无端口或协议差异。**两个都必须被外部调度，顺序是先对账、
+端点有两个：`POST /reconcile`（路由 `src/notify.rs:1722`）与 `POST /worker`（路由
+`src/notify.rs:1723`），同容器暴露、无端口或协议差异。**两个都必须被外部调度，顺序是先对账、
 再排空。** 两者职责不重叠：`/reconcile` 只做 `Email/changes` 增量入队并推进游标，全程不调用
 `read_batch`；`/worker` 只做消费，全代码库唯一的 `read_batch` 调用点在 `src/notify.rs:411`。
 **只排对账等于邮件持续进队列、通知永远发不出去**——这是照抄调度配置时最容易踩的坑。

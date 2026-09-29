@@ -224,9 +224,13 @@ impl From<BusinessConfig> for BusinessConfigWire {
 /// does not name keeps the stored value, so an operator can change one thing without retyping
 /// the whole configuration.
 ///
-/// The field list mirrors `BusinessConfigWire` field for field — `apply` builds a wire from these,
-/// so adding a field to the wire without adding it here fails to compile instead of silently
-/// freezing the new setting at its stored value. Secrets are replace-only: `validate_business_wire`
+/// Every `BusinessConfigWire` field has a matching option here (`account_id` is nested, see
+/// below), so adding a wire field later requires adding its option here too. `apply` merges each
+/// one into the stored wire, so a field that is missing here silently keeps its stored value
+/// forever and nothing in the type system reports it. `account_id` is nested because `null` must
+/// mean "clear it", which a plain `Option` cannot express.
+///
+/// Secrets are replace-only: `validate_business_wire`
 /// rejects a blank secret, so there is deliberately no way to clear one and no way for the SPA to
 /// learn what it is holding.
 #[derive(Debug, serde::Deserialize)]
@@ -264,6 +268,14 @@ pub(crate) struct BusinessConfigPatch {
     pub reconcile_token: Option<String>,
     #[serde(default)]
     pub worker_token: Option<String>,
+
+    /// Optional: the revision the client read before editing. When present and different from the
+    /// stored revision, `put_business_config` answers `409 conflict` instead of silently
+    /// overwriting what another tab stored meanwhile. It is a control field, never a setting: it
+    /// never reaches `BusinessConfigWire`, so `is_complete` and `apply` ignore it, and omitting it
+    /// keeps last-write-wins for callers that never read the revision back.
+    #[serde(default)]
+    pub revision: Option<u64>,
 }
 
 /// `telegram_chat_id` arrives as a JSON number on a full submit but as a numeric string on a

@@ -523,3 +523,39 @@ test("flipping a boolean enters the patch and resetBusinessReadback clears the b
   assert.equal(elements.get("secret-marker-bot_token").textContent.includes("Not set"), true);
 });
 
+
+test("a partial submit carries the revision the baseline was read at", async () => {
+  const { elements, window: pageWindow } = await startPage({ body: { ready: true, mode: "configured", missing: [] } });
+  const mw = pageWindow.__mw;
+  mw.applyBusinessReadback({
+    revision: 7,
+    values: {
+      jmap_session_url: "https://mail.example.com/jmap",
+      jmap_username: "bot@example.com",
+      timezone: "Asia/Tokyo",
+      chat_allowlist: ["123456789"],
+      telegram_chat_id: "123456789",
+      llm_enabled: false,
+      llm_allow_net: false,
+    },
+    secrets_present: { bot_token: true, jmap_password: true, telegram_webhook_secret: true, reconcile_token: true, worker_token: true, llm_api_key: false },
+  });
+
+  // The control field is carried on every partial submit.
+  assert.equal(mw.businessRevision, 7);
+  assertShape(mw.businessPatchFromForm(), { revision: 7 });
+
+  // but it never makes the page count as having changed settings, so the
+  // no-op guard still blocks a submit that only echoes the stored values.
+  elements.get("timezone").value = "Etc/UTC";
+  assertShape(mw.businessPatchFromForm(), { revision: 7, timezone: "Etc/UTC" });
+
+  // A readback without a revision does not invent one, so the submit stays on
+  // last-write-wins instead of locking on a value the backend never sent.
+  mw.applyBusinessReadback({ values: {}, secrets_present: {} });
+  assert.equal(mw.businessRevision, null);
+  assert.equal(mw.businessPatchFromForm().revision, undefined);
+
+  mw.resetBusinessReadback();
+  assert.equal(mw.businessRevision, null);
+});

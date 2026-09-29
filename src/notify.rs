@@ -692,6 +692,24 @@ async fn put_business_config(
             false,
         );
     };
+    // The client echoes back the revision it read before editing. A mismatch means another tab
+    // stored a newer configuration in the meantime; merging this patch would silently revert the
+    // fields it names, so refuse and make the operator re-read and retry. The compare-then-write
+    // is not atomic: two requests that race inside the same tick both pass and the later one
+    // wins. That residual is what an optimistic lock without a Lua script costs, and it stays
+    // small because a patch carries only the fields the operator actually changed.
+    if let Some(expected) = patch.revision {
+        match app.state.business_config_revision().await {
+            Ok(current) if current != expected => {
+                return error_response(StatusCode::CONFLICT, "conflict", false);
+            }
+            Ok(_) => {}
+            Err(_) => {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true)
+            }
+        }
+    }
+
     // Merge first, then validate the result. A patch is never validated on its own: a
     // one-field edit must be rejected when the configuration it becomes is invalid.
     let merged = match read_stored_business_config(&app.state).await {
@@ -2590,6 +2608,69 @@ mod tests {
             assert_eq!(body["secrets_present"][key], json!(true), "{key}");
         }
         assert_eq!(body["secrets_present"]["llm_api_key"], json!(false));
+    }
+
+    /// A patch carries the revision the client read before editing. The first write moves it, so a
+    /// second patch still carrying the old revision lands nowhere and a stale tab cannot silently
+    /// revert a field another tab just saved.
+    #[tokio::test]
+    async fn business_config_put_rejects_a_patch_carried_by_a_stale_revision() {
+        let (router, state) = business_config_router();
+        seed_business_config(&state, immediate_fail_business_wire_value()).await;
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/business-config")
+                    .header(http::header::AUTHORIZATION, "Bearer worker-secret")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({
+                            "timezone": "Asia/Tokyo",
+                            "revision": 1,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let saved = json_body(response).await;
+        assert_eq!(saved["revision"], json!(2));
+
+        // The second tab still holds revision 1.
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/business-config")
+                    .header(http::header::AUTHORIZATION, "Bearer worker-secret")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({
+                            "timezone": "Etc/UTC",
+                            "revision": 1,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(response.headers().get(http::header::RETRY_AFTER).is_none());
+        let body = json_body(response).await;
+        assert_eq!(body["error"], json!("conflict"));
+
+        // Neither the configuration nor the revision moved.
+        assert_eq!(state.business_config_revision().await.unwrap(), 2);
+        let stored = state.get_business_config().await.unwrap().unwrap();
+        assert_eq!(stored["timezone"], json!("Asia/Tokyo"));
+        // The control field never becomes a stored setting.
+        assert!(stored.get("revision").is_none());
     }
 
     #[tokio::test]

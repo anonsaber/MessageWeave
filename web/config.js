@@ -97,6 +97,7 @@
       "business.saved": "Business configuration saved and new configuration hot-reloaded.",
       "business.savedToast": "Business configuration saved and hot-reloaded. Secret inputs cleared; re-fill on the next full replacement.",
       "business.dirty": "The form has unsubmitted content; only the fields you changed will be submitted.",
+      "business.conflict": "A newer configuration was stored meanwhile; the saved values were re-read.",
       "business.unsaved": "No save-success confirmation received; check the service status.",
       "business.submittingToast": "Submitting the full business configuration; the backend builds clients first, then saves and swaps the running instance…",
       "business.preflight": "Test connection",
@@ -197,6 +198,7 @@
       "berr.400": "The backend could not parse the submitted JSON (HTTP 400); check the fields and retry.",
       "berr.422": "Business configuration validation failed (HTTP 422). Check required fields, HTTPS URLs, LLM settings and the chat ID allowlist. The server does not return secrets or error details.",
       "berr.503": "The write could not be confirmed (HTTP 503): Redis could not persist the configuration or the hot reload could not be committed. A JMAP/LLM connection failure does not produce this error — those save anyway and are reported as warnings. The page keeps this input for review and retry.",
+      "berr.409": "A newer configuration was stored after this page read it (HTTP 409). Your last submit was discarded, and the stored values have been re-read into this form, so the input you were typing may now show the saved value instead. Review the fields you changed and submit again.",
       "berr.status": "Business configuration request failed (HTTP {status}). Retry shortly.",
       "berr.fail": "{message} The request result may be unconfirmed; after checking, re-submit the complete configuration.",
       "berr.failDefault": "Business configuration request failed.",
@@ -294,6 +296,7 @@
       "business.saved": "业务配置已保存，新配置已热加载。",
       "business.savedToast": "业务配置已保存并热加载。密钥输入已清空；下次完整替换时需要重新填写。",
       "business.dirty": "表单包含未提交内容；只提交你修改过的字段。",
+      "business.conflict": "期间有人保存了更新的配置；已重新读取已保存的值。",
       "business.unsaved": "未收到保存成功确认；请检查服务状态。",
       "business.submittingToast": "正在提交完整业务配置；后端会先构建客户端，再保存并切换运行实例…",
       "business.preflight": "测试连接",
@@ -394,6 +397,7 @@
       "berr.400": "后端无法解析提交的 JSON（HTTP 400）；请检查字段后重试。",
       "berr.422": "业务配置校验失败（HTTP 422）。请检查必填项、HTTPS URL、LLM 设置和 chat ID 白名单。服务端没有返回密钥或错误详情。",
       "berr.503": "写入未能确认（HTTP 503）：Redis 未能持久化配置，或热加载提交失败。JMAP/LLM 连接失败不会返回此错误——它们会照常保存并以下发告警的形式报告。页面保留本次输入供检查和重试。",
+      "berr.409": "本页读取配置之后，又有人保存了更新的版本（HTTP 409）。你刚才的提交已被丢弃，已把已保存的值重新读回表单，所以原本正在输入的内容现在可能显示为已保存的值。请核对修改过的字段后重新提交。",
       "berr.status": "业务配置请求失败（HTTP {status}）。请稍后重试。",
       "berr.fail": "{message} 请求结果可能无法确认；检查后可重新提交完整配置。",
       "berr.failDefault": "业务配置请求失败。",
@@ -600,6 +604,9 @@
   // (including nulls); `businessSecretPresence` is the `secrets_present` object.
   // Secrets themselves are never stored here — only their presence booleans.
   let businessBaseline = null;
+  // Revision the baseline was read at. Echoed back on a partial submit so the
+  // backend can reject this page as stale instead of overwriting a newer save.
+  let businessRevision = null;
   let businessSecretPresence = null;
 
   class ApiError extends Error {
@@ -1017,6 +1024,7 @@
   function businessErrorMessage(error) {
     if (error.status === 401) return t("berr.401");
     if (error.status === 400) return t("berr.400");
+    if (error.status === 409) return t("berr.409");
     if (error.status === 422) return t("berr.422");
     if (error.status === 503) return t("berr.503");
     if (error.status !== undefined) return t("berr.status", { status: error.status });
@@ -1067,6 +1075,7 @@
 
   function resetBusinessReadback() {
     businessBaseline = null;
+    businessRevision = null;
     businessSecretPresence = null;
     renderSecretMarkers();
   }
@@ -1089,6 +1098,9 @@
 
   function applyBusinessReadback(readback) {
     businessBaseline = isRecord(readback && readback.values) ? readback.values : {};
+    businessRevision = Number.isInteger(readback && readback.revision)
+      ? readback.revision
+      : null;
     businessSecretPresence = isRecord(readback && readback.secrets_present)
       ? readback.secrets_present
       : {};
@@ -1143,6 +1155,9 @@
     clearCustomValidity(businessForm);
     const baseline = isRecord(businessBaseline) ? businessBaseline : {};
     const patch = {};
+    // Optimistic lock: which saved version this page read. It is a control
+    // field, so the empty-patch check below deliberately ignores it.
+    if (Number.isInteger(businessRevision)) patch.revision = businessRevision;
     try {
       for (const field of SECRET_FIELDS) {
         const input = document.getElementById(field.id);
@@ -1400,7 +1415,10 @@
     // fields are sent. Without one, every field is required as before.
     const patch = businessBaseline === null ? readBusinessConfig() : businessPatchFromForm();
     if (!patch) return;
-    if (businessBaseline !== null && Object.keys(patch).length === 0) {
+    // `revision` is a control field, never a setting, so it never makes the
+    // page count as changed.
+    const settingKeys = Object.keys(patch).filter((key) => key !== "revision");
+    if (businessBaseline !== null && settingKeys.length === 0) {
       businessSaveState.textContent = t("business.noChange");
       businessSaveState.classList.remove("is-dirty");
       return;
@@ -1440,8 +1458,22 @@
         expireSession(t("session.invalidBusiness"));
         return;
       }
-      businessSaveState.textContent = t("business.unsaved");
-      showNotice("error", businessErrorMessage(error));
+      if (error.status === 409) {
+        businessSaveState.textContent = t("business.conflict");
+        showNotice("error", businessErrorMessage(error));
+        // Re-read the stored configuration. Without this the page would keep
+        // submitting against a revision the backend no longer has, so every
+        // retry would fail the same way.
+        try {
+          await loadBusinessConfig({ toast: false });
+        } catch (reloadError) {
+          businessRevision = null;
+          void reloadError;
+        }
+      } else {
+        businessSaveState.textContent = t("business.unsaved");
+        showNotice("error", businessErrorMessage(error));
+      }
     } finally {
       if (adminSession) setBusy("");
     }
@@ -1509,6 +1541,7 @@
       renderSecretMarkers,
       resetBusinessReadback,
       get businessBaseline() { return businessBaseline; },
+      get businessRevision() { return businessRevision; },
       get businessSecretPresence() { return businessSecretPresence; },
       fields: { secrets: SECRET_FIELDS, text: PLAIN_TEXT_FIELDS, bool: PLAIN_BOOL_FIELDS },
     };

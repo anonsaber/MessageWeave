@@ -18,7 +18,7 @@
 上一轮真机联调已经关掉了两条阻塞：
 
 - **Telegram 入站方向**：`setWebhook` 之后群里发 `/help`，`POST /worker` 排空即收到自动回复。真实 Telegram 流量已驱动过 `/webhook/tg`。
-- **Stalwart `PushSubscription`**：`stalwart:jmap` 连续数天有真实、互不重复的推送事件。该 stream 全代码库只有两个写入点——`src/notify.rs:1236`（JMAP 回调入队）与 `src/worker.rs:394`（对账增量入队）——所以有事件出现就只能是订阅活着且在投递。同一次观测也顺带验证了去重键在跨日规模下没有重复投递。
+- **Stalwart `PushSubscription`**：`stalwart:jmap` 连续数天有真实、互不重复的推送事件。该 stream 全代码库只有两个写入点——`src/notify.rs:1254`（JMAP 回调入队）与 `src/worker.rs:394`（对账增量入队）——所以有事件出现就只能是订阅活着且在投递。同一次观测也顺带验证了去重键在跨日规模下没有重复投递。
 
 两条的操作步骤已移到面向使用者的 `docs/deployment.md` §4.1，本文件不再跟踪它们。
 
@@ -52,14 +52,14 @@
 | --- | --- | --- | --- |
 | `lock:reconcile` | 对账锁 | 300s | `src/notify.rs:290` |
 | `lock:reconcile` | 对账锁心跳续租 | 90s | `src/notify.rs:303` |
-| `lock:push-register:{sha256(callback_url)}` | 注册单飞锁 | 360s | `src/notify.rs:1283` |
-| `ratelimit:push-verify:{subscription_id}` | 验证限流 | 30s | `src/notify.rs:1192` |
+| `lock:push-register:{sha256(callback_url)}` | 注册单飞锁 | 360s | `src/notify.rs:1301` |
+| `ratelimit:push-verify:{subscription_id}` | 验证限流 | 30s | `src/notify.rs:1210` |
 | `dedup:tg:{update_id}` | Telegram 更新去重 | 86_400s | `src/notify.rs:250` |
-| `dedup:jmap:{account_id}:{email_id}` | JMAP 更新去重（回调入队） | 86_400s | `src/notify.rs:1231` |
+| `dedup:jmap:{account_id}:{email_id}` | JMAP 更新去重（回调入队） | 86_400s | `src/notify.rs:1249` |
 | `dedup:jmap:{account_id}:{email_id}` | JMAP 更新去重（对账增量入队） | 86_400s | `src/worker.rs:394` |
 | `delivery:inflight:{stream}:{message.id}` | 投递在途守卫 | 60s | `src/notify.rs:447` |
 | `delivery:committed:{stream}:{message.id}` | 投递幂等 | 604_800s | `src/notify.rs:459` |
-| `push:subscription:{id}:status` | push 订阅 `disabled` 标记 | 86_400s | `src/notify.rs:1408` |
+| `push:subscription:{id}:status` | push 订阅 `disabled` 标记 | 86_400s | `src/notify.rs:1426` |
 
 **B. 内嵌 Lua 脚本 — 1 个写入点 / 1 个值**
 
