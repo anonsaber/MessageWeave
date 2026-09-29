@@ -346,7 +346,7 @@ message-weave/
 | `web` | axum | `/config` 静态页 + `include_str!` 嵌入 + CSP | 前端由 `web/config.test.mjs` 覆盖 | 已实现 |
 | `debug` | reqwest 0.13；redis 0.27 | 远端诊断面 `/debug/*`（`src/debug.rs`）：6 条只读探针 `/debug/ping`、`/debug/config`、`/debug/redis`、`/debug/jmap`、`/debug/telegram`、`/debug/worker` + `POST /debug/notify`（走生产出站路径发一条测试消息，无独立实现） | 仅 `DEBUG_ENABLED`（或 `--debug`）+ `DEBUG_TOKEN` 双因子齐备时挂载路由；模块本身无条件编译 | 已实现，不进 Worker 白名单（`SAF-DEBUG-ORIGIN-ONLY`） |
 
-> 注：「现状」列是**模块级**口径（模块已落地），不代表行为完备。行为级缺口不在本表内：`docs/opengaps.md`「代码缺口」中 `/search`、Telegram 429 退避、多实例重复投递窗口均已实现，仅剩 1 条按产品决策保留不改（`SAF-DEBUG-ALLOWLIST`）。`worker` 模块的 `/search` 路径已随 `bfe0fd8` 落地。
+> 注：「现状」列是**模块级**口径（模块已落地），不代表行为完备。行为级缺口不在本表内：`/search`、Telegram 429 退避、多实例重复投递窗口均已实现。此前记录的唯一一条产品决策项 `SAF-DEBUG-ALLOWLIST`（`POST /debug/notify` 在空白名单时不拦截任意 `chat_id`）已于 2026-09-29 按风险接受关闭并移出 `docs/opengaps.md`——其暴露面由 `SAF-DEBUG-GATE` 双因子挂载与 Worker 路由 safelist 共同约束，行为与残余风险（直连后端 origin 可同时绕过这两层）见 `docs/deployment.md` §2.1 与 `docs/design.md` §7.6。`worker` 模块的 `/search` 路径已随 `bfe0fd8` 落地。
 
 ---
 
