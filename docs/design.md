@@ -29,7 +29,7 @@
 11. [历史问题与决策归档（产品/架构类，均已有结论）](#11-历史问题与决策归档产品架构类均已有结论)
 12. [AI 辅助能力：架构、确认门槛、失败回退](#12-ai-辅助能力架构确认门槛失败回退)
 
-> 部署/平台类决策已确认（单账户、App Password+Basic、Redis 托管+AOF、平台 HTTPS URL、外部 Cron）并**全部收敛归档**（含 `Q-DEP-A`/`Q-DEP-B`，见 `docs/deployment.md` 的已确认决策一节）；**未完成的代码缺口见 `docs/roadmap.md`**。
+> 部署/平台类决策已确认（单账户、App Password+Basic、Redis 托管+AOF、平台 HTTPS URL、外部 Cron）并**全部收敛归档**（含 `Q-DEP-A`/`Q-DEP-B`，见 `docs/deployment.md` 的已确认决策一节）；**未完成的代码缺口见 `docs/opengaps.md`**。
 
 ---
 
@@ -346,7 +346,7 @@ message-weave/
 | `web` | axum | `/config` 静态页 + `include_str!` 嵌入 + CSP | 前端由 `web/config.test.mjs` 覆盖 | 已实现 |
 | `debug` | reqwest 0.13；redis 0.27 | 远端诊断面 `/debug/*`（`src/debug.rs`）：6 条只读探针 `/debug/ping`、`/debug/config`、`/debug/redis`、`/debug/jmap`、`/debug/telegram`、`/debug/worker` + `POST /debug/notify`（走生产出站路径发一条测试消息，无独立实现） | 仅 `DEBUG_ENABLED`（或 `--debug`）+ `DEBUG_TOKEN` 双因子齐备时挂载路由；模块本身无条件编译 | 已实现，不进 Worker 白名单（`SAF-DEBUG-ORIGIN-ONLY`） |
 
-> 注：「现状」列是**模块级**口径（模块已落地），不代表行为完备。行为级缺口不在本表内：`docs/roadmap.md`「代码缺口」中 `/search`、Telegram 429 退避、多实例重复投递窗口均已实现，仅剩 1 条按产品决策保留不改（`SAF-DEBUG-ALLOWLIST`）。`worker` 模块的 `/search` 路径已随 `bfe0fd8` 落地。
+> 注：「现状」列是**模块级**口径（模块已落地），不代表行为完备。行为级缺口不在本表内：`docs/opengaps.md`「代码缺口」中 `/search`、Telegram 429 退避、多实例重复投递窗口均已实现，仅剩 1 条按产品决策保留不改（`SAF-DEBUG-ALLOWLIST`）。`worker` 模块的 `/search` 路径已随 `bfe0fd8` 落地。
 
 ---
 
@@ -557,7 +557,7 @@ pub enum BotError {
 - axum 采用 **0.8**（`ARCH-AXUM-08`）；如后续审核决定调整版本，以 Cargo.toml 为准并同步本节。
 - 当前不实现 SSE/WebSocket/长轮询/SQLite/本地卷（`C-NO-LONG-CONN`/`NG-SQLITE-PERSIST`/`NG-LOCAL-VOLUME`）；入口鉴权（`R1`/`SAF-AUTH-*`）作为 fail-closed 硬门禁落地，鉴权之后的 Push、Streams worker 和 `/reconcile` 业务路径已实现。
 
-**阶段0 P0 门禁（`GATE-P0`）——已通过。首次冻结时为 45 passed / 0 failed / 1 ignored，此后随 ④–⑥ 轮实现持续增长，当前基线以 `docs/roadmap.md` 头部为准。以下为阶段0 当时的判据，保留作历史记录：**
+**阶段0 P0 门禁（`GATE-P0`）——已通过。首次冻结时为 45 passed / 0 failed / 1 ignored，此后随 ④–⑥ 轮实现持续增长，当前基线为 69 passed / 0 failed / 1 ignored（2026-09-29 复测；唯一 ignored：`real_server_tests::session_list_and_read_smoke`，需外部真实 JMAP 服务器）。以下为阶段0 当时的判据，保留作历史记录：**
 1. `cargo fmt --check` 通过（无格式差异）。
 2. `cargo clippy --all-targets -- -D warnings` 通过（零告警；禁 crate 级 `allow`）。
 3. `cargo test` 通过（含路由/配置最小测试）。
@@ -616,7 +616,7 @@ pub enum BotError {
 - `send_email`（draft + submission_set）**当前未实现**：`JmapBackend` 只有只读动词。
 - 发信流程原本计划用多步 FSM 收集 to/subject/body，**从未实现**（见 `docs/retired.md` 的对话 FSM 一节）。
 - `/flag /unseen` 关键词标记**未实现**。
-- 缺口与阶段归属见 `docs/roadmap.md`。
+- 缺口与阶段归属见 `docs/opengaps.md`。
 
 ### 10.4 阶段 3.5：LLM 门面 + 回退（1.5d，未执行）
 未实施，见 §12.8 与 `docs/retired.md`。
@@ -659,14 +659,14 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 - DLQ 条数、inflight 积压深度、对账补齐条数等指标尚未自动上报（§8.3 标记为可选）。当前运维需通过 Redis 直接查看：`XLEN messageweave:dlq:*`、`XPENDING` 等。
 - 若需自动化告警，建议在 Uptime Kuma 增加对 `/ready` 或对账入口的健康检查，并手动复核 DLQ 深度。
 
-**已知边界（当前实现仍存在，见 `docs/roadmap.md`）**
+**已知边界（当前实现仍存在，见 `docs/opengaps.md`）**
 
 - 多实例重复投递窗口（**已收口，`6c99ce5`**）：XAUTOCLAIM 空闲阈值不再按固定值缩放，改由运行超时配置推导——`(max_retries + 1) × (jmap + telegram + llm 超时) × 2` 为单条上限，再乘批大小，下限 300s、上限 6h（见 `docs/reference.md` §6.3）。提前认领窗口在单实例与多实例部署下均关闭；单实例不受影响，多实例最多重复、不丢。
 
 **审计意见 → 收口（2026-09-26）**
 
 - 【应修-2】入队失败时 dedup 释放 best-effort 曾可能造成 24h 静默丢事件 → 已修复为 `claim_dedup_and_enqueue`（Lua 原子：`SET NX EX` 成功才 `XADD`），claim 与入队之间无中间失败窗口。
-- 【应修-1】`Email/changes` 依赖 `newState` 续传，`jmap-client 0.4.2` 无 `upToId` → 已改为「同 `sinceState` 下逐次翻倍 `maxChanges` 扩窗（上限 4096），仅在无法扩窗时才推进 `new_state`」，避免按页推进时漏批；`newState` 语义本身仍需真实 Stalwart 复验（见 `docs/roadmap.md`）。
+- 【应修-1】`Email/changes` 依赖 `newState` 续传，`jmap-client 0.4.2` 无 `upToId` → 已改为「同 `sinceState` 下逐次翻倍 `maxChanges` 扩窗（上限 4096），仅在无法扩窗时才推进 `new_state`」，避免按页推进时漏批；`newState` 语义本身仍需真实 Stalwart 复验（见 `docs/opengaps.md`）。
 - 其余低风险项均已收口：未知 stream 的空值改为 `Err`（fail-closed，进重试/DLQ）；`push:disable` 经 `forget_push_subscription` 清理验证码摘要键；`SET NX EX` TTL 下限收紧为 `.max(1)`；XAUTOCLAIM 空闲阈值按批大小缩放；无 payload 的畸形流条目由 `ack_malformed` 经 `XACK` 移出 PEL；CSPRNG 兜底 owner-token 改为「时间 + PID + 计数器」，不再使用常量。
 - 未排期待办（阶段 5「搜索 + 搜索片段」）**已收口（`bfe0fd8`）**：`/search` 走 `email_query`(`Filter::text`) + `SearchSnippet/get`，高亮降级与截断上限见 §2.3、§5.7；正文级高亮在锁定版本做不到（见 §2.3 备注）。阶段 5 待办已清零。
 
@@ -685,7 +685,7 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 
 ### 11.2 实时通道（已定，见 deployment.md）
 - 通道 = **JMAP Push HTTPS 回调 + 外部 Cron `/reconcile` 对账**（`C-NO-LONG-CONN`/`C-HTTPS-INBOUND`）；EventSource/SSE/WebSocket 均**非目标**（`NG-POLLING-SSE`）。Push 注册通过受保护的 `POST /api/push/register` 显式触发，外部 Cron 仍是必须的可靠补偿通道。
-- 两条尚需在真实 Stalwart 上校准的点——账号角色是否具备 `PushSubscription` 权限、以及 Stalwart 回调重试次数与 TTL/对账间隔的匹配——已作为验收项登记在 `docs/roadmap.md`，不在本文以问题形式留存。
+- 两条尚需在真实 Stalwart 上校准的点——账号角色是否具备 `PushSubscription` 权限、以及 Stalwart 回调重试次数与 TTL/对账间隔的匹配——已作为验收项登记在 `docs/opengaps.md`，不在本文以问题形式留存。
 
 ### 11.3 部署形态（已确认，架构相关）
 - **已确认**：**单账户实现**（`REQ-SINGLE-ACCOUNT`）；多账户暂用**多个 bot 实例**（各自 token/配置），**不做多账户单实例**（因此无需 chat→account 路由与 `JmapService` 池化）。

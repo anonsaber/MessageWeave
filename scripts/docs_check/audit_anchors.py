@@ -43,7 +43,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 DOCS = ['AGENTS.md', 'README.md', 'README.zh-CN.md', 'docs/design.md',
         'docs/deployment.md', 'docs/reference.md', 'docs/retired.md',
-        'docs/roadmap.md', 'docs/charter.md', 'cloudflare-worker/README.md']
+        'docs/opengaps.md', 'docs/charter.md', 'cloudflare-worker/README.md']
 
 # `Ident` or `Module::Ident` inside backticks, optional () after.
 IDENT = r'[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)?'

@@ -558,7 +558,7 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 
 > **最后一项待确认已清空**：`Q-DEP-A`（平台 URL / 域名与证书配置方）与 `Q-DEP-B`（外部调度器选型）
 > 均已决策，分别合并进本表的 `C-HTTPS-URL` 与 `NFR-RECONCILE-INTERVAL` 行。两项都是上线时的运维选择，
-> 不影响代码结构、不影响门禁；`docs/roadmap.md` 已不再保留「决策待定」块。
+> 不影响代码结构、不影响门禁；`docs/opengaps.md` 已不再保留「决策待定」块。
 >
 > 其余产品/架构问题见 design.md；不再有平台特定部署问题（`NG-SERVERLESS-BIND`）。
 

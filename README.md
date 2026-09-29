@@ -112,7 +112,7 @@ the credential for any HTTP endpoint.
 | [`docs/design.md`](docs/design.md) | Why the system is shaped this way: data flow, JMAP semantics, Redis streams, AI consent rules |
 | [`docs/deployment.md`](docs/deployment.md) | How to deploy: Dockerfile, secrets, Redis hosting, webhook/push/reconcile routing, multi-instance load balancing |
 | [`docs/reference.md`](docs/reference.md) | **Single source of truth for verifiable facts** — Redis keys and TTLs, error codes, routes, environment layers, budgets |
-| [`docs/roadmap.md`](docs/roadmap.md) | Gaps, blockers and the next phase |
+| [`docs/opengaps.md`](docs/opengaps.md) | Gaps, blockers and the next phase |
 | [`docs/retired.md`](docs/retired.md) | What was tried and dropped — abandoned routes, unreleased designs, and names that never existed |
 | [`docs/charter.md`](docs/charter.md) | Project charter: goals, locked technology choices, security invariants, prohibitions, and the stable-ID registry |
 | [`AGENTS.md`](AGENTS.md) | Language-agnostic engineering norms: code style, config and secrets, build environment, testing gates, document governance |

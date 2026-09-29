@@ -5,7 +5,7 @@
 >
 > 通用、语言无关的代码编写与环境构建规范见 [`../AGENTS.md`](../AGENTS.md)；
 > 可核对事实（路由 / Redis 键与 TTL / 配置项 / 错误码 / 出站常量）的唯一权威来源见
-> [`reference.md`](reference.md)；缺口与阻塞见 [`roadmap.md`](roadmap.md)。
+> [`reference.md`](reference.md)；缺口与阻塞见 [`opengaps.md`](opengaps.md)。
 >
 > 三者冲突时：**可核对事实以 `reference.md` 为准，项目约束以本文件为准，质量规则以 `../AGENTS.md` 为准。**
 
@@ -116,7 +116,7 @@ cd /home/okabe/Repo/messageweave && docker run --rm --user 1000:1000 \
   bash -lc 'export PATH=/usr/local/cargo/bin:$PATH; cargo fmt --all -- --check && cargo check --locked && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked 2>&1 | tail -12'
 ```
 
-**当前基线：61 passed / 0 failed / 1 ignored**（唯一 ignored：`real_server_tests::session_list_and_read_smoke`，需外部真实 JMAP 服务器）。
+**当前基线：69 passed / 0 failed / 1 ignored**（2026-09-29 复测；唯一 ignored：`real_server_tests::session_list_and_read_smoke`，需外部真实 JMAP 服务器）。
 
 **注意**：`docker run` 的 bash `-lc` 脚本必须用**单引号**包裹。用双引号会先在宿主机展开 `$PWD` / `$PATH`，容器内找不到 cargo。
 
@@ -158,7 +158,7 @@ cd /home/okabe/Repo/messageweave/cloudflare-worker && node --test test/*.test.js
 无 Stalwart / Telegram / 托管 Redis 凭据。真实环境集成测试必须用 `#[ignore]` 标注，
 缺凭据时静默跳过（不泄露凭据、不判失败）。
 
-**环境阻塞项**（未验证，不得声称已验证）见 [`roadmap.md`](roadmap.md)「阻塞」区：
+**环境阻塞项**（未验证，不得声称已验证）见 [`opengaps.md`](opengaps.md)「阻塞」区：
 真实 Stalwart、真实 Telegram Bot、真实 Redis TLS、`Email/changes` 的 `newState` 语义、
 Push callback 公网映射。
 
@@ -173,7 +173,7 @@ Push callback 公网映射。
 | `docs/design.md` | 为什么这样设计：数据流、模块边界、状态机、错误处理 | 架构意图 |
 | `docs/deployment.md` | 怎么部署：Dockerfile、secrets、网关、多实例、cron | 部署与运维 |
 | `docs/reference.md` | 可核对事实的唯一权威来源：路由、Redis 键与 TTL、配置项、错误码、出站常量 | **可核对事实** |
-| `docs/roadmap.md` | 缺口、阻塞、下一阶段目标 | 未决项 |
+| `docs/opengaps.md` | 缺口、阻塞、下一阶段目标 | 未决项 |
 | `docs/retired.md` | 已废弃或已改名方案的记录与替代指向 | 历史决策 |
 | `docs/charter.md` | 本文件：项目约束、技术选型、实现阶段、安全不变量、稳定 ID 注册表 | 项目约束 |
 | `web/`（无文档，4 个文件） | 管理 SPA 源：静态配置页与前端逻辑，由 `web/config.test.mjs` 覆盖 | 前端行为（权威事实记在 `docs/design.md` 与 `docs/reference.md`） |
@@ -259,7 +259,7 @@ Push callback 公网映射。
 | `ARCH-DEPS-STAGE4` | docs/design.md §10.0-1 / §4 | 阶段3.5/4 后依赖现况：`redis 0.27`、`reqwest 0.13` 已引入并实际使用；`teloxide` **未**引入（Telegram 由 `src/channel.rs` 用 reqwest 自研实现）；版本一律以 `Cargo.toml` 为准 | 架构 |
 | `MOD-JMAP-CLIENT` | docs/design.md §6-7 / §4 | `domain::jmap::client` 真实只读 adapter（session/account/mailbox/email 只读） | 组件 |
 | `MOD-TELEGRAM-NOTIFY` | src/worker.rs / docs/design.md §12 | 有界元数据通知 worker：消费出站队列，把脱敏通知经 Telegram 投递（不承载正文/AI 响应） | 组件 |
-| `REQ-JMAP-SESSION-URL` | docs/design.md §7.1 / .env.example | `JMAP_SESSION_URL` 接受服务基地址或完整 /.well-known/jmap，归一化为 origin/base 后再交 jmap-client（无重复路径）；**代码已实现（D-G1-1），待真机验证** | 需求 |
+| `REQ-JMAP-SESSION-URL` | docs/design.md §7.1 / .env.example | `JMAP_SESSION_URL` 接受服务基地址或完整 /.well-known/jmap，归一化为 origin/base 后再交 jmap-client（无重复路径）；**代码已实现（D-G1-1），已在真实账号真机验证**（2026-09-28：`fetchChanges` 持久化 `baseline:` 游标、`Email/query` 搜索回帖，均经用户确认） | 需求 |
 | `SAF-JMAP-URL` | docs/design.md §7.1 / §4 | JMAP URL 约束：仅 HTTPS、禁止内嵌凭据、拒绝危险 query | 安全 |
 | `REQ-JMAP-RAW-MULTIPART` | docs/design.md §3.2/§10.1 | `read_email` 多 part 原文：按 text_body 顺序拼接"有 part_id 且 bodyValue"的部分；无可用部分→明确错误 | 需求 |
 | `GATE-G1-JMAP-READONLY` | docs/design.md §10.1 / §6 | G1 门禁：只读 adapter **代码已实现**（mock + `#[ignore]` 真机测试），**待真实 `cargo test -- --ignored jmap::` 验证** | 流程 |
