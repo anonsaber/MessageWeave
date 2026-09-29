@@ -304,8 +304,8 @@ message-weave/
 ├── Cargo.toml                    # jmap-client 0.4.2 / redis 0.27 / reqwest 0.13；不含 teloxide
 ├── .env.example                  # 仅 2 个必填项的占位样例（REDIS_URL / CONFIG_ENCRYPTION_KEY），不含业务配置
 ├── .gitignore
-├── Dockerfile                    # debian:bookworm-slim + tini + 只读诊断工具（C-DEBIAN-SLIM）
-├── hoststack.yaml                # 网关编排清单，非应用代码
+├── Dockerfile                    # 仅本地开发用；生产不执行（C-DEBIAN-SLIM，边界见 deployment.md §3）
+├── hoststack.yaml                # 生产部署真源（runtime/build/start/healthCheck），非网关清单，见 §5.1
 ├── src/
 │   ├── main.rs                   # tokio main：读 PORT/REDIS_URL/CONFIG_ENCRYPTION_KEY 后启动 webhook HTTP 入口（单入口，无 CLI 子命令）
 │   ├── config.rs                 # Redis 业务配置反序列化（serde → BusinessConfigWire → Config）；CONFIG_ENCRYPTION_KEY 解析

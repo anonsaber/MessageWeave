@@ -96,6 +96,14 @@
 
 ## 3. Rust 多阶段构建与运行
 
+> **边界：本章与仓库根目录的 `Dockerfile` 是「仅本地开发 / 本地容器调试」路径，
+> 生产不执行它。** 线上走 §5.1 的 `hoststack.yaml` + `runtime: rust`，由 HostStack 自带
+> agent 在 `rust:slim-trixie` 构建、拷进 `debian:trixie-slim` runner 运行，完全不经过
+> 本 Dockerfile（连 Debian 版本都不同）。因此本章的 `ENTRYPOINT`（tini）、
+> `EXPOSE 8080`、内置诊断工具在生产容器中一律不生效。生产启动命令的真源是
+> `hoststack.yaml` 的 `start.command`。本地用 `docker build` + `docker run` 验证行为时
+> 才走本章。
+
 ### 3.1 构建阶段
 （保留既有 rust:bookworm 构建 + 缓存分层约定；产物为单个静态编译二进制 `message-weave`）
 
@@ -136,14 +144,31 @@ HostStack 使用仓库根目录 `hoststack.yaml`：`runtime: rust` 的 agent 在
 或代码仓库。**本仓库的 Dockerfile 不由该路径执行**——runner 镜像是 HostStack 自带的
 `debian:trixie-slim`，不是本文件的 `debian:bookworm-slim`，见 §3 与 §8.1 的说明。
 
-**该 YAML 是运行时配置的真源，且不能删除**：YAML 声明的字段**覆盖**控制台已存的同名
-配置，YAML 省略的字段**回落到运行时框架默认值**——Rust 的默认值是 `cargo fetch` /
-`cargo build --release` / `./target/release/app`。最后那个默认值由 HostStack 自带、
-与本仓库包名无关：`Cargo.toml` 只声明一个 `[[bin]]`（名字 `message-weave`，
-路径 `src/main.rs`），仓库里既没有 `app` 这个二进制目标也没有对应源文件。删掉本文件后
-Start Command 回落为 `./target/release/app`，进程在绑定端口前就以 `not found` 退出。
-线上实测印证了此行为：控制台 UI 显示的是默认值 `./target/release/app`，而实际 PID 1 是
-`./target/release/message-weave`——说明在生效的是 YAML，不是控制台。
+**配置优先级（三层，从 HostStack agent 源码实测确认）**：部署时 agent 先把控制台
+services 表里已存的值填进 payload，再用 `hoststack.yaml` 声明的值覆盖，最后才用运行时
+框架默认值补缺。源码判定条件是 `if (svcConfig.install?.command)` 才覆盖，且没有
+`&& !payload.x` 之类的短路——**YAML 声明了就以 YAML 为准、无条件覆盖控制台值；YAML
+省略的字段则沿用控制台已存的那个值**。框架默认值只有在前两者都为空时才填，而 agent 的
+注释明确写着 *"trigger-payload always populates payload.x from the DB"*，所以对已建好的
+服务这条默认值分支实际上是**死代码**。这也意味着删掉本文件**不会**退回安全的默认值——
+它直接采用控制台现存的那个值。
+
+**因此目前不能删**。控制台里现存的 Start Command 是 `./target/release/app`，
+这是 HostStack 为 Rust runtime 自带的默认值、与本仓库包名无关：`Cargo.toml` 只声明
+一个 `[[bin]]`（名字 `message-weave`，路径 `src/main.rs`），仓库里既没有 `app` 这个
+二进制目标也没有对应源文件。直接删掉 `hoststack.yaml` 后，下一次部署会以
+`./target/release/app` 启动，进程在绑定端口前就以 `not found` 退出。
+线上实测印证：控制台 UI 显示 `./target/release/app`，而实际 PID 1 是
+`./target/release/message-weave`——说明现在生效的是 YAML，不是控制台。
+
+> **决策记录**：最初倾向是"从控制台 UI 管理更方便，把 `hoststack.yaml` 拿掉"。
+> 但按上面的优先级，**这个前提不成立**——直接删 YAML 服务起不来。**当前决定：保留
+> `hoststack.yaml`。** 保留的代价是双写（在控制台改命令不会生效，必须改 YAML）；
+> 保留的理由是部署命令进入 git 历史、可 review 可回滚，而控制台值散在平台侧、改动无痕迹。
+> **若日后确要移除**，必须**先在控制台把三条命令改对**（install = `cargo fetch --locked`、
+> build = `cargo build --release --locked`、start = `./target/release/message-weave`），
+> 再删本文件并重新部署一次验证；同时把本段连同该前提移到 `docs/retired.md` 并记下
+> 移除 commit。**不要**只删文件就以为控制台值会自动变对。
 
 **校验是宽松的，不是拒绝式的**：agent 的部署路径不应用 zod schema 校验，
 `install` / `build` / `start` 等都是可选对象，**未知键会被静默丢弃而不是报错**，

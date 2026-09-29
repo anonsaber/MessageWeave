@@ -7,16 +7,30 @@
 # chat allowlist, LLM settings) is NOT read from environment variables at all.
 # It is written to Redis via /api/bootstrap or admin PUT on /api/config.
 #
-# Precedence (verified in the HostStack agent source, deploy-executor.ts):
-# a value declared here wins; a field omitted here falls back to the
-# per-runtime framework default. For runtime: rust those defaults are
-# `cargo fetch` / `cargo build --release` / `./target/release/app`.
+# Precedence (verified in the HostStack agent source, deploy-executor.ts).
+# Three layers, in order:
+#   1. the values already stored on the dashboard services row -> payload
+#   2. a field DECLARED here unconditionally overwrites that (guard is
+#      `if (svcConfig.start?.command)`, with no `&& !payload.x`), so this
+#      file wins over the dashboard for the fields it declares
+#   3. a field OMITTED here keeps the dashboard value; the per-runtime
+#      framework default then fills in only if that is still empty, which
+#      for an existing service it never is -- the agent's own comment reads
+#      "trigger-payload always populates payload.x from the DB", so that
+#      branch is effectively dead code
 #
-# That last default is why start.command MUST be declared below: `app` is not
-# this package's binary name. Cargo.toml declares [[bin]] name = "message-weave"
-# with path = "src/main.rs"; there is no `app` target and no src/app.rs.
-# Deleting this file reverts the service to a start command that exits with
-# `./target/release/app: not found` before it can bind the port.
+# For runtime: rust those framework defaults are `cargo fetch` /
+# `cargo build --release` / `./target/release/app`.
+#
+# Consequence: deleting this file does NOT fall back to safe defaults. It
+# makes the dashboard's stored values take effect as-is, and that stored
+# Start Command is HostStack's Rust default `./target/release/app` -- which
+# is not this package's binary name. Cargo.toml declares
+# [[bin]] name = "message-weave" with path = "src/main.rs"; there is no
+# `app` target and no app.rs. The next deploy would exit with
+# `./target/release/app: not found` before binding the port.
+# To drop this file, first correct all three commands in the dashboard UI,
+# then delete and redeploy to verify. See docs/deployment.md §5.1.
 #
 # Do NOT add --debug here for production. See the note above start.command.
 services:

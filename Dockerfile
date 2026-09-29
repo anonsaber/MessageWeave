@@ -1,3 +1,15 @@
+# ============================================================================
+# 仅本地开发 / 本地容器调试用。生产不执行本文件。
+#
+# 线上部署走仓库根目录 hoststack.yaml + runtime: rust，由 HostStack 自己的
+# agent 在 rust:slim-trixie 里构建、拷进 debian:trixie-slim 的 runner 容器运行
+# ——完全不经过本 Dockerfile（连 Debian 版本都不同：bookworm vs trixie）。
+# 因此本文件里的诊断工具、ENTRYPOINT tini、EXPOSE 8080 在线上都不生效。
+# 判定当前跑的是哪条路径：容器内看 /proc/1/cmdline 与 /etc/os-release。
+# 生产启动命令的真源是 hoststack.yaml 的 start.command，见 docs/deployment.md
+# §5.1；本文件只服务于 `docker run` / 本地起一个容器来验证行为。
+# ============================================================================
+#
 # C-DEBIAN-SLIM: Debian builder and runtime; no Alpine/musl dependencies.
 FROM rust:1-slim-bookworm AS builder
 WORKDIR /build
