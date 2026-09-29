@@ -13,7 +13,10 @@
 #   audit_anchors   every `foo.rs:N` / `foo.rs:N-M` anchor in the docs points at
 #                   a line that EXISTS and is not blank. LIMITATION: it does not
 #                   prove the line says what the prose claims. A doc can pass
-#                   with anchors on the wrong line -- someone must read them.
+#                   with anchors on the wrong line -- someone must read them. It
+#                   additionally checks a "`T::member`" claim standing next to a
+#                   BARE `foo.rs` (no line number) and reports it when that
+#                   member is not defined in foo.rs.
 #   check_sec_refs  every "§N.N" cross-reference resolves to a real heading in
 #                   the document it is attributed to.
 #   check_file_size every source file over 500 lines carries the SPLIT-EVAL

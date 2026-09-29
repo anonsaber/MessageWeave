@@ -1,54 +1,92 @@
 #!/usr/bin/env python3
-"""Check every `foo.rs:N` / `foo.rs:N-M` / `web/config.js:N` line anchor in the docs.
+"""Audit the docs' source anchors against the working tree.
 
-Paths may be bare (`notify.rs:320`, resolved under `src/`), prefixed with a directory
-(`src/domain/jmap/client.rs:108`, `cloudflare-worker/src/backends.js:9`,
-`web/config.js:585`), or unprefixed JavaScript (`config.js:585`, resolved under `web/`
-or the Worker).
+For every "`src/foo.rs:123`" style anchor in the docs, check that the file
+exists, the line is in range, and the line is not blank.
 
-LIMITATION: this only proves the cited line *exists and is not blank*. It does
-not prove the line contains what the prose claims about it. A doc can pass this
-audit with anchors that point at the wrong line -- a human must read the target
-line to catch that. Keep this in mind when quoting "0 errors" as proof of
-accuracy: it proves reachability, not correctness.
+LIMITATION: this only checks that the anchor TARGETS A REAL, NON-BLANK LINE.
+It does not check that the line says what the doc claims.
+A doc could say "foo.rs:123 defines get_by_key" when line 123 is actually
+`fn get_by_name`. This audit would pass.
+Someone still has to read the anchors to verify they're accurate.
 
-The one exception is a *phantom identifier*: if a backticked name sits right next
-to an anchor (the common "`foo` ... `bar.rs:N`" phrasing) and that name appears
-nowhere in bar.rs, the anchor is reported. Existence, not position -- the symbol
-may still be on the wrong line.
+The one exception is a *phantom identifier*: if a backticked name sits right
+next to an anchor, we check the name actually appears in that file. Catches
+docs claiming an identifier that doesn't exist.
+This is a loose substring check, so it has the same limitation as the anchor
+check above. It catches the obvious case but not a near-miss name.
+
+Two shapes of claim live next to an anchor, and they are checked with
+deliberately different strictness:
+
+  - Numbered anchor (`src/state.rs:283`). Kept as a loose substring check on
+    the member name. PAIR's EXT only matches a name followed by a colon and a
+    line number, so the anchor already pins down the location and the reader
+    can verify the line. Widening the verdict here would change the count of
+    findings in this branch, i.e. perturb the established baseline, for no
+    gain: any doc written next to an anchor names the place and the name.
+  - Bare file name (`src/channel.rs`, no line number). Checked with the strict
+    `member_present` test and reported as a `phantom member`. No line number
+    means the reader has nothing to verify, so the only thing this check can
+    prove is that the named member actually exists in the file. And a loose
+    test provably fails here: a doc can write `TelegramClient::send` and
+    satisfy a substring -- even a word-boundary -- test twice over, because
+    `channel.rs` contains `send_text` and reqwest's `.send()` is `send` at a
+    word boundary. Hence definition/unqualified-reference semantics.
 """
+
 import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+
 DOCS = ['AGENTS.md', 'README.md', 'README.zh-CN.md', 'docs/design.md',
         'docs/deployment.md', 'docs/reference.md', 'docs/retired.md',
         'docs/roadmap.md', 'docs/charter.md', 'cloudflare-worker/README.md']
 
+# `Ident` or `Module::Ident` inside backticks, optional () after.
 IDENT = r'[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)?'
+# A namespaced path: at least two segments joined by `::`. Required for the
+# bare-file-name branch -- PAIR's IDENT would also match a bare `Foo` and
+# produce a phantom-member hit on every ordinary mention.
+IDENT_NSP = (r'[A-Za-z_][A-Za-z0-9_]*' + r'::'
+             + r'(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*')
+
+# Optional directory prefix, then the bare file stem.
 FILE = r'((?:[A-Za-z0-9_.-]+/)?[A-Za-z0-9_-]+)'
+
+# Line anchor: `.rs:123`. The optional range suffix lives in REF, not here.
 EXT = r'\.(rs|js):(\d+)'
 
-# A directory part is zero or more full segments (`/seg`), so the regex can never
-# split a file name like `debug.rs` into a "directory" plus a stray base.
+# Bare file name: `.rs` not immediately followed by a colon. The negative
+# lookahead keeps PAIR_BARE from re-matching anchors PAIR already consumed
+# (`channel.rs:110`), so a numbered anchor is never reported twice.
+EXT_BARE = r'\.(rs|js)(?!:)'
+
 REF = re.compile(
     r'((?:src|cloudflare-worker/src|web)(?:/[A-Za-z0-9_.-]+)*/)?'
     + FILE + EXT + r'(?:\s*[,–\-]\s*(\d+))?'
 )
 
-# A backticked identifier sitting right next to an anchor is an implicit claim:
-# "`foo` ... `bar.rs:N`". If `foo` never appears in bar.rs the anchor is a phantom.
-# The gap may not cross more than one backtick boundary and is capped at 40
-# characters on each side, so only a genuinely coupled identifier/anchor pair
-# matches. An optional `()` after the identifier is tolerated, since prose often
-# writes function names that way.
-PAIR = re.compile(
-    r'`(' + IDENT + r')(?:\(\))?`'
-    r'[^`\n|]{0,40}?`?[^`\n|]{0,40}?'
-    r'(?<![A-Za-z0-9_.])`?'
-    + FILE + EXT
-)
+# "Backticked identifier, some slack, right next to a file name" -- the shape
+# shared by PAIR and PAIR_BARE. They differ only in the file-name half (EXT vs
+# EXT_BARE) and in how strict the identifier is allowed to be.
+GAP = (r'`(' + IDENT + r')(?:\(\))?`'
+       r'[^`\n|]{0,40}?`?[^`\n|]{0,40}?'
+       r'(?<![A-Za-z0-9_.])`?')
+GAP_NSP = GAP.replace(IDENT, IDENT_NSP)
+
+# Ident backticked next to an anchored file name: `Foo::bar` (`src/foo.rs:12`).
+PAIR = re.compile(GAP + FILE + EXT)
+# Ident backticked next to a bare file name: `Foo::bar` (`src/foo.rs`).
+PAIR_BARE = re.compile(GAP_NSP + FILE + EXT_BARE)
+
+# A Rust/JS definition site, or a keyword that introduces a binding. Used by
+# member_present to distinguish "defined here" from "mentioned in passing".
+DEFN_KW = (r'\b(?:pub(?:\(crate\))?\s+)*(?:async\s+)?'
+           r'(?:fn|function|const|static|let|var|class|struct|enum|trait'
+           r'|type|union|interface|use)\s+')
 
 
 def resolve(prefix, base, ext):
@@ -64,6 +102,19 @@ def resolve(prefix, base, ext):
     else:
         candidates = [ROOT / prefix.rstrip('/') / f'{base}.{ext}']
     return next((c for c in candidates if c.is_file()), None)
+
+
+def member_present(symbol, text):
+    """`symbol` 在 text 里是否真实存在（被定义，或被非限定地引用）。
+
+    刻意比 `symbol in text` 严：文档声称 `T::send` 时，不能由 `send_text`
+    （子串）或 reqwest 的 `.send()`（词边界）满足——这两者都在 src/channel.rs
+    里真实存在。要求命中定义关键字，或命中一个前面不跟 `.` / 单词字符的引用。
+    只排除 `.` 而不排除 `:`，是为了让 `worker::claim_dedup`、`std::env::var`
+    这类限定调用仍然算数（排除 `:` 会产生 17 个假阳性）。
+    """
+    return bool(re.search(DEFN_KW + symbol + r'\b', text)) or \
+        bool(re.search(r'(?<![.\w])' + symbol + r'\b', text))
 
 
 errors = []
@@ -88,6 +139,25 @@ for d in DOCS:
             symbol = ident.rsplit('::', 1)[-1]
             if symbol not in p.read_text():
                 errors.append(f'{d}:{i} phantom identifier `{ident}` not in {raw}.{ext}')
+
+        # Same pair shape, but the file name has no line number. `checked`
+        # counts line-numbered references only, so this branch deliberately
+        # never adds to it -- the reported total must stay the number of
+        # anchors, not the number of identifier claims.
+        for m in PAIR_BARE.finditer(line):
+            ident, raw, ext = m.group(1), m.group(2), m.group(3)
+            raw = raw.rsplit('/', 1)[-1]
+            if '.' in raw:
+                continue
+            p = resolve(None, raw, ext)
+            if p is None:
+                continue
+            symbol = ident.rsplit('::', 1)[-1]
+            if not member_present(symbol, p.read_text()):
+                errors.append(
+                    f'{d}:{i} phantom member `{ident}` not defined in {raw}.{ext}'
+                )
+
         for m in REF.finditer(line):
             prefix, base, ext, a, b = m.groups()
             p = resolve(prefix, base, ext)
