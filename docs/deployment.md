@@ -92,15 +92,15 @@
 | `GET /debug/worker` | `200`（`revision`、`reconcile_cursor`、`outbound` 预算） | 401 |
 | `POST /debug/notify` | `200 {"ok":true,"result":{…}}` | 401；业务配置未加载或无出站客户端 → `503 service_unavailable` + `Retry-After: 30`（`src/debug.rs:56-58`）；`chat_id` 不在白名单 → `403 chat_not_allowed`（`src/debug.rs:60-62`）；Telegram 发送失败 → `502 telegram_send_failed`（`src/debug.rs:64-66`） |
 
-`/debug/config` 的响应字段（`src/debug.rs:110-148`）：恒有 `revision`、`setup_missing`、`business_configured`、`allowlist_size`；业务配置存在时再加 `jmap.{session_url,username,account_id}`、`telegram.{chat_id,webhook_secret_configured}`、`worker.{worker_token_configured,reconcile_token_configured}`、`llm.{enabled,allow_net,api_key_configured,base_url,model}`、`outbound.{jmap_timeout_ms,telegram_timeout_ms,llm_timeout_ms,max_retries}`；配置缺失时只回 `business_configured:false` + `allowlist_size`。
+`/debug/config` 的响应字段（`src/debug.rs:110-148`）：恒有 `revision`、`setup_missing`、`business_configured`、`allowlist_size`；业务配置存在时再加 `timezone`（IANA 时区名字符串，如 `Asia/Tokyo`）、`jmap.{session_url,username,account_id}`、`telegram.{chat_id,webhook_secret_configured}`、`worker.{worker_token_configured,reconcile_token_configured}`、`llm.{enabled,allow_net,api_key_configured,base_url,model}`、`outbound.{jmap_timeout_ms,telegram_timeout_ms,llm_timeout_ms,max_retries}`；配置缺失时只回 `business_configured:false` + `allowlist_size`。
 
 方法不匹配先于鉴权判定（例如 `GET /debug/notify` 返回 `405`）。
 
 **三条约束，部署时务必确认**
 
 - **绝不回显凭据值**：`debug_config`（`src/debug.rs:94`）对每个 Secret 字段只输出 `*_configured` **布尔**——JMAP 密码、bot token、`worker_token`、`reconcile_token`、LLM `api_key` 一律不落响应体（`SAF-DEBUG-AUTH`）。注意这是「不含凭据」，不是「全脱敏」：**非密文的身份与预算字段是明文返回的**（JMAP session URL 与 username、Telegram `chat_id`、LLM `base_url`/`model`、各类超时与重试数），所以该面仍只能放在可信网络上。
-- **`/debug/notify` 受 chat 白名单约束，但空白名单不拦截**：它复用生产同一份白名单快照（`src/notify.rs:1422`），判定条件是「白名单**非空**且 `chat_id` 不在其中」才回 `403 chat_not_allowed`（`src/debug.rs:232-235`）。因此已配置白名单时无法绕过业务侧发送限制；若白名单未配置（为空）则此判定不生效，`chat_id` 可任意指定——所以启用本面时应确认业务白名单已真正配置。`text` 缺省为固定联调文案，并按 1024 字符截断（`src/debug.rs:240-245`）。
-- **不在 Worker 白名单内，只能直连 origin**：网关的 15 条安全路由（`cloudflare-worker/src/backends.js:9-25`）不含任何 `/debug/*`，Worker 对未白名单路径返回 `404 route not forwarded: /debug/...`（`cloudflare-worker/src/index.js:81-82`）。因此 `/debug/*` 只能通过直连后端 origin 访问；若必须经代理，请自行在代理层加鉴权，不要让公网可达。
+- **`/debug/notify` 受 chat 白名单约束，但空白名单不拦截**：它复用生产同一份白名单快照（`src/notify.rs:1422`），判定条件是「白名单**非空**且 `chat_id` 不在其中」才回 `403 chat_not_allowed`（`src/debug.rs:233-236`）。因此已配置白名单时无法绕过业务侧发送限制；若白名单未配置（为空）则此判定不生效，`chat_id` 可任意指定——所以启用本面时应确认业务白名单已真正配置。`text` 缺省为固定联调文案，并按 1024 字符截断（`src/debug.rs:241-246`）。
+- **不在 Worker 白名单内，只能直连 origin**：网关的 16 条安全路由（`cloudflare-worker/src/backends.js:9-26`）不含任何 `/debug/*`，Worker 对未白名单路径返回 `404 route not forwarded: /debug/...`（`cloudflare-worker/src/index.js:82-85`）。因此 `/debug/*` 只能通过直连后端 origin 访问；若必须经代理，请自行在代理层加鉴权，不要让公网可达。
 
 > **建议**：生产环境不开启。需要远程联调时在控制台设置 `DEBUG_ENABLED=1` 与一次性
 > `DEBUG_TOKEN`，重新部署后联调；结束立即把 `DEBUG_ENABLED` 置空并轮换 `DEBUG_TOKEN`。

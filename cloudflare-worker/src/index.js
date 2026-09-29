@@ -13,7 +13,8 @@
  * 路由模型：
  * - GET /、/assets/config.js、/assets/styles.css → 内嵌 SPA 静态资源透传
  * - GET /api/status → 后端配置引导状态；只返回缺失变量名称
- * - GET|PUT /api/config、PUT /api/business-config、POST /api/admin/session[/revoke]
+ * - GET|PUT /api/config、GET|PUT /api/business-config、POST /api/business-config/preflight、
+ *   POST /api/admin/session[/revoke]
  *   → 透传至后端；后端校验 bootstrap 凭据或短期 admin session
  * - GET  /healthz            → LB 聚合健康（MOD-HEALTH-AGG）
  * - POST /webhook/tg|/push/jmap|/api/push/register|/api/push/disable|/reconcile、GET /ready → 透传 + 有界故障转移
@@ -48,7 +49,8 @@ const ROUTE_METHODS = Object.freeze({
   "/assets/styles.css": ["GET"],
   "/api/status": ["GET"],
   "/api/config": ["GET", "PUT"],
-  "/api/business-config": ["PUT"],
+  "/api/business-config": ["GET", "PUT"],
+  "/api/business-config/preflight": ["POST"],
   "/api/admin/session": ["POST"],
   "/api/admin/session/revoke": ["POST"],
   "/api/enabled": ["GET", "PUT"],

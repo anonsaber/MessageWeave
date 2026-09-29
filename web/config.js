@@ -91,12 +91,12 @@
       "timezone.desc": "Received times in Telegram notifications are rendered in this time zone.",
       "timezone.hint": "Only fixed-offset zones are supported; DST is not tracked.",
       "business.saveStateInitial": "You can fill in the full configuration after the admin session is verified.",
-      "business.saveStateReady": "Fill in the complete BusinessConfigWire to submit. Secrets are never echoed.",
+      "business.saveStateReady": "Only changed fields are submitted; untouched fields keep their saved values. Secrets are never echoed.",
       "business.save": "Save business config and hot-reload",
       "business.saveBusy": "Saving and hot-reloading…",
       "business.saved": "Business configuration saved and new configuration hot-reloaded.",
       "business.savedToast": "Business configuration saved and hot-reloaded. Secret inputs cleared; re-fill on the next full replacement.",
-      "business.dirty": "The form has unsubmitted content; each submission fully replaces the existing business configuration.",
+      "business.dirty": "The form has unsubmitted content; only the fields you changed will be submitted.",
       "business.unsaved": "No save-success confirmation received; check the service status.",
       "business.submittingToast": "Submitting the full business configuration; the backend builds clients first, then saves and swaps the running instance…",
       "business.preflight": "Test connection",
@@ -177,6 +177,19 @@
       "val.noCreds": "{label} must not contain a username or password.",
       "val.noQuery": "{label} must not contain query parameters or a #fragment.",
       "val.empty": "{label} cannot be empty.",
+      "field.set": "Set",
+      "field.unset": "Not set",
+      "secret.marked": "• {state}. {hint}",
+      "secret.keepEmpty": "Leave empty to keep the saved value",
+      "secret.keepSet": "Empty; the saved value stays",
+      "secret.mustEnter": "Enter a value to create the first configuration",
+      "secret.changed": "New value will replace the saved one",
+      "session.readbackToast": "Saved configuration loaded. Change only what you need.",
+      "session.firstConfigToast": "No saved configuration yet. Fill in every field to create one.",
+      "session.readbackFailed": "The saved configuration could not be loaded, so the form is empty. Nothing was changed.",
+      "session.readback503": "The saved configuration could not be loaded from Redis. Try again later; your session is still valid.",
+      "business.savedRevision": "Saved. Revision {revision}",
+      "business.noChange": "Nothing to submit — no field differs from the saved configuration.",
       "val.llmUrl": "Base URL is required when LLM is enabled.",
       "val.llmModel": "Model name is required when LLM is enabled.",
       "val.llmKey": "API key is required when LLM is enabled.",
@@ -190,7 +203,7 @@
       "login.enterCred": "Enter the CONFIG_ENCRYPTION_KEY value. The input is never written to browser storage.",
       "login.creatingToast": "Creating a short-lived admin session…",
       "login.invalidResponse": "The admin endpoint returned an invalid session response.",
-      "login.successToast": "Admin session created. Runtime parameters are being read; business configuration must be filled in again in full.",
+      "login.successToast": "Admin session created. The saved configuration is being loaded; only change the fields you need.",
       "login.401": "The CONFIG_ENCRYPTION_KEY value does not match the server, or admin sessions are not enabled. The Redis ACL password is not accepted here.",
       "login.503": "Redis unavailable or initialization incomplete; unable to create an admin session right now. Retry shortly.",
       "login.status": "Unable to create an admin session (HTTP {status}).",
@@ -275,12 +288,12 @@
       "llm.modelPh": "留空表示 null",
       "llm.keyPh": "启用 LLM 时必填；不会回显",
       "business.saveStateInitial": "完成管理会话验证后可填写完整配置。",
-      "business.saveStateReady": "完整填写 BusinessConfigWire 后可提交。密钥不会回显。",
+      "business.saveStateReady": "只提交被修改的字段，未改动的字段保持已保存的值。密钥不会回显。",
       "business.save": "保存业务配置并热加载",
       "business.saveBusy": "正在保存并热加载…",
       "business.saved": "业务配置已保存，新配置已热加载。",
       "business.savedToast": "业务配置已保存并热加载。密钥输入已清空；下次完整替换时需要重新填写。",
-      "business.dirty": "表单包含未提交内容；每次提交会完整替换现有业务配置。",
+      "business.dirty": "表单包含未提交内容；只提交你修改过的字段。",
       "business.unsaved": "未收到保存成功确认；请检查服务状态。",
       "business.submittingToast": "正在提交完整业务配置；后端会先构建客户端，再保存并切换运行实例…",
       "business.preflight": "测试连接",
@@ -361,6 +374,19 @@
       "val.noCreds": "{label} 不能包含用户名或密码。",
       "val.noQuery": "{label} 不能包含查询参数或 #片段。",
       "val.empty": "{label} 不能为空。",
+      "field.set": "已配置",
+      "field.unset": "未配置",
+      "secret.marked": "• {state}。{hint}",
+      "secret.keepEmpty": "留空即保持已保存的值",
+      "secret.keepSet": "留空；已保存的值不变",
+      "secret.mustEnter": "请填写，以创建首次配置",
+      "secret.changed": "将用新值替换已保存的值",
+      "session.readbackToast": "已载入保存的配置。只需修改要改的字段。",
+      "session.firstConfigToast": "尚无可保存的配置。请填写全部字段以创建首次配置。",
+      "session.readbackFailed": "保存的配置未能载入，表单为空。未做任何更改。",
+      "session.readback503": "Redis 中的保存配置暂不可读，请稍后重试；会话仍然有效。",
+      "business.savedRevision": "已保存。版本 {revision}",
+      "business.noChange": "没有内容需要提交——所有字段都与已保存的配置一致。",
       "val.llmUrl": "启用 LLM 时必须填写 Base URL。",
       "val.llmModel": "启用 LLM 时必须填写模型名称。",
       "val.llmKey": "启用 LLM 时必须填写 API key。",
@@ -374,7 +400,7 @@
       "login.enterCred": "请输入 CONFIG_ENCRYPTION_KEY 的值。输入不会写入浏览器存储。",
       "login.creatingToast": "正在创建短期管理会话…",
       "login.invalidResponse": "管理接口返回了无效的会话响应。",
-      "login.successToast": "管理会话已创建。运行参数正在读取；业务配置需要完整重新填写。",
+      "login.successToast": "管理会话已创建。正在载入已保存的配置，只需修改要改的字段。",
       "login.401": "CONFIG_ENCRYPTION_KEY 与服务器配置不一致，或服务尚未启用管理会话。此处不接受 Redis ACL 密码。",
       "login.503": "Redis 不可用或初始化尚未完成，暂时无法创建管理会话。请稍后重试。",
       "login.status": "无法创建管理会话（HTTP {status}）。",
@@ -470,20 +496,6 @@
     }
   }
 
-  // Expose a tiny debug surface for runtime inspection and tests.
-  if (typeof window !== "undefined") {
-    window.__mw = {
-      t,
-      detectLocale,
-      getLocale: () => locale,
-      messages: MESSAGES,
-      joinList,
-      timezones: TIMEZONES,
-      defaultTimezone: DEFAULT_TIMEZONE,
-      readBusinessConfig,
-    };
-  }
-
   applyI18n();
   populateTimezones();
   // ─────────────────────────────────────────────────────────────────────────
@@ -508,6 +520,38 @@
   ]);
   const I64_MIN = -(2n ** 63n);
   const I64_MAX = (2n ** 63n) - 1n;
+
+  /*
+   * Business config read-back + partial submission.
+   *
+   * Secrets are never echoed by the backend: the server returns only a presence
+   * boolean per secret field (SAF-NO-SECRET-ECHO). A blank secret input therefore
+   * means "keep the saved value" and the field is omitted from the request body;
+   * a non-blank value replaces it. There is no way to clear a secret through the UI.
+   *
+   * The first save (no saved configuration yet) is still a full submission.
+   */
+  const SECRET_FIELDS = Object.freeze([
+    Object.freeze({ key: "bot_token", id: "telegram-bot-token" }),
+    Object.freeze({ key: "jmap_password", id: "jmap-password" }),
+    Object.freeze({ key: "telegram_webhook_secret", id: "telegram-webhook-secret" }),
+    Object.freeze({ key: "reconcile_token", id: "reconcile-token" }),
+    Object.freeze({ key: "worker_token", id: "worker-token" }),
+    Object.freeze({ key: "llm_api_key", id: "llm-api-key" }),
+  ]);
+
+  const PLAIN_TEXT_FIELDS = Object.freeze([
+    Object.freeze({ key: "jmap_session_url", id: "jmap-session-url", https: "JMAP Session URL" }),
+    Object.freeze({ key: "jmap_username", id: "jmap-username" }),
+    Object.freeze({ key: "timezone", id: "timezone" }),
+    Object.freeze({ key: "llm_base_url", id: "llm-base-url", optional: true, https: "LLM Base URL" }),
+    Object.freeze({ key: "llm_model", id: "llm-model", optional: true }),
+  ]);
+
+  const PLAIN_BOOL_FIELDS = Object.freeze([
+    Object.freeze({ key: "llm_enabled", id: "llm-enabled" }),
+    Object.freeze({ key: "llm_allow_net", id: "llm-allow-net" }),
+  ]);
 
   const bootstrapInput = document.querySelector("#bootstrap-input");
   const authForm = document.querySelector("#auth-form");
@@ -550,6 +594,13 @@
   let busyAction = "";
   let runtimeLoaded = false;
   let setupMode = true;
+  // Business-config readback from GET /api/business-config. Both null means no
+  // saved configuration exists yet, so submission falls back to the original
+  // full-payload path. `businessBaseline` is the non-secret `values` object
+  // (including nulls); `businessSecretPresence` is the `secrets_present` object.
+  // Secrets themselves are never stored here — only their presence booleans.
+  let businessBaseline = null;
+  let businessSecretPresence = null;
 
   class ApiError extends Error {
     constructor(status, message) {
@@ -721,6 +772,7 @@
     businessFields.disabled = true;
     runtimeSaveState.textContent = t("runtime.saveStateInitial");
     businessSaveState.textContent = t("business.saveStateInitial");
+    resetBusinessReadback();
     updateLLMRequirements();
   }
 
@@ -998,6 +1050,189 @@
     document.querySelector("#llm-model-required").textContent = mark;
   }
 
+  // --- Business-config readback (GET /api/business-config) ----------------
+  //
+  // The server stores a BusinessConfig in Redis. Re-logging in must not force
+  // the operator to re-enter everything, so the SPA reads the saved config back
+  // after a session is created, shows which secrets are already stored, pre-fills
+  // the non-secret fields, and submits only the fields the operator changed.
+  //
+  // Secret values are never echoed by the backend (charter SAF-NO-SECRET-ECHO),
+  // so a secret field is always blank. A blank secret therefore means "keep the
+  // stored value" and is omitted from the patch; a non-blank one replaces it.
+
+  function isRecord(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function resetBusinessReadback() {
+    businessBaseline = null;
+    businessSecretPresence = null;
+    renderSecretMarkers();
+  }
+
+  function renderSecretMarkers() {
+    for (const field of SECRET_FIELDS) {
+      const marker = document.getElementById(`secret-marker-${field.key}`);
+      if (!marker) continue;
+      const input = document.getElementById(field.id);
+      const presence = Boolean(businessSecretPresence && businessSecretPresence[field.key]);
+      const blank = !input || isBlank(input.value);
+      const state = presence ? t("field.set") : t("field.unset");
+      const hint = !presence
+        ? t("secret.mustEnter")
+        : (blank ? t("secret.keepSet") : t("secret.changed"));
+      marker.textContent = t("secret.marked", { state, hint });
+      marker.classList.toggle("is-unset", !presence);
+    }
+  }
+
+  function applyBusinessReadback(readback) {
+    businessBaseline = isRecord(readback && readback.values) ? readback.values : {};
+    businessSecretPresence = isRecord(readback && readback.secrets_present)
+      ? readback.secrets_present
+      : {};
+    for (const field of PLAIN_TEXT_FIELDS) {
+      const input = document.getElementById(field.id);
+      if (!input) continue;
+      const value = businessBaseline[field.key];
+      input.value = typeof value === "string" ? value : "";
+    }
+    // telegram_chat_id is a single numeric value, not a list, so it gets its own
+    // treatment rather than living in PLAIN_TEXT_FIELDS.
+    const chatIdInput = document.getElementById("telegram-chat-id");
+    if (chatIdInput) {
+      const value = businessBaseline.telegram_chat_id;
+      chatIdInput.value = typeof value === "string" ? value : (value === undefined ? "" : String(value));
+    }
+    const allowlistValue = businessBaseline.chat_allowlist;
+    const allowlistInput = document.getElementById("chat-allowlist");
+    if (allowlistInput) {
+      // Comma-separated, not `joinList`: `parseAllowlist` only splits on commas
+      // and whitespace, so a locale separator would parse as one invalid entry.
+      allowlistInput.value = Array.isArray(allowlistValue) ? allowlistValue.join(", ") : "";
+    }
+    for (const field of PLAIN_BOOL_FIELDS) {
+      const input = document.getElementById(field.id);
+      if (input) input.checked = businessBaseline[field.key] === true;
+    }
+    updateLLMRequirements();
+    // A stored configuration makes every secret optional: blank keeps the stored
+    // value, so native `required` would wrongly block a partial save. Same for the
+    // LLM text fields, which are already stored server-side. Apply this after the
+    // toggle above so a change-event handler cannot re-enable it.
+    for (const field of SECRET_FIELDS) {
+      const input = document.getElementById(field.id);
+      if (!input) continue;
+      input.value = "";
+      input.required = false;
+      // The original placeholder says "re-enter on each full save"; with a stored
+      // configuration the common action is to leave the field blank, so swap it.
+      input.placeholder = t("secret.keepEmpty");
+    }
+    llmApiKey.required = false;
+    llmBaseUrl.required = false;
+    llmModel.required = false;
+    renderSecretMarkers();
+  }
+
+  // Build the changed-fields patch from the pre-filled form. Blank secrets are
+  // omitted (keep the stored value); text fields are omitted when they still
+  // match the baseline. Returns null after marking a field invalid.
+  function businessPatchFromForm() {
+    clearCustomValidity(businessForm);
+    const baseline = isRecord(businessBaseline) ? businessBaseline : {};
+    const patch = {};
+    try {
+      for (const field of SECRET_FIELDS) {
+        const input = document.getElementById(field.id);
+        if (!input) continue;
+        const value = input.value.trim();
+        if (value !== "") patch[field.key] = value;
+      }
+
+      // LLM text fields (base URL, model) and the LLM API key are handled by the
+      // loops below like any other field: they are compared to the stored values,
+      // and the key is submitted only when the operator typed a new one. Turning
+      // LLM off needs no text change — the flag alone is enough, and the stored
+      // URL and model simply stop being used.
+      if (llmEnabled.checked !== Boolean(baseline.llm_enabled)) {
+        patch.llm_enabled = llmEnabled.checked;
+      }
+      const allowNetInput = document.getElementById("llm-allow-net");
+      if (allowNetInput && allowNetInput.checked !== Boolean(baseline.llm_allow_net)) {
+        patch.llm_allow_net = allowNetInput.checked;
+      }
+
+      for (const field of PLAIN_TEXT_FIELDS) {
+        const input = document.getElementById(field.id);
+        if (!input) continue;
+        const value = input.value.trim();
+        const stored = baseline[field.key];
+        // A required text field blank means "leave the stored value alone", so a
+        // partial save can never accidentally delete one.
+        if (value === "" && !field.optional) continue;
+        // Clearing an optional field only matters when there was a value to clear;
+        // an empty-and-absent field is already null on the server.
+        if (value === "" && (stored === undefined || stored === null || stored === "")) continue;
+        if (value === stored) continue;
+        if (field.https && !validateHttpsUrl(input, field.https)) return null;
+        patch[field.key] = value === "" ? null : value;
+      }
+
+      const allowlistInput = document.getElementById("chat-allowlist");
+      if (!isBlank(allowlistInput.value)) {
+        const allowlist = parseAllowlist(allowlistInput);
+        const savedList = Array.isArray(baseline.chat_allowlist)
+          ? baseline.chat_allowlist.map((item) => String(item))
+          : [];
+        const nextList = allowlist.map((item) => item.toString());
+        const fingerprint = (values) => values.slice().sort().join(",");
+        if (fingerprint(nextList) !== fingerprint(savedList)) {
+          patch.chat_allowlist = allowlist;
+        }
+      }
+
+      const chatIdInput = document.getElementById("telegram-chat-id");
+      if (!isBlank(chatIdInput.value)) {
+        const chatId = parseI64(chatIdInput, t("telegram.chatLabel")).toString();
+        if (chatId !== String(baseline.telegram_chat_id ?? "")) patch.telegram_chat_id = chatId;
+      }
+
+      return patch;
+    } catch (error) {
+      if (error.message === "invalid-field") return null;
+      throw error;
+    }
+  }
+
+  async function loadBusinessConfig(options = {}) {
+    const { toast = true } = options;
+    try {
+      const readback = await request("/api/business-config", "GET");
+      if (readback && readback.configured === true) {
+        applyBusinessReadback(readback);
+        if (toast) showNotice("info", t("session.readbackToast"));
+      } else {
+        resetBusinessReadback();
+        updateLLMRequirements();
+        if (toast) showNotice("info", t("session.firstConfigToast"));
+      }
+      return true;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        expireSession(t("session.invalidBusiness"));
+        return false;
+      }
+      if (error instanceof ApiError && error.status === 503) {
+        showNotice("error", t("session.readback503"));
+        return false;
+      }
+      showNotice("error", t("session.readbackFailed"));
+      return false;
+    }
+  }
+
   authForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (busyAction) return;
@@ -1027,6 +1262,7 @@
       showNotice("success", t("login.successToast"));
       await loadRuntimeConfig();
       await loadEnabled();
+      await loadBusinessConfig();
     } catch (error) {
       bootstrapCredential = "";
       setBusy("");
@@ -1082,6 +1318,8 @@
 
   businessForm.addEventListener("input", (event) => {
     event.target.setCustomValidity("");
+    // A typed secret value replaces the stored one; a cleared one restores it.
+    if (businessSecretPresence) renderSecretMarkers();
     if (!adminSession) return;
     businessSaveState.textContent = t("business.dirty");
     businessSaveState.classList.add("is-dirty");
@@ -1158,12 +1396,19 @@
   businessForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!adminSession || busyAction) return;
-    const config = readBusinessConfig();
-    if (!config) return;
+    // With a stored configuration the form is pre-filled, so only the changed
+    // fields are sent. Without one, every field is required as before.
+    const patch = businessBaseline === null ? readBusinessConfig() : businessPatchFromForm();
+    if (!patch) return;
+    if (businessBaseline !== null && Object.keys(patch).length === 0) {
+      businessSaveState.textContent = t("business.noChange");
+      businessSaveState.classList.remove("is-dirty");
+      return;
+    }
     setBusy("business-save");
     showNotice("info", t("business.submittingToast"));
     try {
-      const result = await request("/api/business-config", "PUT", stringifyWithBigInt(config));
+      const result = await request("/api/business-config", "PUT", stringifyWithBigInt(patch));
       clearSecretFields();
       // Saving and applying are separate outcomes: the backend persists a validated
       // configuration even when no client could be built, so "saved" alone would overclaim.
@@ -1178,11 +1423,18 @@
         businessSaveState.classList.add("is-warn");
         showNotice("info", text);
       } else {
-        businessSaveState.textContent = t("business.saved");
+        const revision = typeof result && typeof result.revision === "number"
+          ? t("business.savedRevision", { revision: result.revision })
+          : "";
+        const text = [t("business.saved"), revision].filter(Boolean).join(" ");
+        businessSaveState.textContent = text;
         businessSaveState.classList.remove("is-dirty");
-        showNotice("success", t("business.savedToast"));
+        showNotice("success", text);
       }
       updateButtons();
+      // Refresh the authoritative baseline so the markers and pre-filled values
+      // reflect what was just stored. No toast: the save confirmation is enough.
+      await loadBusinessConfig({ toast: false });
     } catch (error) {
       if (error.status === 401) {
         expireSession(t("session.invalidBusiness"));
@@ -1238,4 +1490,27 @@
   showSetupStatus();
   updateLLMRequirements();
   updateButtons();
+
+  // Expose a tiny debug surface for runtime inspection and tests. Declared last
+  // so it can close over every state variable, including the business-config
+  // readback baseline.
+  if (typeof window !== "undefined") {
+    window.__mw = {
+      t,
+      detectLocale,
+      getLocale: () => locale,
+      messages: MESSAGES,
+      joinList,
+      timezones: TIMEZONES,
+      defaultTimezone: DEFAULT_TIMEZONE,
+      readBusinessConfig,
+      applyBusinessReadback,
+      businessPatchFromForm,
+      renderSecretMarkers,
+      resetBusinessReadback,
+      get businessBaseline() { return businessBaseline; },
+      get businessSecretPresence() { return businessSecretPresence; },
+      fields: { secrets: SECRET_FIELDS, text: PLAIN_TEXT_FIELDS, bool: PLAIN_BOOL_FIELDS },
+    };
+  }
 })();

@@ -4,7 +4,7 @@ use axum::{
     extract::State,
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Json, Response},
-    routing::{get, post, put},
+    routing::{get, post},
     Router,
 };
 use ring::rand::SecureRandom;
@@ -22,7 +22,8 @@ use subtle::ConstantTimeEq;
 use crate::ai::LlmClient;
 use crate::channel::telegram::TelegramClient;
 use crate::config::{
-    session_digest, validate_business_wire, AuthSecrets, BusinessConfig, BusinessConfigWire,
+    session_digest, validate_business_wire, AuthSecrets, BusinessConfig, BusinessConfigPatch,
+    BusinessConfigReadback, BusinessConfigWire,
 };
 use crate::domain::jmap::{client::JmapClientBackend, JmapService};
 use crate::error::BotError;
@@ -591,7 +592,72 @@ async fn business_enabled(app: &AppState) -> bool {
     app.state.is_enabled().await.unwrap_or(false)
 }
 
-/// Replace the complete encrypted business configuration.
+/// What the next business-config write needs to know about what is stored.
+///
+/// `Unreachable` and `Invalid` are kept distinct from `Absent`: both read as "nothing there",
+/// but a patch merged over `Absent` would overwrite a configuration that is only unreachable or
+/// unreadable, so either one refuses the write instead of silently truncating it.
+enum StoredBusinessConfig {
+    /// Nothing has ever been saved, so a patch has nothing to fall back onto.
+    Absent,
+    /// A stored configuration a patch can merge over.
+    Loaded(Box<BusinessConfigWire>),
+    /// The store could not be read: a partial write would destroy what is there.
+    Unreachable,
+    /// Something is stored but no longer parses as a wire: report it, never overwrite it as empty.
+    Invalid,
+}
+
+async fn read_stored_business_config(state: &Arc<dyn ReliableState>) -> StoredBusinessConfig {
+    match state.get_business_config().await {
+        Ok(None) => StoredBusinessConfig::Absent,
+        Ok(Some(value)) => match serde_json::from_value::<BusinessConfigWire>(value) {
+            Ok(wire) => StoredBusinessConfig::Loaded(Box::new(wire)),
+            Err(_) => StoredBusinessConfig::Invalid,
+        },
+        Err(_) => StoredBusinessConfig::Unreachable,
+    }
+}
+
+/// Read the stored business configuration back to the SPA: the plaintext fields it needs to
+/// change one thing without retyping the rest, plus a presence flag per secret. Never 404 — an
+/// operator with nothing saved still gets 200 with `configured: false`, so the SPA needs one code
+/// path instead of two.
+async fn get_business_config(State(app): State<AppState>, headers: HeaderMap) -> Response {
+    refresh_business_config(&app).await;
+    if !config_authorized(&app, &headers).await {
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
+    }
+    let revision = match app.state.business_config_revision().await {
+        Ok(revision) => revision,
+        Err(_) => {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true)
+        }
+    };
+    match read_stored_business_config(&app.state).await {
+        StoredBusinessConfig::Unreachable => {
+            error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true)
+        }
+        StoredBusinessConfig::Invalid => error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_configuration",
+            false,
+        ),
+        StoredBusinessConfig::Absent => {
+            (StatusCode::OK, Json(BusinessConfigReadback::absent())).into_response()
+        }
+        StoredBusinessConfig::Loaded(wire) => (
+            StatusCode::OK,
+            Json(BusinessConfigReadback::from_wire(revision, &wire)),
+        )
+            .into_response(),
+    }
+}
+
+/// Submit the business configuration, either in full or as a partial patch: the fields the client
+/// names replace the stored ones and everything else is kept, so an operator can change one value
+/// without retyping the whole configuration. Secrets are replace-only, which is also what lets the
+/// SPA keep the stored value by sending nothing at all.
 ///
 /// Persistence is gated by *validation*, not by connectivity. A configuration that is
 /// syntactically valid is always written, even if no client can currently be built for it:
@@ -619,7 +685,30 @@ async fn put_business_config(
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
     };
-    let Ok(wire) = serde_json::from_value::<BusinessConfigWire>(value.clone()) else {
+    let Ok(patch) = serde_json::from_value::<BusinessConfigPatch>(value) else {
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_configuration",
+            false,
+        );
+    };
+    // Merge first, then validate the result. A patch is never validated on its own: a
+    // one-field edit must be rejected when the configuration it becomes is invalid.
+    let merged = match read_stored_business_config(&app.state).await {
+        StoredBusinessConfig::Unreachable => {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true)
+        }
+        StoredBusinessConfig::Invalid => {
+            return error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_configuration",
+                false,
+            )
+        }
+        StoredBusinessConfig::Loaded(stored) => patch.apply(Some(&stored)),
+        StoredBusinessConfig::Absent => patch.apply(None),
+    };
+    let Some(wire) = merged else {
         return error_response(
             StatusCode::UNPROCESSABLE_ENTITY,
             "invalid_configuration",
@@ -633,6 +722,12 @@ async fn put_business_config(
             false,
         );
     }
+    // Persist the merged wire, not the request body: a patch carries only the fields it changed,
+    // so writing the body back would silently drop the rest of the configuration. `try_into`
+    // moves `wire`, so the value is taken first.
+    let Ok(value) = serde_json::to_value(&wire) else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", true);
+    };
     let Ok(config): Result<BusinessConfig, _> = wire.try_into() else {
         return error_response(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1609,7 +1704,10 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
         .route("/worker", post(worker))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/enabled", get(get_enabled).put(put_enabled))
-        .route("/api/business-config", put(put_business_config))
+        .route(
+            "/api/business-config",
+            get(get_business_config).put(put_business_config),
+        )
         .route(
             "/api/business-config/preflight",
             post(preflight_business_config),
@@ -1809,6 +1907,7 @@ mod tests {
             ("GET", "/api/config"),
             ("GET", "/api/enabled"),
             ("POST", "/api/business-config"),
+            ("GET", "/api/business-config"),
             ("POST", "/api/bootstrap"),
             ("POST", "/api/admin/session"),
             ("POST", "/api/admin/session/revoke"),

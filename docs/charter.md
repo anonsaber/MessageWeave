@@ -116,7 +116,7 @@ cd /home/okabe/Repo/messageweave && docker run --rm --user 1000:1000 \
   bash -lc 'export PATH=/usr/local/cargo/bin:$PATH; cargo fmt --all -- --check && cargo check --locked && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked 2>&1 | tail -12'
 ```
 
-**当前基线：69 passed / 0 failed / 1 ignored**（2026-09-29 复测；唯一 ignored：`real_server_tests::session_list_and_read_smoke`，需外部真实 JMAP 服务器）。
+**当前基线：77 passed / 0 failed / 2 ignored**（2026-09-29 复测；ignored：`real_server_tests::session_list_and_read_smoke` 与 `debug::tests::debug_config_reports_timezone_of_business_configured_app`，均需外部真实 JMAP 服务器凭据）。
 
 **注意**：`docker run` 的 bash `-lc` 脚本必须用**单引号**包裹。用双引号会先在宿主机展开 `$PWD` / `$PATH`，容器内找不到 cargo。
 
@@ -160,7 +160,7 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 已连接。真实环境集成测试必须用 `#[ignore]` 标注，缺凭据时静默跳过（不泄露凭据、不判失败）。
 
 **环境阻塞项**（未验证，不得声称已验证）见 [`opengaps.md`](opengaps.md)「阻塞」区：
-`Email/changes` 的 `newState` 语义、五个键的 TTL 实测。
+`Email/changes` 的 `newState` 语义、TTL 数值实测（12 个写入点 / 17 个值）。
 
 ## 7. 文档边界
 

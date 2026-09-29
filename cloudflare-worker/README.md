@@ -54,7 +54,7 @@
   有 ≥1 后端 up → 200；全部 down → 503。
 - **不代理 Redis/JMAP**：Worker 不做数据库侧检查；后端端到端就绪（配置完整性 + Redis 可达 + JMAP session + Telegram getMe，对应 `ARCH-READY-BASELINE`）由 `/ready`（透传）承担。
 
-### 无长连接 / 无密钥日志（§4 红线）
+### 无长连接 / 无密钥日志（§3/§5 红线）
 - 不使用 WebSocket/SSE/长轮询（`C-NO-LONG-CONN`）：纯请求-响应转发，body 一次性 `arrayBuffer` 回灌。
 - 日志只打「方法 / 路径 / origin / 失败类别」；**绝不**打印 header / body / 鉴权 secret / App Password（`SAF-LOG-PURITY`）。
 

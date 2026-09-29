@@ -89,6 +89,60 @@ test("Worker: business config PUT is forwarded with the session bearer and empty
   }
 });
 
+test("Worker: business config read-back GET and preflight POST are both forwarded", async () => {
+  const seen = [];
+  const restore = stubFetch(async (url, init) => {
+    seen.push([String(url), init.method]);
+    return new Response(JSON.stringify({ configured: false }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+  try {
+    const readback = await handleFetch(
+      new Request("https://lb.example/api/business-config", { method: "GET" }),
+      makeEnv(),
+    );
+    assert.equal(readback.status, 200);
+    assert.deepEqual(await readback.json(), { configured: false });
+
+    const preflight = await handleFetch(
+      new Request("https://lb.example/api/business-config/preflight", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+      makeEnv(),
+    );
+    assert.equal(preflight.status, 200);
+
+    assert.equal(seen.length, 2);
+    assert.equal(seen[0][0], "https://a.example/api/business-config");
+    assert.equal(seen[0][1], "GET");
+    assert.equal(seen[1][0], "https://a.example/api/business-config/preflight");
+    assert.equal(seen[1][1], "POST");
+  } finally {
+    restore();
+  }
+});
+
+test("Worker: only GET/PUT reach /api/business-config and only POST reaches preflight (SAF-LB-PASSTHRU)", async () => {
+  for (const method of ["DELETE", "PATCH"]) {
+    const res = await handleFetch(
+      new Request("https://lb.example/api/business-config", { method }),
+      makeEnv(),
+    );
+    assert.equal(res.status, 405, `${method} /api/business-config must stay blocked`);
+    assert.equal(res.headers.get("allow"), "GET, PUT");
+  }
+  const res = await handleFetch(
+    new Request("https://lb.example/api/business-config/preflight", { method: "GET" }),
+    makeEnv(),
+  );
+  assert.equal(res.status, 405, "preflight is POST only");
+  assert.equal(res.headers.get("allow"), "POST");
+});
+
 test("Worker: public setup status is forwarded without an authorization header", async () => {
   const restore = stubFetch(async (url, init) => {
     assert.match(url, /^https:\/\/(a|b)\.example\/api\/status$/);

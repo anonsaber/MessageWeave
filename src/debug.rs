@@ -113,6 +113,7 @@ async fn debug_config(State(app): State<AppState>, headers: HeaderMap) -> Respon
             "setup_missing": setup_missing,
             "business_configured": true,
             "allowlist_size": allowlist_size,
+            "timezone": config.timezone,
             "jmap": {
                 "session_url": config.jmap_session_url,
                 "username": config.jmap_username,
@@ -260,7 +261,7 @@ mod tests {
     use super::*;
     use crate::config::AuthSecrets;
     use crate::notify::router_with_worker_state_runtime_bootstrap;
-    use crate::state::{runtime_provider, MemoryState, OutboundConfig};
+    use crate::state::{runtime_provider, MemoryState, OutboundConfig, ReliableState};
     use crate::worker::NoopWorker;
     use axum::{
         body::Body,
@@ -275,20 +276,123 @@ mod tests {
 
     /// Router built through the real dual-factor wiring: debug routes are merged only when the
     /// caller passes a `debug_token` (SAF-DEBUG-GATE).
-    fn bootstrap_router(debug_token: Option<SecretString>) -> Router {
+    fn bootstrap_router_with_state<S: crate::state::ReliableState + 'static>(
+        debug_token: Option<SecretString>,
+        state: S,
+    ) -> Router {
         router_with_worker_state_runtime_bootstrap(
             AuthSecrets {
                 reconcile_token: SecretString::new("reconcile-secret".into()),
                 telegram_webhook_secret: SecretString::new("telegram-secret".into()),
             },
             SecretString::new("worker-secret".into()),
-            MemoryState::enabled_for_tests(),
+            state,
             HashSet::new(),
             Arc::new(NoopWorker),
             runtime_provider(OutboundConfig::default()),
             SecretString::new(String::new()),
             debug_token,
         )
+    }
+
+    fn bootstrap_router(debug_token: Option<SecretString>) -> Router {
+        bootstrap_router_with_state(debug_token, MemoryState::enabled_for_tests())
+    }
+
+    /// SAF-DEBUG-AUTH regression guard for the populated branch of `debug_config`: the timezone
+    /// is a plain value the SPA writes, so it is echoed back for verification, while every
+    /// credential stays a presence flag. It drives the whole chain — persisted wire →
+    /// `refresh_business_config` → `build_worker` → `business_runtime` → `/debug/config` — so a
+    /// silently dropped timezone fails here instead of in production.
+    ///
+    /// Opt-in like the JMAP smoke test: `business_runtime` is only populated after `build_worker`
+    /// succeeds, and both `validate_business_wire` and `normalize_session_url` refuse a
+    /// non-HTTPS session URL, so no localhost mock can stand in for a real session. Run with
+    /// `JMAP_SESSION_URL`, `JMAP_USERNAME` and `JMAP_PASSWORD` set (and `ACCOUNT_ID` if the
+    /// account is not the session's primary one).
+    #[tokio::test]
+    #[ignore = "requires an explicitly configured JMAP test server"]
+    async fn debug_config_reports_timezone_of_business_configured_app() {
+        let Some(session_url) = std::env::var("JMAP_SESSION_URL").ok() else {
+            eprintln!("skipped: JMAP_SESSION_URL is not configured");
+            return;
+        };
+        let Some(username) = std::env::var("JMAP_USERNAME").ok() else {
+            eprintln!("skipped: JMAP_USERNAME is not configured");
+            return;
+        };
+        let Some(password) = std::env::var("JMAP_PASSWORD").ok() else {
+            eprintln!("skipped: JMAP_PASSWORD is not configured");
+            return;
+        };
+        let account_id: serde_json::Value = match std::env::var("ACCOUNT_ID") {
+            Ok(value) => serde_json::Value::String(value),
+            Err(_) => serde_json::Value::Null,
+        };
+
+        // A negative supergroup chat id: Telegram ids are i64 and this one overflows an i32.
+        let chat_id = -5_260_770_881_i64;
+        let wire = serde_json::json!({
+            "bot_token": "bot-secret-value",
+            "telegram_chat_id": serde_json::Number::from(chat_id),
+            "chat_allowlist": [42],
+            "telegram_webhook_secret": "hook-secret-value",
+            "timezone": "Asia/Tokyo",
+            "jmap_session_url": session_url.clone(),
+            "jmap_username": username.clone(),
+            "jmap_password": password.clone(),
+            "account_id": account_id,
+            "llm_enabled": false,
+            "llm_allow_net": false,
+            "llm_api_key": null,
+            "llm_base_url": null,
+            "llm_model": null,
+            "reconcile_token": "reconcile-secret-value",
+            "worker_token": "worker-secret-value",
+        });
+
+        let state = MemoryState::enabled_for_tests();
+        state.set_business_config(&wire).await.unwrap();
+        let router =
+            bootstrap_router_with_state(Some(SecretString::new(DEBUG_TOKEN.to_string())), state);
+        let (status, value) = debug_get_json(router).await;
+        let body = value.to_string();
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["business_configured"], serde_json::json!(true));
+        // The plaintext read-back is exactly what makes the timezone verifiable in production.
+        assert_eq!(value["timezone"], serde_json::json!("Asia/Tokyo"));
+        assert!(body.contains(&format!("\"session_url\":\"{session_url}\"")));
+        assert!(body.contains(&format!("\"chat_id\":{chat_id}")));
+        assert!(body.contains(&format!("\"username\":\"{username}\"")));
+        assert!(value["jmap"].get("account_id").is_some());
+        assert_eq!(value["allowlist_size"], serde_json::json!(1));
+        assert_eq!(
+            value["worker"]["reconcile_token_configured"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            value["worker"]["worker_token_configured"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            value["telegram"]["webhook_secret_configured"],
+            serde_json::json!(true)
+        );
+        assert_eq!(value["llm"]["api_key_configured"], serde_json::json!(false));
+
+        // SAF-DEBUG-AUTH: the fields exist, but no credential value may appear in the body.
+        for secret in [
+            "bot-secret-value",
+            "hook-secret-value",
+            &password,
+            "reconcile-secret-value",
+            "worker-secret-value",
+            "reconcile-secret",
+            "telegram-secret",
+        ] {
+            assert!(!body.contains(secret), "credential value leaked: {secret}");
+        }
     }
 
     async fn get(uri: &str, authorization: Option<&str>) -> (StatusCode, String) {
@@ -306,6 +410,26 @@ mod tests {
             .await
             .unwrap();
         (status, String::from_utf8_lossy(&body).to_string())
+    }
+
+    /// `/debug/config` against an already-built router, decoded as JSON so callers can assert on
+    /// individual fields rather than substrings.
+    async fn debug_get_json(router: Router) -> (StatusCode, serde_json::Value) {
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/debug/config")
+                    .header("authorization", format!("Bearer {DEBUG_TOKEN}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
     }
 
     /// POST variant: the notification route is `POST`-only, so a GET would be a 405 rather than

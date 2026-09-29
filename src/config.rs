@@ -220,6 +220,258 @@ impl From<BusinessConfig> for BusinessConfigWire {
     }
 }
 
+/// Partial business configuration submitted by `PUT /api/business-config`: a field the client
+/// does not name keeps the stored value, so an operator can change one thing without retyping
+/// the whole configuration.
+///
+/// The field list mirrors `BusinessConfigWire` field for field — `apply` builds a wire from these,
+/// so adding a field to the wire without adding it here fails to compile instead of silently
+/// freezing the new setting at its stored value. Secrets are replace-only: `validate_business_wire`
+/// rejects a blank secret, so there is deliberately no way to clear one and no way for the SPA to
+/// learn what it is holding.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BusinessConfigPatch {
+    #[serde(default)]
+    pub bot_token: Option<String>,
+    #[serde(default, deserialize_with = "de_i64_from_number_or_string")]
+    pub telegram_chat_id: Option<i64>,
+    #[serde(default)]
+    pub chat_allowlist: Option<Vec<i64>>,
+    #[serde(default)]
+    pub telegram_webhook_secret: Option<String>,
+    #[serde(default)]
+    pub timezone: Option<String>,
+    #[serde(default)]
+    pub jmap_session_url: Option<String>,
+    #[serde(default)]
+    pub jmap_username: Option<String>,
+    #[serde(default)]
+    pub jmap_password: Option<String>,
+    #[serde(default)]
+    pub account_id: Option<Option<String>>,
+    #[serde(default)]
+    pub llm_enabled: Option<bool>,
+    #[serde(default)]
+    pub llm_allow_net: Option<bool>,
+    #[serde(default)]
+    pub llm_api_key: Option<Option<String>>,
+    #[serde(default)]
+    pub llm_base_url: Option<Option<String>>,
+    #[serde(default)]
+    pub llm_model: Option<Option<String>>,
+    #[serde(default)]
+    pub reconcile_token: Option<String>,
+    #[serde(default)]
+    pub worker_token: Option<String>,
+}
+
+/// `telegram_chat_id` arrives as a JSON number on a full submit but as a numeric string on a
+/// partial one (`web/config.js` stringifies the `BigInt` to keep the value exact). Both shapes are
+/// accepted; anything else is rejected rather than coerced.
+fn de_i64_from_number_or_string<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    use serde::Deserialize;
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(serde_json::Value::Number(number)) => number
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| D::Error::invalid_value(serde::de::Unexpected::Other("number"), &"i64")),
+        Some(serde_json::Value::String(text)) => text
+            .trim()
+            .parse()
+            .map(Some)
+            .map_err(|_| D::Error::invalid_value(serde::de::Unexpected::Str(&text), &"i64")),
+        Some(_) => Err(D::Error::invalid_type(
+            serde::de::Unexpected::Other("not a chat id"),
+            &"i64",
+        )),
+    }
+}
+
+/// Everything the SPA may need to display as already configured: only the plaintext fields.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BusinessConfigValues {
+    pub jmap_session_url: String,
+    pub jmap_username: String,
+    pub account_id: Option<String>,
+    pub timezone: String,
+    pub telegram_chat_id: Option<i64>,
+    pub chat_allowlist: Vec<i64>,
+    pub llm_enabled: bool,
+    pub llm_allow_net: bool,
+    pub llm_base_url: Option<String>,
+    pub llm_model: Option<String>,
+}
+
+/// One presence flag per secret: `true` means the SPA can hide the field and show "saved, click to
+/// replace" without ever receiving the value (SAF-NO-SECRET-ECHO). This type is response-only —
+/// it is deliberately not deserializable, so a client-supplied `secrets_present` block can never
+/// influence what gets stored.
+#[derive(Debug, Default, serde::Serialize)]
+pub(crate) struct BusinessConfigSecrets {
+    pub bot_token: bool,
+    pub jmap_password: bool,
+    pub telegram_webhook_secret: bool,
+    pub reconcile_token: bool,
+    pub worker_token: bool,
+    pub llm_api_key: bool,
+}
+
+/// Read-back shape for `GET /api/business-config`. The response is built from the private wire one
+/// field at a time, so no `SecretString` is ever in reach of the JSON encoder — the same pattern the
+/// debug surface uses for its `*_configured` flags.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BusinessConfigReadback {
+    pub configured: bool,
+    pub revision: u64,
+    pub values: BusinessConfigValues,
+    pub secrets_present: BusinessConfigSecrets,
+}
+
+impl BusinessConfigValues {
+    /// Empty values reported when nothing has been saved yet. `chat_allowlist` is `[]` and the
+    /// optional strings are `null` so the SPA can treat both the same; `timezone` carries the
+    /// default because that is the zone the backend would actually render.
+    fn empty() -> Self {
+        Self {
+            jmap_session_url: String::new(),
+            jmap_username: String::new(),
+            account_id: None,
+            timezone: default_timezone(),
+            telegram_chat_id: None,
+            chat_allowlist: Vec::new(),
+            llm_enabled: false,
+            llm_allow_net: false,
+            llm_base_url: None,
+            llm_model: None,
+        }
+    }
+}
+
+impl BusinessConfigReadback {
+    /// Read-back for a stored configuration.
+    pub(crate) fn from_wire(revision: u64, wire: &BusinessConfigWire) -> Self {
+        Self {
+            configured: true,
+            revision,
+            values: BusinessConfigValues {
+                jmap_session_url: wire.jmap_session_url.clone(),
+                jmap_username: wire.jmap_username.clone(),
+                account_id: wire.account_id.clone(),
+                timezone: wire.timezone.clone(),
+                telegram_chat_id: Some(wire.telegram_chat_id),
+                chat_allowlist: wire.chat_allowlist.clone(),
+                llm_enabled: wire.llm_enabled,
+                llm_allow_net: wire.llm_allow_net,
+                llm_base_url: wire.llm_base_url.clone(),
+                llm_model: wire.llm_model.clone(),
+            },
+            secrets_present: BusinessConfigSecrets {
+                bot_token: !wire.bot_token.trim().is_empty(),
+                jmap_password: !wire.jmap_password.trim().is_empty(),
+                telegram_webhook_secret: !wire.telegram_webhook_secret.trim().is_empty(),
+                reconcile_token: !wire.reconcile_token.trim().is_empty(),
+                worker_token: !wire.worker_token.trim().is_empty(),
+                llm_api_key: wire
+                    .llm_api_key
+                    .as_deref()
+                    .is_some_and(|key| !key.trim().is_empty()),
+            },
+        }
+    }
+
+    /// Read-back when nothing has been saved yet. Still 200, so the SPA has one code path.
+    pub(crate) fn absent() -> Self {
+        Self {
+            configured: false,
+            revision: 0,
+            values: BusinessConfigValues::empty(),
+            secrets_present: BusinessConfigSecrets::default(),
+        }
+    }
+}
+
+impl BusinessConfigPatch {
+    /// A patch that is a complete configuration on its own, so it can be the very first one.
+    ///
+    /// The four `Option<Option<String>>` fields are exempt: `None` is a legal stored value for
+    /// them. Everything else must be named on a first save, because `BusinessConfigWire` would
+    /// either fill one in silently (`timezone`) or fail after the merge is assembled — both of
+    /// which would hide that a fragment was submitted where a full configuration was required.
+    fn is_complete(&self) -> bool {
+        self.bot_token.is_some()
+            && self.telegram_chat_id.is_some()
+            && self.chat_allowlist.is_some()
+            && self.telegram_webhook_secret.is_some()
+            && self.timezone.is_some()
+            && self.jmap_session_url.is_some()
+            && self.jmap_username.is_some()
+            && self.jmap_password.is_some()
+            && self.llm_enabled.is_some()
+            && self.llm_allow_net.is_some()
+            && self.reconcile_token.is_some()
+            && self.worker_token.is_some()
+    }
+
+    /// Merge the patch over the stored configuration.
+    ///
+    /// Only fields the patch actually names move; everything else keeps its stored value. Secrets
+    /// are replace-only, so this never turns a stored secret into a blank one. Returns `None` only
+    /// for a fragment submitted before anything is stored — in that case there is nothing to fall
+    /// back to, so the handler reports it rather than persisting a partial configuration.
+    pub(crate) fn apply(self, stored: Option<&BusinessConfigWire>) -> Option<BusinessConfigWire> {
+        if stored.is_none() && !self.is_complete() {
+            return None;
+        }
+        // `stored` is `None` only with a complete patch, where every field below is present, so the
+        // fallback is only ever read when it exists.
+        let fallback = stored.expect("an omitted field implies a stored configuration exists");
+        Some(BusinessConfigWire {
+            bot_token: self.bot_token.unwrap_or_else(|| fallback.bot_token.clone()),
+            telegram_chat_id: self.telegram_chat_id.unwrap_or(fallback.telegram_chat_id),
+            chat_allowlist: self
+                .chat_allowlist
+                .unwrap_or_else(|| fallback.chat_allowlist.clone()),
+            telegram_webhook_secret: self
+                .telegram_webhook_secret
+                .unwrap_or_else(|| fallback.telegram_webhook_secret.clone()),
+            timezone: self.timezone.unwrap_or_else(|| fallback.timezone.clone()),
+            jmap_session_url: self
+                .jmap_session_url
+                .unwrap_or_else(|| fallback.jmap_session_url.clone()),
+            jmap_username: self
+                .jmap_username
+                .unwrap_or_else(|| fallback.jmap_username.clone()),
+            jmap_password: self
+                .jmap_password
+                .unwrap_or_else(|| fallback.jmap_password.clone()),
+            account_id: self
+                .account_id
+                .unwrap_or_else(|| fallback.account_id.clone()),
+            llm_enabled: self.llm_enabled.unwrap_or(fallback.llm_enabled),
+            llm_allow_net: self.llm_allow_net.unwrap_or(fallback.llm_allow_net),
+            llm_api_key: self
+                .llm_api_key
+                .unwrap_or_else(|| fallback.llm_api_key.clone()),
+            llm_base_url: self
+                .llm_base_url
+                .unwrap_or_else(|| fallback.llm_base_url.clone()),
+            llm_model: self.llm_model.unwrap_or_else(|| fallback.llm_model.clone()),
+            reconcile_token: self
+                .reconcile_token
+                .unwrap_or_else(|| fallback.reconcile_token.clone()),
+            worker_token: self
+                .worker_token
+                .unwrap_or_else(|| fallback.worker_token.clone()),
+        })
+    }
+}
+
 impl TryFrom<BusinessConfigWire> for BusinessConfig {
     type Error = BotError;
 

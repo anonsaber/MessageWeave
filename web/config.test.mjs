@@ -17,10 +17,15 @@ class FakeElement {
     this.textContent = "";
     this.listeners = new Map();
     this.attributes = new Map();
+    const classes = new Set();
     this.classList = {
-      toggle() {},
-      add() {},
-      remove() {},
+      toggle(name, force) {
+        const on = force === true || (force === undefined && !classes.has(name));
+        if (on) classes.add(name); else classes.delete(name);
+      },
+      add(name) { classes.add(name); },
+      remove(name) { classes.delete(name); },
+      contains(name) { return classes.has(name); },
     };
     this.children = new Map();
     this.options = [];
@@ -89,6 +94,25 @@ async function startPage(statusResponse) {
   await new Promise((resolve) => setImmediate(resolve));
   await Promise.resolve();
   return { elements, fetchCalls, window };
+}
+
+// Objects built inside vm.runInNewContext carry that realm's Object.prototype,
+// so assert.deepEqual — which compares prototypes — rejects them even when they
+// are structurally identical. Re-shape them into host objects, sorted, and then
+// compare.
+function canonical(value) {
+  if (typeof value === "bigint") return value.toString();
+  if (Array.isArray(value)) return Array.from(value, (item) => canonical(item));
+  if (value !== null && typeof value === "object") {
+    const out = {};
+    for (const key of Object.keys(value).sort()) out[key] = canonical(value[key]);
+    return out;
+  }
+  return value;
+}
+
+function assertShape(actual, expected, message) {
+  assert.deepEqual(canonical(actual), canonical(expected), message);
 }
 
 test("configuration-setup hides all authorization UI and lists only missing variable names", async () => {
@@ -277,3 +301,225 @@ test("readBusinessConfig carries the selected time zone", async () => {
   assert.equal(typeof payload.bot_token, "string");
   assert.equal(typeof payload.reconcile_token, "string");
 });
+
+test("readback pre-fills stored values, blanks secrets, and marks which secrets exist", async () => {
+  const { elements, window: pageWindow } = await startPage({ body: { ready: true, mode: "configured", missing: [] } });
+  const mw = pageWindow.__mw;
+
+  mw.applyBusinessReadback({
+    values: {
+      jmap_session_url: "https://mail.example.com/jmap",
+      jmap_username: "bot@example.com",
+      timezone: "Asia/Tokyo",
+      llm_base_url: "https://llm.example.com/v1",
+      llm_model: "gpt-4o",
+      chat_allowlist: ["123456789", "987654321"],
+      telegram_chat_id: "123456789",
+      llm_enabled: true,
+      llm_allow_net: true,
+    },
+    secrets_present: {
+      bot_token: true,
+      jmap_password: true,
+      telegram_webhook_secret: true,
+      reconcile_token: true,
+      worker_token: false,
+      llm_api_key: true,
+    },
+  });
+
+  // Non-secret values are filled in so the operator can change only what matters.
+  assert.equal(elements.get("jmap-session-url").value, "https://mail.example.com/jmap");
+  assert.equal(elements.get("jmap-username").value, "bot@example.com");
+  assert.equal(elements.get("timezone").value, "Asia/Tokyo");
+  assert.equal(elements.get("llm-base-url").value, "https://llm.example.com/v1");
+  assert.equal(elements.get("llm-model").value, "gpt-4o");
+  assert.equal(elements.get("llm-enabled").checked, true);
+  assert.equal(elements.get("llm-allow-net").checked, true);
+  // The allowlist is re-serialised comma-separated so parseAllowlist round-trips it.
+  assert.equal(elements.get("chat-allowlist").value, "123456789, 987654321");
+  assert.equal(elements.get("telegram-chat-id").value, "123456789");
+
+  // Secrets are never echoed: every secret input is blank and no longer required,
+  // because a blank secret now means "keep the stored value".
+  const secrets = mw.fields.secrets;
+  for (const field of secrets) {
+    assert.equal(elements.get(field.id).value, "", `secret ${field.key} must stay blank`);
+    assert.equal(elements.get(field.id).required, false, `secret ${field.key} must not be required`);
+  }
+
+  // Presence markers are driven by secrets_present, never by the stored value.
+  const marker = (key) => elements.get(`secret-marker-${key}`);
+  const marked = (key) => marker(key).textContent;
+  assert.equal(marker("jmap_password").classList.contains("is-unset"), false);
+  assert.equal(marker("worker_token").classList.contains("is-unset"), true);
+  assert.notEqual(marked("jmap_password"), marked("worker_token"));
+  assert.equal(marked("jmap_password").includes("Set"), true);
+  assert.equal(marked("worker_token").includes("Not set"), true);
+
+  assert.equal(mw.businessBaseline.jmap_session_url, "https://mail.example.com/jmap");
+  assert.equal(mw.businessSecretPresence.worker_token, false);
+});
+
+test("no saved configuration leaves the baseline null so full submission is used", async () => {
+  const { window: pageWindow } = await startPage({ body: { ready: true, mode: "configured", missing: [] } });
+  assert.equal(pageWindow.__mw.businessBaseline, null);
+  assert.equal(pageWindow.__mw.businessSecretPresence, null);
+});
+
+test("an untouched form produces an empty patch", async () => {
+  const { elements, window: pageWindow } = await startPage({ body: { ready: true, mode: "configured", missing: [] } });
+  const mw = pageWindow.__mw;
+  mw.applyBusinessReadback({
+    values: {
+      jmap_session_url: "https://mail.example.com/jmap",
+      jmap_username: "bot@example.com",
+      timezone: "Asia/Tokyo",
+      chat_allowlist: ["123456789"],
+      telegram_chat_id: "123456789",
+      llm_enabled: false,
+      llm_allow_net: false,
+    },
+    secrets_present: { bot_token: true, jmap_password: true, telegram_webhook_secret: true, reconcile_token: true, worker_token: true, llm_api_key: false },
+  });
+
+  const patch = mw.businessPatchFromForm();
+  assertShape(patch, {}, "an unchanged form must not resubmit anything");
+});
+
+test("only changed text fields enter the patch", async () => {
+  const { elements, window: pageWindow } = await startPage({ body: { ready: true, mode: "configured", missing: [] } });
+  const mw = pageWindow.__mw;
+  mw.applyBusinessReadback({
+    values: {
+      jmap_session_url: "https://mail.example.com/jmap",
+      jmap_username: "bot@example.com",
+      timezone: "Asia/Tokyo",
+      chat_allowlist: ["123456789"],
+      telegram_chat_id: "123456789",
+      llm_enabled: false,
+      llm_allow_net: false,
+    },
+    secrets_present: { bot_token: true, jmap_password: true, telegram_webhook_secret: true, reconcile_token: true, worker_token: true, llm_api_key: false },
+  });
+
+  elements.get("timezone").value = "America/New_York";
+  const patch = mw.businessPatchFromForm();
+  assertShape(patch, { timezone: "America/New_York" });
+});
+
+test("blank secrets are omitted and typed secrets replace the stored value", async () => {
+  const { elements, window: pageWindow } = await startPage({ body: { ready: true, mode: "configured", missing: [] } });
+  const mw = pageWindow.__mw;
+  mw.applyBusinessReadback({
+    values: {
+      jmap_session_url: "https://mail.example.com/jmap",
+      jmap_username: "bot@example.com",
+      timezone: "Asia/Tokyo",
+      chat_allowlist: ["123456789"],
+      telegram_chat_id: "123456789",
+      llm_enabled: false,
+      llm_allow_net: false,
+    },
+    secrets_present: { bot_token: true, jmap_password: true, telegram_webhook_secret: true, reconcile_token: true, worker_token: true, llm_api_key: false },
+  });
+
+  // Every secret is blank after readback, so nothing is submitted for them.
+  assertShape(mw.businessPatchFromForm(), {});
+
+  // Typing a new value replaces the stored one. Assigning .value directly does
+  // not fire the input event the app listens to, so re-render the marker by hand.
+  elements.get("jmap-password").value = "new-password";
+  mw.renderSecretMarkers();
+  assertShape(mw.businessPatchFromForm(), { jmap_password: "new-password" });
+
+  // The presence marker flips to "will replace" while the input is non-blank.
+  assert.equal(elements.get("secret-marker-jmap_password").textContent.includes("replace"), true);
+
+  // Clearing the input again restores "keep the stored value".
+  elements.get("jmap-password").value = "";
+  mw.renderSecretMarkers();
+  assertShape(mw.businessPatchFromForm(), {});
+  assert.equal(elements.get("secret-marker-jmap_password").textContent.includes("stays"), true);
+});
+
+test("clearing an optional LLM field submits null", async () => {
+  const { elements, window: pageWindow } = await startPage({ body: { ready: true, mode: "configured", missing: [] } });
+  const mw = pageWindow.__mw;
+  mw.applyBusinessReadback({
+    values: {
+      jmap_session_url: "https://mail.example.com/jmap",
+      jmap_username: "bot@example.com",
+      timezone: "Asia/Tokyo",
+      chat_allowlist: ["123456789"],
+      telegram_chat_id: "123456789",
+      llm_base_url: "https://llm.example.com/v1",
+      llm_model: "gpt-4o",
+      llm_enabled: true,
+      llm_allow_net: true,
+    },
+    secrets_present: { bot_token: true, jmap_password: true, telegram_webhook_secret: true, reconcile_token: true, worker_token: true, llm_api_key: true },
+  });
+
+  elements.get("llm-model").value = "";
+  const patch = mw.businessPatchFromForm();
+  assertShape(patch, { llm_model: null });
+});
+
+test("the allowlist is compared as an unordered set", async () => {
+  const { elements, window: pageWindow } = await startPage({ body: { ready: true, mode: "configured", missing: [] } });
+  const mw = pageWindow.__mw;
+  mw.applyBusinessReadback({
+    values: {
+      jmap_session_url: "https://mail.example.com/jmap",
+      jmap_username: "bot@example.com",
+      timezone: "Asia/Tokyo",
+      chat_allowlist: ["123456789", "987654321"],
+      telegram_chat_id: "123456789",
+      llm_enabled: false,
+      llm_allow_net: false,
+    },
+    secrets_present: { bot_token: true, jmap_password: true, telegram_webhook_secret: true, reconcile_token: true, worker_token: true, llm_api_key: false },
+  });
+
+  // Reordering the same ids is not a change.
+  elements.get("chat-allowlist").value = "987654321 123456789";
+  assertShape(mw.businessPatchFromForm(), {});
+
+  // Adding an id is. The patch carries the operator's current order, not the
+  // stored order, and plain strings rather than BigInt objects.
+  elements.get("chat-allowlist").value = "987654321, 123456789, 555000000";
+  const patch = mw.businessPatchFromForm();
+  assertShape(patch, { chat_allowlist: ["987654321", "123456789", "555000000"] });
+
+  // A blank textarea keeps the stored list rather than deleting it.
+  elements.get("chat-allowlist").value = "";
+  assertShape(mw.businessPatchFromForm(), {});
+});
+
+test("flipping a boolean enters the patch and resetBusinessReadback clears the baseline", async () => {
+  const { elements, window: pageWindow } = await startPage({ body: { ready: true, mode: "configured", missing: [] } });
+  const mw = pageWindow.__mw;
+  mw.applyBusinessReadback({
+    values: {
+      jmap_session_url: "https://mail.example.com/jmap",
+      jmap_username: "bot@example.com",
+      timezone: "Asia/Tokyo",
+      chat_allowlist: ["123456789"],
+      telegram_chat_id: "123456789",
+      llm_enabled: true,
+      llm_allow_net: true,
+    },
+    secrets_present: { bot_token: true, jmap_password: true, telegram_webhook_secret: true, reconcile_token: true, worker_token: true, llm_api_key: true },
+  });
+
+  elements.get("llm-allow-net").checked = false;
+  assertShape(mw.businessPatchFromForm(), { llm_allow_net: false });
+
+  mw.resetBusinessReadback();
+  assert.equal(mw.businessBaseline, null);
+  assert.equal(mw.businessSecretPresence, null);
+  // Markers fall back to "not set", so the operator knows the page has no view.
+  assert.equal(elements.get("secret-marker-bot_token").textContent.includes("Not set"), true);
+});
+

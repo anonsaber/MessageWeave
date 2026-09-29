@@ -271,7 +271,7 @@ Response conventions:
   `Retry-After: 30` (`src/debug.rs:56-58`). The three probe endpoints instead report failure
   **inside a 200 body** (`{"ok":false,"detail":...}`), so an unreachable upstream never looks
   like an outage. `POST /debug/notify` also returns `403 chat_not_allowed` when the chat is
-  outside a *non-empty* allowlist (`src/debug.rs:232-235`) and `502 telegram_send_failed` on
+  outside a *non-empty* allowlist (`src/debug.rs:233-236`) and `502 telegram_send_failed` on
   a send failure (`src/debug.rs:64-66`).
 - Static assets are served with a strict CSP; see §7.
 
@@ -286,9 +286,9 @@ Response conventions:
 > `C-NO-LONG-CONN`).
 
 The gate is **unconditional and fail-closed**. The worker reads no configuration switches at
-all: a path missing from `SAFE_ROUTES` (backends.js:9-25) returns **404** (index.js:81-82), a registered
-path with the wrong method returns **405** (index.js:84-86), and a missing or unparseable
-backend pool returns **503** rather than passing the request through (index.js:89-96).
+all: a path missing from `SAFE_ROUTES` (backends.js:9-26) returns **404** (index.js:82-85), a registered
+path with the wrong method returns **405** (index.js:86-89), and a missing or unparseable
+backend pool returns **503** rather than passing the request through (index.js:91-99).
 
 **Forwarded by the worker (15):**
 
