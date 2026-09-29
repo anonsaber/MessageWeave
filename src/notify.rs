@@ -779,6 +779,7 @@ async fn put_business_config(
         [("x-business-config-revision", revision.to_string())],
         Json(json!({
             "persisted": true,
+            "revision": revision,
             "runtime_applied": runtime_applied,
             "warnings": warnings,
         })),
@@ -1729,7 +1730,10 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
 mod tests {
     use super::*;
     use crate::state::MemoryState;
-    use axum::{body::Body, http::Request};
+    use axum::{
+        body::Body,
+        http::{self, Request},
+    };
     use tower::ServiceExt;
 
     fn test_router() -> Router {
@@ -2302,6 +2306,401 @@ mod tests {
         // default, carrying none of the submitted wire. (/api/bootstrap cannot be used as
         // evidence here — test_router has no admin credential, so it answers 401 unconditionally.)
         assert_preflight_wrote_nothing(app).await;
+    }
+
+    /// Router wired for admin calls, plus a handle on the same state so a test can seed or inspect
+    /// the stored configuration without another HTTP round trip.
+    fn business_config_router() -> (Router, MemoryState) {
+        let state = MemoryState::enabled_for_tests();
+        let router = router_with_state(
+            AuthSecrets {
+                reconcile_token: SecretString::new("reconcile-secret".into()),
+                telegram_webhook_secret: SecretString::new("telegram-secret".into()),
+            },
+            SecretString::new("worker-secret".into()),
+            state.clone(),
+            HashSet::new(),
+        );
+        (router, state)
+    }
+
+    /// A full, valid configuration as it lands on the wire. The JMAP URL is refused immediately,
+    /// so a save that reaches `build_worker_report` fails there instead of waiting on a timeout.
+    fn stored_business_wire_value() -> serde_json::Value {
+        json!({
+            "bot_token": "bot-secret-value",
+            "telegram_chat_id": -5260770881i64,
+            "chat_allowlist": [1, 2],
+            "telegram_webhook_secret": "hook-secret-value",
+            "jmap_session_url": "https://mail.example.invalid/session",
+            "account_id": "account-7",
+            "jmap_username": "user@example.invalid",
+            "jmap_password": "jmap-secret-value",
+            "llm_enabled": false,
+            "llm_allow_net": false,
+            "llm_api_key": null,
+            "llm_base_url": null,
+            "llm_model": null,
+            "reconcile_token": "reconcile-secret-value",
+            "worker_token": "worker-secret-value",
+            "timezone": "Etc/UTC",
+        })
+    }
+
+    async fn seed_business_config(state: &MemoryState, wire: serde_json::Value) {
+        state.set_business_config(&wire).await.unwrap();
+    }
+
+    /// The stored configuration with a JMAP URL that fails the instant it is dialed, for tests
+    /// whose save proceeds far enough to reach `build_worker_report`.
+    fn immediate_fail_business_wire_value() -> serde_json::Value {
+        let mut wire = stored_business_wire_value();
+        wire["jmap_session_url"] = json!("https://127.0.0.1:1");
+        wire
+    }
+
+    #[tokio::test]
+    async fn business_config_get_without_session_returns_401_without_any_field() {
+        let (router, _) = business_config_router();
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/business-config")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = json_body(response).await;
+        assert_eq!(body["error"], json!("unauthorized"));
+        // `request_id` is minted per request, so assert its shape rather than its value.
+        let request_id = body["request_id"].as_str().unwrap_or("");
+        assert_eq!(request_id.len(), 32);
+        assert!(request_id.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(body.get("values").is_none());
+        assert!(body.get("secrets_present").is_none());
+        assert!(body.get("configured").is_none());
+        assert_eq!(body.as_object().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn business_config_get_echoes_plaintext_fields_and_secrets_as_presence_only() {
+        let (router, state) = business_config_router();
+        let mut wire = stored_business_wire_value();
+        // Populate the whole LLM block, so its plaintext fields and its secret flag are both
+        // exercised; this is the fully valid shape a real save can produce.
+        wire["timezone"] = json!("Asia/Tokyo");
+        wire["llm_enabled"] = json!(true);
+        wire["llm_base_url"] = json!("https://llm.example.invalid/v1");
+        wire["llm_model"] = json!("local-model");
+        wire["llm_api_key"] = json!("llm-secret-value");
+        seed_business_config(&state, wire).await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/business-config")
+                    .header(http::header::AUTHORIZATION, "Bearer worker-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["configured"], json!(true));
+        assert_eq!(body["revision"], json!(1));
+
+        let values = &body["values"];
+        assert_eq!(values["timezone"], json!("Asia/Tokyo"));
+        assert_eq!(
+            values["jmap_session_url"],
+            json!("https://mail.example.invalid/session")
+        );
+        assert_eq!(values["jmap_username"], json!("user@example.invalid"));
+        assert_eq!(values["account_id"], json!("account-7"));
+        assert_eq!(values["telegram_chat_id"], json!(-5260770881i64));
+        assert_eq!(values["chat_allowlist"], json!([1, 2]));
+        assert_eq!(values["llm_enabled"], json!(true));
+        assert_eq!(values["llm_allow_net"], json!(false));
+        assert_eq!(
+            values["llm_base_url"],
+            json!("https://llm.example.invalid/v1")
+        );
+        assert_eq!(values["llm_model"], json!("local-model"));
+
+        assert_eq!(body["secrets_present"]["bot_token"], json!(true));
+        assert_eq!(body["secrets_present"]["jmap_password"], json!(true));
+        assert_eq!(
+            body["secrets_present"]["telegram_webhook_secret"],
+            json!(true)
+        );
+        assert_eq!(body["secrets_present"]["reconcile_token"], json!(true));
+        assert_eq!(body["secrets_present"]["worker_token"], json!(true));
+        assert_eq!(body["secrets_present"]["llm_api_key"], json!(true));
+
+        // SAF-NO-SECRET-ECHO: presence is allowed, the credential value never is.
+        let body_text = serde_json::to_string(&body).unwrap();
+        for secret in [
+            "bot-secret-value",
+            "jmap-secret-value",
+            "hook-secret-value",
+            "reconcile-secret-value",
+            "worker-secret-value",
+            "llm-secret-value",
+        ] {
+            assert!(
+                !body_text.contains(secret),
+                "{secret} leaked into the response"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn business_config_get_without_any_stored_config_reports_absent_instead_of_404() {
+        let (router, _) = business_config_router();
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/business-config")
+                    .header(http::header::AUTHORIZATION, "Bearer worker-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["configured"], json!(false));
+        assert_eq!(body["revision"], json!(0));
+        assert_eq!(body["values"]["chat_allowlist"], json!([]));
+        assert_eq!(body["values"]["timezone"], json!("Asia/Shanghai"));
+        assert_eq!(body["values"]["jmap_session_url"], json!(""));
+        assert!(body["values"]["account_id"].is_null());
+        assert!(body["values"]["llm_base_url"].is_null());
+        assert!(body["values"]["llm_model"].is_null());
+        assert_eq!(body["values"]["llm_enabled"], json!(false));
+        for key in [
+            "bot_token",
+            "jmap_password",
+            "telegram_webhook_secret",
+            "reconcile_token",
+            "worker_token",
+            "llm_api_key",
+        ] {
+            assert_eq!(body["secrets_present"][key], json!(false), "{key}");
+        }
+    }
+
+    #[tokio::test]
+    async fn business_config_first_save_rejects_a_patch_that_is_missing_fields() {
+        let (router, state) = business_config_router();
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/business-config")
+                    .header(http::header::AUTHORIZATION, "Bearer worker-secret")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({"timezone": "Asia/Tokyo"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_body(response).await;
+        assert_eq!(body["error"], json!("invalid_configuration"));
+        // The partial submit must not have been recorded as a one-field configuration.
+        assert!(state.get_business_config().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn business_config_partial_submit_replaces_only_the_fields_it_carries() {
+        let (router, state) = business_config_router();
+        seed_business_config(&state, immediate_fail_business_wire_value()).await;
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/business-config")
+                    .header(http::header::AUTHORIZATION, "Bearer worker-secret")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({"timezone": "Asia/Tokyo"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let saved = json_body(response).await;
+        assert_eq!(saved["persisted"], json!(true));
+        assert_eq!(saved["revision"], json!(2));
+
+        // Read it back over the wire rather than from the saved response: this is what the SPA does.
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/business-config")
+                    .header(http::header::AUTHORIZATION, "Bearer worker-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["configured"], json!(true));
+        assert_eq!(body["revision"], json!(2));
+
+        let values = &body["values"];
+        assert_eq!(values["timezone"], json!("Asia/Tokyo"));
+        // Every field the patch did not carry must still hold its stored value.
+        assert_eq!(values["jmap_session_url"], json!("https://127.0.0.1:1"));
+        assert_eq!(values["jmap_username"], json!("user@example.invalid"));
+        assert_eq!(values["account_id"], json!("account-7"));
+        assert_eq!(values["telegram_chat_id"], json!(-5260770881i64));
+        assert_eq!(values["chat_allowlist"], json!([1, 2]));
+        assert_eq!(values["llm_enabled"], json!(false));
+        assert_eq!(values["llm_allow_net"], json!(false));
+        assert!(values["llm_base_url"].is_null());
+        assert!(values["llm_model"].is_null());
+        for key in [
+            "bot_token",
+            "jmap_password",
+            "telegram_webhook_secret",
+            "reconcile_token",
+            "worker_token",
+        ] {
+            assert_eq!(body["secrets_present"][key], json!(true), "{key}");
+        }
+        assert_eq!(body["secrets_present"]["llm_api_key"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn business_config_partial_submit_cannot_skip_validation_of_the_merged_result() {
+        let (router, state) = business_config_router();
+        seed_business_config(&state, stored_business_wire_value()).await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/business-config")
+                    .header(http::header::AUTHORIZATION, "Bearer worker-secret")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({"timezone": "Europe/London"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_body(response).await;
+        assert_eq!(body["error"], json!("invalid_configuration"));
+
+        // Rejected submissions leave the stored configuration and its revision untouched.
+        let stored = state.get_business_config().await.unwrap().unwrap();
+        assert_eq!(stored["timezone"], json!("Etc/UTC"));
+        assert_eq!(state.business_config_revision().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn business_config_accepts_a_chat_id_submitted_as_a_number_or_a_string() {
+        let (router, state) = business_config_router();
+        seed_business_config(&state, immediate_fail_business_wire_value()).await;
+
+        let submitted = json!({"telegram_chat_id": "-987654321"});
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/business-config")
+                    .header(http::header::AUTHORIZATION, "Bearer worker-secret")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_string(&submitted).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_body(response).await["persisted"], json!(true));
+
+        let stored = state.get_business_config().await.unwrap().unwrap();
+        assert_eq!(stored["telegram_chat_id"], json!(-987654321i64));
+
+        // A chat id that parses to no integer is still rejected rather than coerced.
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/business-config")
+                    .header(http::header::AUTHORIZATION, "Bearer worker-secret")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({"telegram_chat_id": "not-a-chat-id"}))
+                            .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            json_body(response).await["error"],
+            json!("invalid_configuration")
+        );
+        assert_eq!(
+            state.get_business_config().await.unwrap().unwrap()["telegram_chat_id"],
+            json!(-987654321i64)
+        );
+    }
+
+    #[tokio::test]
+    async fn business_config_put_rejects_a_field_the_patch_type_does_not_declare() {
+        let (router, state) = business_config_router();
+        seed_business_config(&state, stored_business_wire_value()).await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/business-config")
+                    .header(http::header::AUTHORIZATION, "Bearer worker-secret")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({"timezone": "Etc/UTC", "typo_field": 1}))
+                            .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            json_body(response).await["error"],
+            json!("invalid_configuration")
+        );
+        assert_eq!(state.business_config_revision().await.unwrap(), 1);
     }
 
     #[tokio::test]

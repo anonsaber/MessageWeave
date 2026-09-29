@@ -860,4 +860,41 @@ mod tests {
             "Asia/Kolkata"
         );
     }
+
+    /// Pure deserialisation check for `de_i64_from_number_or_string`, with no router, no store and
+    /// no other field present. This is the only place that can tell "the field's custom
+    /// deserializer refuses the string" apart from a later validation step, which is a real
+    /// distinction: the SPA submits `telegram_chat_id` as a JSON string on a partial submit while
+    /// the read-back model returns it as a JSON number.
+    #[test]
+    fn business_config_patch_reads_a_chat_id_from_a_number_or_a_numeric_string() {
+        let parse = |body: serde_json::Value| -> Result<BusinessConfigPatch, serde_json::Error> {
+            serde_json::from_value(body)
+        };
+
+        assert_eq!(
+            parse(serde_json::json!({"telegram_chat_id": -987654321i64}))
+                .unwrap()
+                .telegram_chat_id,
+            Some(-987654321)
+        );
+        assert_eq!(
+            parse(serde_json::json!({"telegram_chat_id": "-987654321"}))
+                .unwrap()
+                .telegram_chat_id,
+            Some(-987654321)
+        );
+        // A string that does not parse to an i64 is rejected, not truncated to zero.
+        assert!(parse(serde_json::json!({"telegram_chat_id": "not-a-chat-id"})).is_err());
+        assert!(parse(serde_json::json!({"telegram_chat_id": 1.5})).is_err());
+        assert!(parse(serde_json::json!({"telegram_chat_id": "true"})).is_err());
+
+        // Absent means "keep what is stored", which the patch merge relies on.
+        let missing = parse(serde_json::json!({})).unwrap();
+        assert!(missing.telegram_chat_id.is_none());
+        assert!(parse(serde_json::json!({"timezone": "Etc/UTC"}))
+            .unwrap()
+            .telegram_chat_id
+            .is_none());
+    }
 }

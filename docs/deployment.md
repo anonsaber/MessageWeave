@@ -78,7 +78,7 @@
 
 **鉴权**
 
-7 条路由全部要求 `Authorization: Bearer <DEBUG_TOKEN>`，统一走 `debug_authorized`（`src/debug.rs:45`），它委托生产同款 `worker_authorized`（`src/notify.rs:495`），因此令牌是**常数时间比较**（`src/notify.rs:1416`）。失败回 `401 unauthorized`，且不设 `Retry-After`（`src/debug.rs:52-54`）。
+7 条路由全部要求 `Authorization: Bearer <DEBUG_TOKEN>`，统一走 `debug_authorized`（`src/debug.rs:45`），它委托生产同款 `worker_authorized`（`src/notify.rs:496`），因此令牌是**常数时间比较**（`src/notify.rs:1416`）。失败回 `401 unauthorized`，且不设 `Retry-After`（`src/debug.rs:52-54`）。
 
 **7 条路由与预期状态码**（注册于 `src/debug.rs:72-80`，路径为字面量，无常量抽取）
 
@@ -307,7 +307,7 @@ AI 授权期限由用户选择（临时一次、今天、7天或直到撤销）�
 > 业务鉴权变量由 Redis `config:business` 管理，不再要求作为启动环境变量。缺少 `REDIS_URL` 或非法/缺失 `CONFIG_ENCRYPTION_KEY` 时服务仍监听并提供 SPA、`/api/status` 与探针，状态为 `configuration-setup`，不会伪造持久化成功；配置恢复后再启用业务入口鉴权。
 > 示例占位见仓库根目录 [`.env.example`](../.env.example)（仅占位符，**严禁**放入真实密钥）。
 
-> **配置管理页面**：服务根路径 `/` 提供嵌入 Rust 二进制的 SPA。输入 `CONFIG_ENCRYPTION_KEY` 后，`POST /api/admin/session` 签发 900 秒 admin session；页面只在内存中保存 opaque session。运行参数通过 `/api/config` 读取和保存；完整业务配置通过 `PUT /api/business-config` 替换并热加载。业务配置 API 不提供 GET，密钥不会回显；每次完整替换都需重新输入必填密钥。配置保存在外部 Redis（`C-REDIS-ONLY-STATE`），静态资源编译时随二进制打包，无运行期本地文件。
+> **配置管理页面**：服务根路径 `/` 提供嵌入 Rust 二进制的 SPA。输入 `CONFIG_ENCRYPTION_KEY` 后，`POST /api/admin/session` 签发 900 秒 admin session；页面只在内存中保存 opaque session。运行参数通过 `/api/config` 读取和保存；完整业务配置通过 `PUT /api/business-config` 替换并热加载。业务配置 API 通过 `GET /api/business-config` 回读已保存配置：返回 10 个非密钥字段的值 + 6 个密钥的存在性布尔（`SAF-NO-SECRET-ECHO`，不返回密钥值本身）；`PUT` 接受部分补丁，只替换提交中出现的字段，省略的密钥沿用已存值，因此表单回读后只需修改要改的字段，无需重新填写密钥。但后端**不**把空字符串当作"未提交"：显式提交 `""` 会真的清空该密钥，"留空即保留"这一保证由 SPA 在提交前丢弃空白密钥字段实现；`chat_allowlist` 提交空数组会被拒绝（422）。配置保存在外部 Redis（`C-REDIS-ONLY-STATE`），静态资源编译时随二进制打包，无运行期本地文件。
 
 ---
 
@@ -332,7 +332,8 @@ AI 授权期限由用户选择（临时一次、今天、7天或直到撤销）�
 成功 bootstrap 后，后续配置读写只能使用 Redis 中保存的管理员会话（短 TTL，注销
 或配置更新时失效）；业务端点使用 Redis 配置中下发的独立令牌。管理员会话只保存
 不可逆哈希和过期时间，重启后按 Redis TTL 恢复，进程不保存本地状态。GET 永不回显
-任何密钥，配置缺失或业务依赖未就绪时保持 HTTP/SPA 可用但业务路由返回未就绪。
+任何密钥值，只返回密钥是否存在（presence 布尔），配置缺失或业务依赖未就绪时保持
+HTTP/SPA 可用但业务路由返回未就绪。
 
 `config:business` 使用 AES-256-GCM（版本、随机 nonce、认证 tag 均在密文 envelope 中）
 写入 Redis；应用启动时使用 `CONFIG_ENCRYPTION_KEY` 解密，密钥永不写 Redis、日志、响应
@@ -358,7 +359,8 @@ GET  /api/status              公开启动状态；只返回 ready/mode/missing 
 POST /api/admin/session       Bearer CONFIG_ENCRYPTION_KEY；成功返回 900 秒 admin session
 POST /api/admin/session/revoke Bearer admin session；成功返回 204
 GET|PUT /api/config           Bearer admin session 或 WORKER_TOKEN；Redis 错误返回 503
-PUT /api/business-config      Bearer admin session 或 WORKER_TOKEN；校验通过后必持久化，
+GET|PUT /api/business-config  Bearer admin session 或 WORKER_TOKEN；GET 回读非密钥值 + 6 个密钥存在性布尔（不回显密钥值），
+                              PUT 接受部分补丁（省略的密钥沿用已存值），校验通过后必持久化，
                               客户端构建失败返回 200+warnings（不阻断保存），reload 成功才 runtime_applied=true
 POST /api/business-config/preflight Bearer admin session 或 WORKER_TOKEN；同样的校验与客户端构建，
                               不写入、不换 worker；返回 200 + 逐组件结论
@@ -379,7 +381,7 @@ GET  /ready          公开就绪探针；检查配置完整性 + Redis 可达�
 
 ### 6.2 Redis Streams / worker（MOD-STREAMS）
 - Push 回调只做：校验 → 去重 → 入队 → ACK；不阻塞
-- worker：**不是后台 task，也不是独立 worker 容器**。本服务没有常驻消费循环，两条 stream 的唯一消费入口是 `POST /worker`（处理函数 `src/notify.rs:380`，路由 `src/notify.rs:1608`）。全代码库仅两处 `tokio::spawn`——发送重试（`src/channel.rs:205`）与对账锁续租心跳（`src/notify.rs:298`）——都不消费队列；因此**排空必须由外部调度触发**（§6.3.1）。
+- worker：**不是后台 task，也不是独立 worker 容器**。本服务没有常驻消费循环，两条 stream 的唯一消费入口是 `POST /worker`（处理函数 `src/notify.rs:381`，路由 `src/notify.rs:1608`）。全代码库仅两处 `tokio::spawn`——发送重试（`src/channel.rs:205`）与对账锁续租心跳（`src/notify.rs:298`）——都不消费队列；因此**排空必须由外部调度触发**（§6.3.1）。
 - 单次 `/worker` 调用语义：对 `stalwart:jmap` 与 `stalwart:telegram` 两条 stream 各取一批（上限 10，`src/notify.rs:397`；批量读取在 `src/state.rs:444`），逐条处理后确认消费（`src/state.rs:324`）；处理失败转重试 / DLQ（`src/notify.rs:478`）。`Email/changes` 增量拉取与 `sinceState` 推进属于 `POST /reconcile`，不在 worker 内。
 - 消费组 at-least-once：未 ACK 消息自动重投；处理幂等（MOD-DEDUP 二次兜底）
 
@@ -731,7 +733,7 @@ Stalwart PushSub ────┼─▶ https://lb.<you>.workers.dev      ← 唯
 
 ### 10.4 路由与故障转移
 
-- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **15 条**（`SAFE_ROUTES` at `backends.js:9-25` + `ROUTE_METHODS` at `index.js:45-61`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`PUT /api/business-config`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`GET|PUT /api/enabled`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 4 类不在 safelist**：`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`POST /worker`（队列排空端点，由外部调度周期性调用而非人工触发，Bearer 鉴权，见 §6.3.1）、`GET /healthz`（网关自行聚合，不转发）、`/debug/*`（7 条远程联调面，`SAF-DEBUG-GATE`，只能直连后端 origin，见 §2.1）——**这 4 类都不承载外部业务流量，因此后端实例前不需要第二道入口**。`GET|PUT /api/enabled` 属于必须透传的例外：管理 SPA 本身只部署在 Worker 域名下，业务总开关由它读取与切换（`loadEnabled` 在 `web/config.js:676` 读、开关写入在 `:1048`），缺了这条白名单，SPA 里那个开关在后端直连模式下可用、经网关部署时恒 404；该路由已强制 admin-session Bearer 鉴权，暴露面与同在白名单内的 `/api/admin/session` 完全一致。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
+- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **16 条**（`SAFE_ROUTES` at `backends.js:9-26` + `ROUTE_METHODS` at `index.js:46-63`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`GET|PUT /api/business-config`、`POST /api/business-config/preflight`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`GET|PUT /api/enabled`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 4 类不在 safelist**：`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`POST /worker`（队列排空端点，由外部调度周期性调用而非人工触发，Bearer 鉴权，见 §6.3.1）、`GET /healthz`（网关自行聚合，不转发）、`/debug/*`（7 条远程联调面，`SAF-DEBUG-GATE`，只能直连后端 origin，见 §2.1）——**这 4 类都不承载外部业务流量，因此后端实例前不需要第二道入口**。`GET|PUT /api/enabled` 属于必须透传的例外：管理 SPA 本身只部署在 Worker 域名下，业务总开关由它读取与切换（`loadEnabled` 在 `web/config.js:676` 读、开关写入在 `:1048`），缺了这条白名单，SPA 里那个开关在后端直连模式下可用、经网关部署时恒 404；该路由已强制 admin-session Bearer 鉴权，暴露面与同在白名单内的 `/api/admin/session` 完全一致。`GET|PUT /api/business-config` 与 `POST /api/business-config/preflight` 同属此类必须透传的路由：SPA 由 Worker 服务，配置回读、提交前校验与保存都由它发起，缺了这两条，回读与预校验经网关部署时恒 404/405，整条配置管理页面只剩后端直连可用；两者同样强制 admin-session Bearer 鉴权，且回读只返回密钥存在性布尔（`SAF-NO-SECRET-ECHO`），不新增凭据暴露面。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
 - **健康聚合（`MOD-HEALTH-AGG`）**：Worker 自行承载 `GET /healthz`，按 TTL 缓存（默认 30s，`LB_HEALTH_TTL_MS` 可调）探测各后端 `/healthz`，返回 `{status, available, total, backends:[{origin,up,status}]}`；≥1 后端 up → 200，全 down → 503。`/ready` 透传给后端，做配置 + Redis + 出站只读探测（JMAP session、TG getMe，各 3s、并行，最坏约 3s），不触发业务副作用。
 - **故障转移（`forwardWithFailover`）**：每次请求最多 `min(LB_MAX_ATTEMPTS, origins.length)` 次尝试；**仅**超时（AbortError）或 5xx 触发换下一个 origin；4xx/2xx/3xx 直接返回；默认 `LB_MAX_ATTEMPTS=2`（首次 + 1 次故障转移）。**例外：`POST /reconcile` 固定 `maxAttempts=1`，绝不故障转移**——它持集群级单飞锁，切实例只会立刻撞 `409`；其单请求超时取 `LB_RECONCILE_TIMEOUT_MS`（默认 `320000` ms），其余路由不受影响。
 - **随机分摊**：起点 origin 按 `Math.random` 随机化，实现双活；单 origin 配置时退化为确定性。

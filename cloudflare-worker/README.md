@@ -3,7 +3,7 @@
 统一 HTTPS 入口 + 多后端 origin 故障转移（HA/LB 子项目）。
 **透传模型**：Worker 不感知业务，原样转发请求到多个 https 后端 origin；仅「超时 / 5xx」做有界故障转移。
 
-> 本组件是 **safelist 受限的边缘负载均衡器（edge load balancer）**：路由固定 15 条白名单、
+> 本组件是 **safelist 受限的边缘负载均衡器（edge load balancer）**：路由固定 16 条白名单、
 > 后端 origin 在部署期固定且仅允许 https、未知路径一律 404。它只对固定后端做请求转发与
 > 故障转移，不接受任意目标主机，也不提供任何形式的流量中转或访问隐藏能力。
 
@@ -35,7 +35,7 @@
   + 相同 App Password（各后端实例的 `JMAP` 可不同，`docs/deployment.md` §10.2）。
 
 ### 路由 safelist（ARCH-LB-WORKER / C-LB-SINGLE-REG-URL）
-- 透传公开 `GET /api/status` 启动状态，以及管理 SPA API：`POST /api/admin/session[/revoke]`、`GET|PUT /api/enabled`（业务总开关，SPA 服务卡片读写）、`GET|PUT /api/config`、`PUT /api/business-config`。启动状态只包含缺少的环境变量名称；管理 API 的鉴权仍由后端执行。
+- 透传公开 `GET /api/status` 启动状态，以及管理 SPA API：`POST /api/admin/session[/revoke]`、`GET|PUT /api/enabled`（业务总开关，SPA 服务卡片读写）、`GET|PUT /api/config`、`GET|PUT /api/business-config`（读回 + 增量保存）、`POST /api/business-config/preflight`（保存前逐组件连通性预检）。启动状态只包含缺少的环境变量名称；管理 API 的鉴权仍由后端执行。
 - 只透传 `POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`。
 - 其它路径 → **404**（不透传，避免 Worker 沦为后端任意路径的跳板）。
 - method 不符 → **405**。

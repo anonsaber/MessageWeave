@@ -185,10 +185,10 @@ field. `request_id` is always present.
 `Retry-After` has two emission sites, both in `notify.rs`, and the value is always the literal
 string `"30"`:
 
-- `error_response` (`notify.rs:370-378`, inserted at `:374`) sets it **only when its `retry`
+- `error_response` (`notify.rs:371-379`, inserted at `:375`) sets it **only when its `retry`
   flag is true**. The readiness failure path (`notify.rs:210`) passes `retry = true`, so `/ready`
   is covered by that rule rather than by a special case.
-- `error_response_with_id` (`notify.rs:1368-1375`, inserted at `:1371`) sets it
+- `error_response_with_id` (`notify.rs:1464-1471`, inserted at `:1467`) sets it
   **unconditionally**. It is used only for the push register/disable failures
   `push_state_unavailable` and `push_destroy_failed` (`notify.rs:1233`, `:1250`, `:1267`,
   `:1304`), which are always `503`.
@@ -217,7 +217,7 @@ only three of this table — `/healthz`, `/ready` and `/api/status` — and no b
 | POST | `/worker` | `worker` |
 | GET, PUT | `/api/config` | `get_config` / `put_config` |
 | GET, PUT | `/api/enabled` | `get_enabled` / `put_enabled` |
-| PUT | `/api/business-config` | `put_business_config` |
+| GET, PUT | `/api/business-config` | `get_business_config` / `put_business_config` |
 | POST | `/api/business-config/preflight` | `preflight_business_config` |
 | POST | `/api/bootstrap` | `bootstrap` |
 | POST | `/api/admin/session/revoke` | `revoke_admin_session` |
@@ -260,7 +260,7 @@ Response conventions:
   `probe_telegram_get_me`) also used by the remote-debug path, so they must not be duplicated.
   The JMAP probe deliberately authenticates against the *normalized origin*: probing the raw
   session URL unauthenticated would report not-ready forever and make ingress stop routing.
-- `GET /api/status` (**always 200**, `notify.rs:214-223`) returns
+- `GET /api/status` (**always 200**, `notify.rs:215-224`) returns
   `{"ready": <bool>, "mode": "configured"|"configuration-setup", "missing": [...], "version": "<build-fingerprint>"}`.
   `ready` is `false` and `missing` lists the absent required keys (`REDIS_URL`,
   `CONFIG_ENCRYPTION_KEY`) when a variable is absent — the route itself never errors, so it is
@@ -280,7 +280,7 @@ Response conventions:
 ## 4. Gateway vs backend route matrix
 
 > **Independently verified.** Source: `cloudflare-worker/src/backends.js` `SAFE_ROUTES`
-> (backends.js:9-25), 15 entries, alongside `ROUTE_METHODS` (index.js:45-61)
+> (backends.js:9-26), 16 entries, alongside `ROUTE_METHODS` (index.js:46-63)
 > which fixes one method set per path. The worker entry point is `src/index.js`
 > (wrangler.toml:20); `src/lb.js` performs forwarding and bounded failover (`SAF-LB-PASSTHRU`,
 > `C-NO-LONG-CONN`).
@@ -290,10 +290,11 @@ all: a path missing from `SAFE_ROUTES` (backends.js:9-26) returns **404** (index
 path with the wrong method returns **405** (index.js:86-89), and a missing or unparseable
 backend pool returns **503** rather than passing the request through (index.js:91-99).
 
-**Forwarded by the worker (15):**
+**Forwarded by the worker (16):**
 
 `/` · `/assets/config.js` · `/assets/styles.css` · `/api/status` · `/api/config` ·
-`/api/business-config` · `/api/admin/session` · `/api/admin/session/revoke` ·
+`/api/business-config` · `/api/business-config/preflight` · `/api/admin/session` ·
+`/api/admin/session/revoke` ·
 `/api/enabled` ·
 `/webhook/tg` · `/push/jmap` · `/api/push/register` · `/api/push/disable` · `/reconcile` ·
 `/ready`
@@ -303,7 +304,7 @@ backend pool returns **503** rather than passing the request through (index.js:9
 | Path | Why it is absent from the gateway |
 |---|---|
 | `POST /api/bootstrap` | One-shot trust bootstrap; kept off the public path |
-| `POST /worker` | Queue drain endpoint — driven by the external scheduler, not a human (Bearer-auth'd, `notify.rs:380`; the cron is spelled out in deployment.md §6.3.1); not part of the public gateway path |
+| `POST /worker` | Queue drain endpoint — driven by the external scheduler, not a human (Bearer-auth'd, `notify.rs:381`; the cron is spelled out in deployment.md §6.3.1); not part of the public gateway path |
 | `GET /healthz` | Liveness is aggregated by the gateway itself |
 | `/debug/*` (7 routes) | Opt-in remote-debug surface (`SAF-DEBUG-GATE`); absent from `SAFE_ROUTES`, so it is reachable **only** by talking to the backend origin directly |
 
@@ -359,14 +360,32 @@ is the single most likely cause of "the container is healthy but nothing happens
 
 ### 5.2 Redis-resident business configuration
 
-Written by the SPA through `PUT /api/business-config` (effective within 1 s); the first
-successful write creates the configuration, later writes hot-reload it. The same write is
-also exposed as a one-shot `POST /api/bootstrap` against the backend origin for automation.
-The process never reads these from the environment in normal operation.
+Read by the SPA through `GET /api/business-config` and written through
+`PUT /api/business-config` (effective within 1 s); the first successful write creates the
+configuration, later writes hot-reload it. `GET` returns four keys — `configured`, `revision`,
+`values`, `secrets_present` — holding the 10 non-secret fields plus one presence boolean per
+secret (`bot_token`, `jmap_password`, `telegram_webhook_secret`, `reconcile_token`,
+`worker_token`, `llm_api_key`), never the secret values themselves (`SAF-NO-SECRET-ECHO`). With
+nothing saved yet it returns `200`, `configured: false`, `revision: 0`, an empty `values` and
+every flag false, so the SPA needs no special-case code path. The PUT body is a **partial
+patch** that replaces only the fields it names and keeps the stored value for the rest (`apply`
+in `config.rs`); a secret omitted from the patch keeps the stored secret, so prefilled form
+values are safe to resubmit. An explicitly submitted empty string is stored as-is and really
+clears the secret — "blank means unchanged" is a client-side contract, enforced by the SPA
+dropping blank secret fields before it sends, not by the server.
 
-**Persist-and-report, not persist-if-connectable.** Validation is the only gate on the write:
-`validate_business_wire` runs first and a rejection is a genuine `422`. Once the wire is valid
-the configuration is *always* persisted, and only then are the clients built and the running
+The increment semantics only hold once a configuration exists. With nothing stored there is no
+value to fall back to, so an incomplete patch is rejected with **422 `invalid_configuration`**
+— the first save has to be complete. `POST /api/bootstrap` against the backend origin is the
+one-shot write path that creates a configuration from scratch, for automation. The process never
+reads these from the environment in normal operation.
+
+**Persist-and-report, not persist-if-connectable.** Validation is the only gate on the write,
+and on a `PUT` it runs against the **merged** configuration, not the submitted body: the patch
+is never validated on its own, and the full stored wire is never discarded (`apply` in
+`config.rs`). `validate_business_wire` runs first and a rejection is a genuine `422`. Once
+the merged wire is valid it is *always* persisted — the merged wire, not the request body — and
+only then are the clients built and the running
 worker swapped. A failed build therefore returns **200** with `persisted: true`,
 `runtime_applied: false` and a `warnings` array of `{component, step, detail}` objects, where
 `component` is `jmap` or `llm` and `step` is `connect`, `account`, `config` or `build`, rather
@@ -374,12 +393,14 @@ than a 503. The configuration is saved and the outage is reported instead of hid
 `runtime_applied` is
 `true` only when the reload was committed. This is deliberate: an unreachable JMAP must not
 turn a valid configuration into a silent data loss. `PUT /api/business-config` and
-`POST /api/bootstrap` both follow this contract; the revision header is still returned in both
-cases.
+`POST /api/bootstrap` both follow this contract; the revision is returned in both cases as the
+`x-business-config-revision` header, and only `PUT /api/business-config` also returns it in the
+response body, as `"revision"` (a `u64`), which the SPA surfaces in its status line. Bootstrap's
+body carries no `revision` field.
 
-`POST /api/business-config/preflight` (`notify.rs:808-871`) runs the identical validation and
-client build against the submitted wire and returns the per-component verdict without writing
-anything and without touching the running worker:
+`POST /api/business-config/preflight` (`preflight_business_config`) runs the identical
+validation and client build against the submitted wire and returns the per-component verdict
+without writing anything and without touching the running worker:
 
 ```json
 {
@@ -421,7 +442,7 @@ The single prefixed name is `TELEGRAM_CHAT_ID`. Anything else documented as
 
 **Trust root.** The SPA admin credential is `CONFIG_ENCRYPTION_KEY` itself: read at startup
 (main.rs:63) and held as `admin_token` (main.rs:92), it is checked in constant time by
-`worker_authorized` (notify.rs:495; compare at notify.rs:1136) at the top of both
+`worker_authorized` (notify.rs:496; compare at notify.rs:1136) at the top of both
 `POST /api/bootstrap` (notify.rs:605) and `POST /api/admin/session` (notify.rs:775). It is
 only compared against the request bearer — never echoed, logged, or stored. The session
 issued by `/api/admin/session` is a freshly generated random 32-byte hex token

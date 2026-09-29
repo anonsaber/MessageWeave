@@ -117,9 +117,17 @@ test("Worker: business config read-back GET and preflight POST are both forwarde
     assert.equal(preflight.status, 200);
 
     assert.equal(seen.length, 2);
-    assert.equal(seen[0][0], "https://a.example/api/business-config");
+    // The LB rotates its start index across tests, so the origin is not stable;
+    // only the path and method are. Assert the origin is one of the configured
+    // backends (not arbitrary) and check the path/method exactly.
+    const backends = JSON.parse(makeEnv().BACKEND_ORIGINS_JSON);
+    for (const [url, method] of seen) {
+      const target = new URL(url);
+      assert.ok(backends.includes(target.origin), `${url} reached an unknown upstream`);
+    }
+    assert.equal(new URL(seen[0][0]).pathname, "/api/business-config");
     assert.equal(seen[0][1], "GET");
-    assert.equal(seen[1][0], "https://a.example/api/business-config/preflight");
+    assert.equal(new URL(seen[1][0]).pathname, "/api/business-config/preflight");
     assert.equal(seen[1][1], "POST");
   } finally {
     restore();
