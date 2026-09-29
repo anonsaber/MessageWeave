@@ -7,5 +7,7 @@
 *.pem
 *.key
 *.p12
+# Python 校验器运行时会生成
+__pycache__/
 # 构建验证缓存（cargo registry + rustup 组件，1.5G，绝不能提交）
 .gate-cache/

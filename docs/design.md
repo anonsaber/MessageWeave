@@ -55,7 +55,7 @@
 
 ## 2. jmap-client 能力分析
 
-来源：直接阅读 `stalwartlabs/jmap-client` 仓库 `src/lib.rs`、`src/client.rs`、`src/email/`、`src/email_submission/`、`src/event_source/`、`Cargo.toml`、`README.md`、`examples/`。
+来源：直接阅读 `stalwartlabs/jmap-client` 仓库的 `stalwartlabs/jmap-client/src/lib.rs`、`stalwartlabs/jmap-client/src/client.rs`、`stalwartlabs/jmap-client/src/email/`、`stalwartlabs/jmap-client/src/email_submission/`、`stalwartlabs/jmap-client/src/event_source/`、`stalwartlabs/jmap-client/Cargo.toml`、`stalwartlabs/jmap-client/README.md`、`stalwartlabs/jmap-client/examples/`。
 
 ### 2.1 crate 概况
 | 项 | 值 |
@@ -100,7 +100,7 @@ client_ws/        WebSocket 客户端（feature = "websockets"）
 | 实时通知（Push + 对账兜底） | Push HTTPS 回调 → `StateChange`；外部 Cron 调用 `/reconcile` 使用 `Email/changes` 补差 | 需公网 HTTPS 入口（deployment.md `C-HTTPS-INBOUND`/`FLOW-NEW-MAIL`）；Push 不是唯一可靠来源 |
 | SSE / WebSocket（非目标） | `event_source` / `client_ws` | 本部署**不使用**（deployment.md `NG-POLLING-SSE`/`NG-LONG-POLLING`/`C-NO-LONG-CONN`）；仅列 crate 能力供调研 |
 
-### 2.4 认证机制（`client.rs`）
+### 2.4 认证机制（`stalwartlabs/jmap-client/src/client.rs`）
 - `Credentials::Basic { username, secret }` — 用户名/密码，Stalwart 原生支持。
 - `Credentials::Bearer { token, .. }` — OAuth2 access_token；可选 `refresh_token` + `refresh_url` + `refresh_grace`，client 会在过期前自动刷新。
 - `connect()` 作用：GET session URL → 解析 `accounts`/`capabilities`/`download_url`/`upload_url`/`event_source_url`，缓存 account_id。
@@ -327,7 +327,7 @@ message-weave/
 └── cloudflare-worker/            # 边缘反向代理，JS，不在 Rust 工程中
 ```
 
-测试：**没有 `tests/` 集成测试目录**，也没有 `src/util/`。所有 Rust 测试是各模块内的 `#[cfg(test)]` 单元测试；前端唯一测试是 `web/config.test.mjs`。
+测试：**没有集成测试目录**，也没有独立的 util 工具模块。所有 Rust 测试是各模块内的 `#[cfg(test)]` 单元测试；前端唯一测试是 `web/config.test.mjs`。
 
 ### 6.1 模块职责矩阵
 
@@ -446,7 +446,7 @@ message-weave/
 | 红线 ID | 含义 | 违反示例（禁止） |
 |---|---|---|
 | `C-NO-DB` | 生产不使用任何数据库；Redis 是唯一生产状态存储 | 加 SQLite 去重表、加 Postgres 会话 |
-| `C-NO-LOCAL-WRITE` | 禁止本地文件/目录写入；不挂本地卷 | 写 `./logs/app.log`、写 `./tmp/…`、写本地 `sinceState.json` |
+| `C-NO-LOCAL-WRITE` | 禁止本地文件/目录写入；不挂本地卷 | 写日志到本地文件、写临时目录、把会话游标落成本地状态文件 |
 | `C-LOG-STDOUT-ONLY` | 日志只写 stdout/stderr；平台负责采集 | 引入 `tracing-appender`、`rolling-file`、`FileAppender` |
 | `SAF-LOG-PURITY` | 日志与 Redis 写入内容仅限结构化事件、计数、时间戳、脱敏摘要 | 日志打印 JMAP 正文、AI prompt/completion、密钥原文、附件内容 |
 | `C-NO-STATEFUL-RECOVERY` | 生产恢复不依赖进程内状态 | 用 `static Mutex<HashSet>` 存 dedup、用内存 LRU 存 sinceState 作为唯一恢复源 |
@@ -513,7 +513,7 @@ pub enum BotError {
 | 集成 | `src/channel.rs` 测试模块 | 用进程内 `tokio::net::TcpListener` 起 mock HTTP 服务，验证出站请求的路径、状态码与重试 |
 | 真实（手动） | `src/domain/jmap/client.rs` | 标 `#[ignore]`，需显式配置 JMAP 测试服务器后 `cargo test -- --ignored` 才跑 |
 
-**没有 `tests/` 集成测试目录**；前端唯一测试是 `web/config.test.mjs`（Node 原生断言）。
+**没有集成测试目录**；前端唯一测试是 `web/config.test.mjs`（Node 原生断言）。
 
 ### 9.2 mock 策略
 - `JmapService` 持有 trait `JmapBackend`（`list_emails` / `read_email` / `send_email` / `changes` 等），生产实现包装 `jmap_client::Client`（`src/domain/jmap/client.rs`），测试用 `MockBackend`（`src/domain/jmap.rs`）。
@@ -594,7 +594,7 @@ pub enum BotError {
 
 > 前置：`GATE-P0` 全项通过（`BOUND-STAGE1`）。
 
-- 依赖 `jmap-client 0.4.2`（**已引入**，`ARCH-DEPS-STAGE1`；版本/features 以 `Cargo.toml` 为准，**禁用 WebSocket feature**）；`config.rs` 复用既有 Redis 业务配置骨架（**非** `bot.example.toml`，见 `ARCH-CONFIG-ENV`）。
+- 依赖 `jmap-client 0.4.2`（**已引入**，`ARCH-DEPS-STAGE1`；版本/features 以 `Cargo.toml` 为准，**禁用 WebSocket feature**）；`config.rs` 复用既有 Redis 业务配置骨架（不引入独立的示例配置文件，见 `ARCH-CONFIG-ENV`）。
 - `domain::jmap::client` = 真实只读 adapter（`MOD-JMAP-CLIENT`，**G1/D-G1-1 代码已实现，待真实 `cargo test -- --ignored jmap::` 验证；未实际运行前不得声称真机通过**）：已实现 = 包装 `Client::connect`（Basic 认证 `C-AUTH-APP-BASIC`）、**URL 归一化**（`JMAP_SESSION_URL` 接受服务基地址或完整 `…/.well-known/jmap`，归一化为 origin/base 后传入，避免重复路径；仅 HTTPS、禁内嵌凭据与 query，`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`）、**account 选择**：`ACCOUNT_ID` 留空取 session 主账户、显式值校验后使用（`REQ-SINGLE-ACCOUNT`）。
 - `domain::jmap::JmapService::list_folders / list_emails / read_email`（query/get；`list_emails` 含 `limit` 边界；`received_at` 解析；`read_email` 多 part 拼接见 `REQ-JMAP-RAW-MULTIPART`）。
 - **R1 入口鉴权已就绪**：`/reconcile`/`/webhook/tg`/`/push/jmap` 及 `/api/push/register` 鉴权（`SAF-AUTH-*`）已落地并通过单测；后续改动不得放宽或绕过鉴权。
@@ -726,7 +726,7 @@ LLM 相关代码只有**一个文件**：
 src/ai.rs   # LlmClient（唯一实现）：summarize() 打 OpenAI 兼容 /chat/completions
 ```
 配置装载在 `src/config.rs` 的 `LlmConfig`，运行时参数在 `src/state.rs` 的 `OutboundConfig`（经 `RuntimeConfigProvider` 下发）。
-**不存在** `src/domain/llm/` 目录，也不存在其中的 `mod.rs` / `client.rs` / `config.rs` / `policy.rs` / `fallback.rs` / `audit.rs`——熔断、规则回退、审计 span 全部未实现（见 §12.4–12.7）。
+LLM 能力只存在于 `src/ai.rs` 一个文件；**没有**配置 / 回退 / 策略 / 审计分层——熔断、规则回退、审计 span 全部未实现（见 §12.4–12.7）。
 调用方只有 `worker.rs` 的 `MetadataWorker`（已授权摘要）和 `notify.rs`（新邮件通知）。
 
 ### 12.2 LLM 变量清单（当前实现）
@@ -790,8 +790,8 @@ src/ai.rs   # LlmClient（唯一实现）：summarize() 打 OpenAI 兼容 /chat/
 ---
 
 ## 附：调研依据（可复核）
-- `stalwartlabs/jmap-client` main 分支：`src/lib.rs`（URI/Method/DataType/Error）、`src/client.rs`（认证/连接/event_source）、`src/email/`、`src/email_submission/helpers.rs`、`src/event_source/`、`src/push_subscription/`（create/verify/update_types/destroy）、`src/core/error.rs`、`Cargo.toml`、`README.md`、`examples/`。
+- `stalwartlabs/jmap-client` main 分支（路径均相对该仓库根）：`stalwartlabs/jmap-client/src/lib.rs`（URI/Method/DataType/Error）、`stalwartlabs/jmap-client/src/client.rs`（认证/连接/event_source）、`stalwartlabs/jmap-client/src/email/`、`stalwartlabs/jmap-client/src/email_submission/helpers.rs`、`stalwartlabs/jmap-client/src/event_source/`、`stalwartlabs/jmap-client/src/push_subscription/`（create/verify/update_types/destroy）、`stalwartlabs/jmap-client/src/core/error.rs`、`stalwartlabs/jmap-client/Cargo.toml`、`stalwartlabs/jmap-client/README.md`、`stalwartlabs/jmap-client/examples/`。
 - crates.io：`jmap-client` 元数据。
-- `stalwartlabs/mail-server` main 分支：`crates/common/src/auth/credential.rs`（Password/AppPassword/ApiKey）、`crates/http/src/auth/authenticate.rs`（AccessScope 权限裁剪）、`crates/jmap/src/push/`、`api/v1/openapi.yml`（`securitySchemes`: basicAuth/bearerAuth/liveToken 60s）。
+- `stalwartlabs/mail-server` main 分支：`stalwartlabs/mail-server/crates/common/src/auth/credential.rs`（Password/AppPassword/ApiKey）、`stalwartlabs/mail-server/crates/http/src/auth/authenticate.rs`（AccessScope 权限裁剪）、`stalwartlabs/mail-server/crates/jmap/src/push/`、`stalwartlabs/mail-server/api/v1/openapi.yml`（`securitySchemes`: basicAuth/bearerAuth/liveToken 60s）。
 - 项目目录 `/home/okabe/Repo/messageweave/`（工具链要求见 §10.0 与 `../AGENTS.md §3.3`）。
 - 部署/平台相关调研依据（lambda_runtime/worker/aws-sdk 等）见 deployment.md。

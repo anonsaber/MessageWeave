@@ -126,10 +126,17 @@ cd /home/okabe/Repo/messageweave && docker run --rm --user 1000:1000 \
 cd /home/okabe/Repo/messageweave && bash scripts/docs_check/run_all.sh
 ```
 
-5 个校验器全过、exit 0 才算通过。只读，从不写文件。
+6 个校验器全过、exit 0 才算通过。只读，从不写文件。
 
 新增 `check_file_size`：`src/`、`web/`、`cloudflare-worker/src/` 下超过 500 行的源文件必须带
 `SPLIT-EVAL:` 标记（AGENTS.md §2.1）。它证明标记存在，不证明写下的拆分理由站得住脚。
+
+新增 `audit_paths`：`docs/*.md` 与 `AGENTS.md` 里反引号内的路径型 token 必须真实存在。
+它存在的原因是：文档曾出现从未创建的路径，而虚构路径读起来和真实路径完全一样，读者无法分辨
+「我们决定不做」和「这写错了」。`docs/retired.md` 同样在检查范围内——废弃登记里的路径也必须真实，
+未落地的形态只以文字描述。豁免只有三类，都在脚本里可见：指向外部仓库的所有者前缀
+（`stalwartlabs/...`）、git 历史可证已删除的文件、以及一份注明理由的知名文件名白名单。
+它不检查反引号外的散文，裸文件名也只按同名校验解析。
 
 **`0 error` 只证明「可达」**：行号存在、引用可解析、表格列数一致、标记就位。
 **它不证明语义正确。** 报告校验结果时必须说明这个区分。

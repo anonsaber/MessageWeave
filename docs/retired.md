@@ -1,9 +1,10 @@
 # 废弃与未采用路线（Retired Routes）
 
-> 本文只记录**两类**东西：①评估过但没采纳的路线；②曾经写进文档、实际上从未存在或从未实现的名字（虚构条目）。
+> 本文只记录**三类**东西：①评估过但没采纳的路线；②真实存在过、后来被删掉的文档；③曾经写进文档、实际上从未存在或从未实现的名字。
 > 目的是**留原因、防复发**——以后看到这些名字，能立刻知道该用什么。
 > 当前真实实现与可核对事实见 `docs/reference.md`；缺口与阻塞见 `docs/roadmap.md`；当前设计见 `docs/design.md`。
 > 本文**没有行动项**。若某条变成要做的事，去 `docs/roadmap.md` 登记，本文条目保留为决策依据。
+> 本文**不引用任何不存在的路径**：凡路径，一律指向仓库中真实存在的文件；曾被写进文档但从未落地的路径只以文字描述其形态、不逐字复述，以免又被抄回正文或被人当成真实文件去查阅。
 > 验证基线：`b2dbe7c`。
 
 ---
@@ -20,8 +21,8 @@
 | `BotError::Jmap` / `Storage` / `RateLimited` / `Unauthorized` / `Llm` | 目标形态变体，未落地 | 当时为统一承接 JMAP/Redis/限流/授权/LLM 五类错误而设计；现已由各模块自行处理 | 当前 `BotError` 仅 `Config` / `Io` / `Json` / `State` 四变体（`src/error.rs` 全文） |
 | Telegram 服务端 30 msg/s 限流桶 + 429 专用分支 | 目标设计，未实现 | 无真实 Bot 压测数据，不预设实现 | `src/channel.rs` 的 `max_retries`（默认 3，硬上限 5）通用重试；缺口见 `docs/roadmap.md` |
 | 多步对话 FSM（`Idle` / `AwaitClarify` / `AwaitConfirm` / `Analyzing` / `AwaitFallback`） | 目标设计，未落地 | 当前 AI 授权只需一个布尔+过期时间，多步态属过度设计 | Redis TTL 授权态，键与 TTL 见 `docs/reference.md` 的 AI 授权态一节 |
-| `src/domain/llm/`、`src/domain/command.rs`、`src/domain/notification.rs`、`src/domain/state.rs`、`src/channel/`、`src/notify/`、`src/util/`、`tests/` 子模块拆分 | 目标形态目录，未落地 | 代码量未到需要拆分的规模 | 实际结构见 `docs/design.md` 的工程结构一节：领域层是 `src/domain.rs` + `src/domain/jmap/`（仅 `client.rs`）；LLM 在 `src/ai.rs`；通知在 `src/notify.rs`；**`src/util/` 与 `tests/` 根本不存在**（加密逻辑内联在 `src/state.rs` / `src/config.rs`） |
-| `tests/telegram_dispatch.rs` | 目标形态测试，未落地 | 依附 teloxide 测试模式 | `src/channel.rs` 的单元测试（`#[test]`） |
+| 把领域 / 渠道 / 通知 / util 各层拆成独立目录（子模块拆分方案） | 目标形态目录，未落地 | 代码量未到需要拆分的规模 | 实际结构见 `docs/design.md` 的工程结构一节：领域层是 `src/domain.rs` + `src/domain/jmap/`（仅 `client.rs`）；LLM 在 `src/ai.rs`；通知在 `src/notify.rs`；加密与工具逻辑内联在 `src/state.rs` / `src/config.rs`，没有独立的 util 层，也没有集成测试目录 |
+| teloxide 风格的出站消息派发集成测试 | 目标形态测试，未落地 | 依附 teloxide 测试模式 | `src/channel.rs` 的单元测试（`#[test]`） |
 | docker-compose `healthcheck` 示例（`message-weave health --addr ...`） | 已删除的示例 | 运行镜像 `debian:bookworm-slim` 内无 `curl`/`wget`，且 `src/main.rs` 无 CLI 子命令解析，示例照抄必失败 | 由平台 ingress 探测 `/ready`；说明见 `docs/deployment.md` 的就绪探测一节 |
 
 | SPA 管理凭据 = `REDIS_URL` 的 Redis ACL 密码 | 未采用路线 | 混淆基础设施凭据与 UI 管理密码；Redis 无 ACL 密码（TLS-only 托管 Redis）时 `bootstrap_token` 的 `.is_empty()` 守卫让 SPA 永久 401 | 改用 `CONFIG_ENCRYPTION_KEY`（启动必填的 32 字节高熵 hex，常数时间比较） |
@@ -72,7 +73,7 @@
 
 | 条目 | 类型 | 原因 | 替代或现状 |
 |---|---|---|---|
-| `channel/telegram/{mod,commands,session,render}.rs` | 虚构文件 | 目标目录树里画出，从未创建 | 命令解析在 `parse_intent`（`src/worker.rs`）；会话/授权态走 Redis TTL（`docs/reference.md` 的 AI 授权态一节）；渲染函数在 `src/channel.rs` 内 |
+| 把 Telegram 接入拆成「模块入口 / 命令解析 / 会话状态 / 回复渲染」四个文件的目录方案 | 虚构目录方案 | 目标目录树里画出，从未创建 | 命令解析在 `parse_intent`（`src/worker.rs`）；会话/授权态走 Redis TTL（`docs/reference.md` 的 AI 授权态一节）；渲染函数在 `src/channel.rs` 内 |
 | `delivery:pending:{stream}` | 虚构键 | 与 Redis Streams 的 pending-entries list（PEL）混淆——PEL 由 Redis 内部维护，不是可写键 | 真实键：`delivery:inflight:{stream}:{id}`（EX 60）与 `delivery:committed:{stream}:{id}`（EX 604_800），见 `docs/reference.md` 的投递流水线键一节 |
 | `check_config_reload` | 虚构函数 | 未提交草稿中的名字，从未进入代码 | 热更新为 `refresh_business_config`（`src/notify.rs:718`） |
 | `push:registration:{sha256(callback_url)}` 曾被写成「360s 注册单飞锁」 | 事实误标 | 该键是 7d 回调→订阅 ID 映射 | 真正的 360s 单飞锁是 `lock:push-register:{sha256(callback_url)}`（`src/notify.rs:898-901`） |
@@ -81,9 +82,9 @@
 
 ---
 
-| `src/domain/llm/` 整个模块族 | 虚构模块树 | `domain/` 下只有 `jmap.rs` 与 `jmap/client.rs`；LLM 只有 `src/ai.rs` 一个文件（`LlmClient`） | 无 |
+| 把 LLM 能力建成领域子模块族（配置 / 回退 / 策略 / 审计分层） | 虚构模块树 | `domain/` 下只有 `jmap.rs` 与 `jmap/client.rs`；LLM 只有 `src/ai.rs` 一个文件（`LlmClient`） | 无 |
 | `ai::config` / `ai::fallback` / `ai::policy` / `ai::audit` | 虚构模块 | LLM 配置在 `config.rs::LlmConfig`，运行时参数在 `state.rs::OutboundConfig`（经 `RuntimeConfigProvider` 下发），无 policy/audit 概念 | 无 |
-| `channel/mod.rs` | 虚构文件 | 渠道层就是 `src/channel.rs`，不是 `channel/` 目录 | 无 |
+| 把渠道层建成目录模块（含模块入口文件） | 虚构目录 | 渠道层就是 `src/channel.rs` 一个文件 | 无 |
 | `notify::push_handler` / `notify::worker` / `notify::reconcile` 作为模块路径 | 虚构模块路径 | 这些是 `src/notify.rs` 内的自由函数（`jmap_push` / `worker` / `reconcile`），不是模块路径 | 无 |
 | `mod_dedup` / `mod_streams` / `mod_sincestate` | 虚构模块名 | `state.rs` / `notify.rs` 都是平铺文件，无子模块；去重与 Streams 逻辑以自由函数存在 | 无 |
 | `PushVerification` 类型 | 虚构类型 | 未定义；`register_push`（`notify.rs:885`）内联处理回调 URL 与验证码回写 | 无 |
@@ -97,7 +98,7 @@
 | 附件下载（`send_document` / `Blob/get` / 下载按钮） | 未实施 | JMAP 侧只读；邮件附件仅以 `has_attachment: bool` 形式出现 | 无 |
 | `/flag` / `/unseen` / 发信命令 | 未实施 | 当前识别 6 个意图（帮助 / 同意 / 摘要 / 搜索 / 普通消息 / 未识别）；其中 `/search` 已实现（`worker.rs:533`） | 无 |
 | `Identity` 概念 | 未实施 | 账号识别只依赖 `ACCOUNT_ID`，无身份层抽象 | 无 |
-| `run_mode.rs`（作为单独文件） | 虚构文件 | 不存在该文件；`RUN_MODE` 曾由 `config.rs` 读取并在 `src/main.rs` 校验取值，**该变量与校验块现已一并删除**（见 §4）；从未存在 `validate_env_or_exit` 这类函数 | 无 |
+| 把 `RUN_MODE` 抽成独立配置文件 | 虚构拆分方案 | `RUN_MODE` 曾由 `config.rs` 读取并在 `src/main.rs` 校验取值，**该变量与校验块现已一并删除**（见 §4）；从未存在 `validate_env_or_exit` 这类函数 | 无 |
 | docker-compose `message-weave health --addr` 示例 | 虚构命令 | 应用无 CLI 子命令；健康检查端点是 `GET /healthz` 与 `GET /ready` | 见 `docs/deployment.md` 的 Health-check 表 |
 | 早期设计辩论问题（消息格式 / 长邮件阈值 / 附件策略 / Identity / 监控 / LLM 供应商 / 熔断等 17 条） | 已由代码回答 | 均已被实现的代码给出答案，不再属于待确认项 | 见 `docs/design.md` 的「已由代码回答的早期问题」一节 |
 
@@ -106,7 +107,7 @@
 | 条目 | 类型 | 原因 | 替代或现状 |
 |---|---|---|---|
 | `docs/todo.md` | 已取代（已删除） | 结构不清，与 design/deployment 重叠，且曾承载「本轮已收口」这类历史叙述 | `docs/roadmap.md`（只放缺口、阻塞、阶段目标、决策待定、验收待办） |
-| `HANDOFF.md`（根目录） | 临时交接件（已删除，**从未进入 git 历史**） | 交接内容应归位到常驻文档 | 内容并入 `docs/design.md`、`docs/deployment.md`、`docs/reference.md`、`docs/roadmap.md` |
+| 根目录临时交接件（不留此类文件） | 临时交接件，**从未进入 git 历史** | 交接内容应归位到常驻文档，不留根目录临时件 | 内容并入 `docs/design.md`、`docs/deployment.md`、`docs/reference.md`、`docs/roadmap.md` |
 
 ---
 

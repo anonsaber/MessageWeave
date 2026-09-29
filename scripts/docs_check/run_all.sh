@@ -22,11 +22,25 @@
 #   check_file_size every source file over 500 lines carries the SPLIT-EVAL
 #                   marker required by AGENTS.md §2.1. LIMITATION: it proves
 #                   the marker exists, not that the written reason is sound.
+#   audit_paths     every path-shaped token written in backticks in the docs
+#                   (docs/*.md and AGENTS.md) resolves to a real file or
+#                   directory. It exists so no document can name a path that
+#                   was never created — including in docs/retired.md, where a
+#                   fictional path reads the same as a real one. Exemptions,
+#                   all visible in the script: an owning prefix that attributes
+#                   the path to an external repo (stalwartlabs/...), a file
+#                   that git history proves was deleted, and a short allowlist
+#                   of well-known filenames the prose says this repo lacks.
+#                   LIMITATION: it only sees paths inside backticks, and a
+#                   bare filename resolves against any same-named file.
 #
-# audit_anchors and check_sec_refs only scan prose: lines inside fenced code
-# blocks are skipped, so examples and tables holding code do not raise noise.
+# audit_anchors, check_sec_refs and audit_paths only scan prose: lines inside
+# fenced code blocks are skipped, so examples and tables holding code do not
+# raise noise.
 # check_file_size only scans src/, web/ and cloudflare-worker/src/ — docs and
 # tests are out of scope.
+# audit_paths scans docs/*.md and AGENTS.md, and only tokens inside inline
+# backticks — a path written as plain prose is invisible to it.
 #
 # Root is derived from this file's own location, so the whole suite works from a
 # clean clone without editing any path.
@@ -37,7 +51,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 rc=0
 fail=0
 
-for script in validate_docs check_tables audit_anchors check_sec_refs check_file_size; do
+for script in validate_docs check_tables audit_anchors check_sec_refs check_file_size audit_paths; do
     out="$(python3 "$here/$script.py" 2>&1)"
     code=$?
     # Each check prints "=== NAME (n errors) ===" as its summary, but not
@@ -54,7 +68,7 @@ for script in validate_docs check_tables audit_anchors check_sec_refs check_file
 done
 
 if [ "$fail" -eq 0 ]; then
-    echo "GATE-DOCS: PASS (5/5 checks clean)"
+    echo "GATE-DOCS: PASS (6/6 checks clean)"
 else
     echo "GATE-DOCS: FAIL ($fail check(s) reported errors)"
 fi
