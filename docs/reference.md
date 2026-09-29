@@ -3,8 +3,10 @@
 > **This file is the single source of truth for verifiable facts.**
 > When any other document disagrees with this one, this one wins.
 >
-> **Verified against commit `b2dbe7c`.** Line numbers in this file were read from that
-> commit with the working tree clean.
+> **This file carries no source line numbers, by design.** They are not part of the
+> verification: this file documents *which symbol* does *what*, and line numbers are
+> renumbered by every unrelated edit to the same file. `docs/deployment.md` keeps its
+> line numbers, because that file is an operator runbook read mid-incident.
 >
 > **Maintenance responsibility.** Any change to the public API of `src/config.rs`,
 > `src/state.rs`, `src/worker.rs`, or `src/notify.rs`, or to **any Redis key name or TTL**,
@@ -14,9 +16,13 @@
 Conventions used throughout:
 
 - **TTL** is in seconds. "No EX" means the key never expires and lives until explicitly deleted.
-- **Writer / Reader** name the code symbol that performs the operation; the line number is
-  an annotation for fast navigation, not an identity.
-- Only this file carries line numbers. All other documents reference symbols by name.
+- **Writer / Reader** name the code symbol that performs the operation. Symbol names are
+  the identity; this file deliberately records no line numbers (see the note above), so
+  it stays true across renumbering.
+
+---
+
+
 
 ---
 
@@ -26,35 +32,34 @@ Conventions used throughout:
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `config:business` | No EX | `set_business_config` (state.rs:577, key at state.rs:581); first-time write via `SET NX` in `initialize_business_config` (state.rs:592) | `get_business_config` (state.rs:566) |
-| `config:business:revision` | No EX | atomic `INCR` on every config write (state.rs:585); `SET 1 NX` on first-time init (state.rs:605) | `business_config_revision` (state.rs:640) |
-| `config:outbound` | No EX | `set_outbound_config` (state.rs:553) | `get_outbound_config` (state.rs:537) |
-| `config:enabled` | No EX | `set_enabled` (state.rs:658) | `is_enabled` (state.rs:649) |
-| `config:admin_session` | EX 900 | `put_admin_session` (state.rs:615, key at state.rs:618) | `admin_session_valid` (state.rs:627); cleared by `revoke_admin_session` (state.rs:636) |
+| `config:business` | No EX | `set_business_config`; first-time write via `SET NX` in `initialize_business_config` | `get_business_config` |
+| `config:business:revision` | No EX | atomic `INCR` on every config write; `SET 1 NX` on first-time init | `business_config_revision` |
+| `config:outbound` | No EX | `set_outbound_config` | `get_outbound_config` |
+| `config:enabled` | No EX | `set_enabled` | `is_enabled` |
+| `config:admin_session` | EX 900 | `put_admin_session` | `admin_session_valid`; cleared by `revoke_admin_session` |
 
 Notes:
 
 - `config:business:revision` is an **atomic Redis `INCR`**, not a read-modify-write. Every
-  request-bearing entry point calls `refresh_business_config` (notify.rs:718), which only
-  rebuilds the worker when the remote revision exceeds the cached local value
-  (notify.rs:723-725) — that guard is what keeps a stale or malformed snapshot from turning
-  into a rebuild loop.
+  request-bearing entry point calls `refresh_business_config`, which only
+  rebuilds the worker when the remote revision exceeds the cached local value — that
+  guard is what keeps a stale or malformed snapshot from turning into a rebuild loop.
 - `config:admin_session` carries no TTL metadata beyond the literal `EX 900` passed at write
   time; the handler reports the same window in its response body as `expires_in: 900`
-  (notify.rs:788).
+  on the handler side.
 - `config:enabled` is consulted as a gate; missing or `false` keeps business processing off.
 
 ### 1.2 AI consent
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `consent:ai:{chat_id}` | EX 3600 / 86_400 / 604_800 / 31_536_000 | `set_ai_consent` (state.rs:505; key at state.rs:507, `EX` at state.rs:512) | `ai_consent_until` (state.rs:519); cleared by `clear_ai_consent` (state.rs:528) |
+| `consent:ai:{chat_id}` | EX 3600 / 86_400 / 604_800 / 31_536_000 | `set_ai_consent` | `ai_consent_until`; cleared by `clear_ai_consent` |
 
 The stored value is an **absolute Unix expiry timestamp**, not a duration; the key's `EX`
-carries the same duration, so the key removes itself (state.rs:509-514).
+carries the same duration, so the key removes itself.
 
 Trigger words are exact Chinese literals with **no English aliases** — the in-app help text
-enforces this itself (`worker.rs:614`):
+enforces this itself (in-app help text in `worker.rs`):
 
 | Input | TTL | Label |
 |---|---|---|
@@ -66,12 +71,12 @@ enforces this itself (`worker.rs:614`):
 | `/ai off`, `关闭 ai`, `撤销授权`, `停止摘要` | — | revoke |
 
 The `/ai …` slash forms are exact matches on the whole message; the Chinese phrases are
-substring matches anywhere in the message (`worker.rs:546-566`, `:581-586`).
+substring matches anywhere in the message (both inside `parse_intent`, `worker.rs`).
 
 `1小时` / `临时1小时` / `直到撤销（最长365天）` are **category labels, not trigger words**:
 typing a label alone grants nothing. Consent never auto-renews.
 
-The same `parse_intent` (worker.rs:543, `Intent` at worker.rs:525) routes `/search <关键词>`
+The same `parse_intent` (`worker.rs`, variants in `Intent`) routes `/search <关键词>`
 and the Chinese prefixes `搜索`, `查找`, `检索` (prefix-matched only, never a substring) to
 `Intent::Search`. Search grants no consent and writes no Redis key.
 
@@ -79,11 +84,11 @@ and the Chinese prefixes `搜索`, `查找`, `检索` (prefix-matched only, neve
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `stalwart:jmap`, `stalwart:telegram` | Stream, no EX | `State::enqueue` (state.rs:283, `XADD` at state.rs:285); call sites notify.rs:253 (TG webhook) and notify.rs:1140 (JMAP push); reconcile path via `claim_dedup_and_enqueue` (worker.rs:394) | `read_batch` over consumer group `stalwart-workers`, consumer `http-worker` (notify.rs:409-410) |
-| `delivery:inflight:{stream}:{id}` | EX 60 | key built at notify.rs:445, `claim_dedup` at notify.rs:446 | `release_dedup` on completion (notify.rs:459, 466, 475) |
-| `delivery:committed:{stream}:{id}` | EX 604_800 | key built at notify.rs:424, `claim_dedup` at notify.rs:458 | `dedup_exists` before send (notify.rs:425) |
-| `retry:{stream}:{id}` | EX 86_400 | `retry_or_dlq` Lua script (key state.rs:481, `INCR` state.rs:485, `EXPIRE` state.rs:486) | reclaim path |
-| `stalwart:jmap:dlq`, `stalwart:telegram:dlq` | Stream, no EX | Lua `XADD` at state.rs:488; name built at notify.rs:429 (`max_attempts` 3, same call) | **nothing in code reads it** |
+| `stalwart:jmap`, `stalwart:telegram` | Stream, no EX | `State::enqueue` (a `XADD`), called from `telegram_webhook` and `jmap_push`; reconcile path via `claim_dedup_and_enqueue` (`worker.rs`) | `read_batch` over consumer group `stalwart-workers`, consumer `http-worker` |
+| `delivery:inflight:{stream}:{id}` | EX 60 | key built and claimed with `claim_dedup` in the delivery path | `release_dedup` on completion |
+| `delivery:committed:{stream}:{id}` | EX 604_800 | key built and claimed with `claim_dedup` in the delivery path | `dedup_exists` before send |
+| `retry:{stream}:{id}` | EX 86_400 | `retry_or_dlq`'s Lua script (`INCR` then `EXPIRE` on the same key) | reclaim path |
+| `stalwart:jmap:dlq`, `stalwart:telegram:dlq` | Stream, no EX | the same Lua script's `XADD`; the name is passed in from `retry_or_dlq`'s call site in the worker (with `max_attempts` 3) | **nothing in code reads it** |
 
 There is no `delivery:pending:{stream}` key — "pending" refers to the Redis Streams
 pending-entries list (PEL), which Redis maintains internally.
@@ -97,17 +102,17 @@ acknowledgement.
 
 The DLQ is **append-and-ack**: the same Lua script that appends to `stalwart:jmap:dlq` /
 `stalwart:telegram:dlq` also `XACK`s the message out of the source stream, so increment, DLQ
-append and source acknowledgement are atomic (state.rs:485-489). No code path reads the DLQ
+append and source acknowledgement are atomic, all inside that one Lua script. No code path reads the DLQ
 back — replay is an operator action, not a service feature.
 
 ### 1.4 Idempotency and rate limits
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `dedup:tg:{update_id}` | EX 86_400 | key at notify.rs:248, `claim_dedup` at notify.rs:249, `release_dedup` at :258 | — |
-| `dedup:jmap:{account}:{email}` | EX 86_400 | key at notify.rs:1135, `claim_dedup` at notify.rs:1136, `release_dedup` at notify.rs:1145; same key rebuilt at worker.rs:390 and claimed with `claim_dedup_and_enqueue` at worker.rs:394 | — |
-| `ratelimit:push-verify:{subscription}` | EX 30 | key at notify.rs:1096, `claim_dedup` at notify.rs:1097 (`push_verify_rate_limited` at :1107) | — |
-| `state:jmap:since` | **No EX** | `set_reconcile_state` (state.rs:676; key at state.rs:679, `SET` without `EX`) | `get_reconcile_state` (state.rs:668) |
+| `dedup:tg:{update_id}` | EX 86_400 | built and claimed with `claim_dedup` in `telegram_webhook`, released with `release_dedup` on a failed enqueue | — |
+| `dedup:jmap:{account}:{email}` | EX 86_400 | built and claimed with `claim_dedup` in `jmap_push`; the same key is rebuilt on the reconcile path and claimed with `claim_dedup_and_enqueue` (`worker.rs`) | — |
+| `ratelimit:push-verify:{subscription}` | EX 30 | built and claimed with `claim_dedup` in `register_push`; a `false` claim is the `429 push_verify_rate_limited` branch | — |
+| `state:jmap:since` | **No EX** | `set_reconcile_state` (a `SET` with no `EX`) | `get_reconcile_state` |
 
 `state:jmap:since` is the only state key that survives indefinitely without an explicit
 delete, by design: it is the reconciliation cursor, and expiring it would force a full
@@ -117,12 +122,12 @@ re-baseline on the next restart.
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `lock:reconcile` | 300 | `acquire_lock` (notify.rs:289) | `renew_lock` heartbeat 90 (notify.rs:302) |
-| `lock:push-register:{sha256(callback_url)}` | 360 | `acquire_lock` (notify.rs:907) | `release_lock` (notify.rs:923, 937, 950, 967, 984, 994) |
+| `lock:reconcile` | 300 | `acquire_lock` in `reconcile` | `renew_lock` from the heartbeat task (90 s) |
+| `lock:push-register:{sha256(callback_url)}` | 360 | `acquire_lock` in `register_push` | `release_lock` on every exit path of `register_push` |
 
 **Why the registration lock is 360 s and not 300 s.** The lock must outlive the longest
 configured JMAP request timeout (300 s), otherwise a slow registration could admit a
-duplicate. Source comment, notify.rs:905-906:
+duplicate. Source comment:
 
 > The lock must outlive the configured 300s maximum JMAP request timeout; this prevents a
 > slow create from admitting a duplicate.
@@ -131,11 +136,11 @@ duplicate. Source comment, notify.rs:905-906:
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `push:subscription:{id}` | EX 300 (caller-supplied, min 1) | `remember_push_subscription` (state.rs:686, called at notify.rs:834) | `push_subscription_verified` (state.rs:703) |
-| `push:subscription:id` | No EX | `remember_push_subscription_id` (state.rs:716) | current-subscription lookup |
-| `push:subscription:{id}:status` | 900 / 300 / 86_400 (min 1 enforced) | `set_push_subscription_status` (state.rs:726, key at state.rs:734); pending at notify.rs:961, verified at notify.rs:846, disabled at notify.rs:1032 | **none** |
-| `push:registration:{sha256(callback_url)}` | EX 604_800 | `remember_push_subscription_for_callback` (state.rs:779, key at state.rs:786, `EX` at state.rs:788; called at notify.rs:978) | `get_push_subscription_for_callback` (state.rs:768); removed by `remove_push_subscription_for_callback` (state.rs:795) |
-| `push:orphan:{subscription_id}` | EX 604_800 | `record_push_orphan` (state.rs:752) | orphan sweep |
+| `push:subscription:{id}` | EX 300 (caller-supplied, min 1) | `remember_push_subscription`, called from `register_push` | `push_subscription_verified` |
+| `push:subscription:id` | No EX | `remember_push_subscription_id` | current-subscription lookup |
+| `push:subscription:{id}:status` | 900 / 300 / 86_400 (min 1 enforced) | `set_push_subscription_status`; `pending` on verification request, `verified` on success, `disabled` on disable | **none** |
+| `push:registration:{sha256(callback_url)}` | EX 604_800 | `remember_push_subscription_for_callback`, called from `register_push` | `get_push_subscription_for_callback`; removed by `remove_push_subscription_for_callback` |
+| `push:orphan:{subscription_id}` | EX 604_800 | `record_push_orphan` | orphan sweep |
 
 **Two distinct keys that are frequently confused. Read this before editing either.**
 
@@ -147,7 +152,7 @@ duplicate. Source comment, notify.rs:905-906:
 They use the same digest but are separate keys with unrelated lifetimes and purposes.
 
 **Annotation: `push:subscription:{id}:status` is write-only by design.**
-The source carries an explicit note at state.rs:211:
+The source carries an explicit note on `state.rs`:
 
 > `push:subscription:{id}:status` is currently write-only
 
@@ -185,13 +190,12 @@ field. `request_id` is always present.
 `Retry-After` has two emission sites, both in `notify.rs`, and the value is always the literal
 string `"30"`:
 
-- `error_response` (`notify.rs:371-379`, inserted at `:375`) sets it **only when its `retry`
-  flag is true**. The readiness failure path (`notify.rs:210`) passes `retry = true`, so `/ready`
-  is covered by that rule rather than by a special case.
-- `error_response_with_id` (`notify.rs:1464-1471`, inserted at `:1467`) sets it
-  **unconditionally**. It is used only for the push register/disable failures
-  `push_state_unavailable` and `push_destroy_failed` (`notify.rs:1233`, `:1250`, `:1267`,
-  `:1304`), which are always `503`.
+- `error_response` sets it **only when its `retry` flag is true**. The readiness failure
+  path passes `retry = true`, so `/ready` is covered by that rule rather than by a
+  special case.
+- `error_response_with_id` sets it **unconditionally**. It is used only for the push
+  register/disable failures `push_state_unavailable` and `push_destroy_failed`, which are
+  always `503`.
 
 `GET /api/status` is the exception that reports setup state with a non-envelope body.
 
@@ -199,13 +203,12 @@ string `"30"`:
 
 ## 3. Backend routes
 
-All HTTP API routes are registered in `router_with_worker_state_runtime_bootstrap`
-(`notify.rs:1575`), with the routes wired at `notify.rs:1604-1622`. The three static SPA routes
-in the last table row are the exception: they live in `web::router()` (`src/web.rs:19-24`) and
-are merged into the router via `.merge(web::router())`: the setup-mode router at `src/main.rs:76`,
-the production router at `src/main.rs:195-205`. The setup-mode router at `src/main.rs:76` mounts
-only three of this table — `/healthz`, `/ready` and `/api/status` — and no business or admin route;
-§5.1 explains why that is deliberate.
+All HTTP API routes are registered in `router_with_worker_state_runtime_bootstrap`.
+The three static SPA routes in the last table row are the exception: they live in
+`web::router()` (`src/web.rs`) and are merged into the router via `.merge(web::router())` —
+in the setup-mode router and again in the production router. The setup-mode router mounts
+only three of this table — `/healthz`, `/ready` and `/api/status` — and no business or
+admin route; §5.1 explains why that is deliberate.
 
 | Method | Path | Handler |
 |---|---|---|
@@ -227,13 +230,13 @@ only three of this table — `/healthz`, `/ready` and `/api/status` — and no b
 | GET | `/api/status` | `setup_status` |
 | GET | `/`, `/assets/config.js`, `/assets/styles.css` | `index` / `script` / `styles` |
 
-The remote-debug surface (`src/debug.rs:72-80`) is merged **only when the debug surface is
-requested — `--debug` on the command line or a truthy `DEBUG_ENABLED` env var — and `DEBUG_TOKEN`
-is non-empty** (`SAF-DEBUG-GATE`, gate logic `src/main.rs:15-25`, wired at `src/main.rs:102-114`,
-`src/notify.rs:1625`); otherwise none of these routes exist and requests fall through to
-axum's generic `404`, not a 401. All seven require `Authorization: Bearer <DEBUG_TOKEN>`,
-checked by `debug_authorized` (`src/debug.rs:45`), which delegates to the production
-`worker_authorized` so the comparison is constant time (`src/notify.rs:1416`).
+The remote-debug surface (`debug_router`, `src/debug.rs`) is merged **only when the
+debug surface is requested — `--debug` on the command line or a truthy `DEBUG_ENABLED`
+env var — and `DEBUG_TOKEN` is non-empty** (`SAF-DEBUG-GATE`; the gate is read in
+`src/main.rs` before either router is built). Otherwise none of these routes exist and
+requests fall through to axum's generic `404`, not a 401. All seven require
+`Authorization: Bearer <DEBUG_TOKEN>`, checked by `debug_authorized`, which delegates to
+the production `worker_authorized` so the comparison is constant time.
 
 | Method | Path | Handler |
 |---|---|---|
@@ -254,13 +257,13 @@ Response conventions:
   completeness (`setup_missing` empty), Redis reachability, and two upstream probes —
   `GET {jmap_origin}/.well-known/jmap` with the configured Basic credentials, and
   `GET https://api.telegram.org/bot<token>/getMe`. Both probes share `PROBE_TIMEOUT` = 3000ms
-  (`notify.rs:122`) and run **in parallel** (`tokio::join!`, `notify.rs:196`), so the worst case
+  and run **in parallel** (`tokio::join!`), so the worst case
   is a single timeout, about 3s. On success the body is a report whose `jmap`/`telegram` fields
   are real probe results. The probes are plain reusable functions (`probe_jmap_session`,
   `probe_telegram_get_me`) also used by the remote-debug path, so they must not be duplicated.
   The JMAP probe deliberately authenticates against the *normalized origin*: probing the raw
   session URL unauthenticated would report not-ready forever and make ingress stop routing.
-- `GET /api/status` (**always 200**, `notify.rs:215-224`) returns
+- `GET /api/status` (**always 200**) returns
   `{"ready": <bool>, "mode": "configured"|"configuration-setup", "missing": [...], "version": "<build-fingerprint>"}`.
   `ready` is `false` and `missing` lists the absent required keys (`REDIS_URL`,
   `CONFIG_ENCRYPTION_KEY`) when a variable is absent — the route itself never errors, so it is
@@ -268,27 +271,27 @@ Response conventions:
   (`<git-sha-or-nogit>+<UTC build time>`) and is how the SPA footer proves a deploy landed.
 - `/debug/*` returns **503** in exactly one place: `POST /debug/notify` when the business
   config is not loaded or there is no outbound client — `service_unavailable` with
-  `Retry-After: 30` (`src/debug.rs:56-58`). The three probe endpoints instead report failure
+  `Retry-After: 30`. The three probe endpoints instead report failure
   **inside a 200 body** (`{"ok":false,"detail":...}`), so an unreachable upstream never looks
   like an outage. `POST /debug/notify` also returns `403 chat_not_allowed` when the chat is
-  outside a *non-empty* allowlist (`src/debug.rs:233-236`) and `502 telegram_send_failed` on
-  a send failure (`src/debug.rs:64-66`).
+  outside a *non-empty* allowlist, and `502 telegram_send_failed` on
+  a send failure.
 - Static assets are served with a strict CSP; see §7.
 
 ---
 
 ## 4. Gateway vs backend route matrix
 
-> **Independently verified.** Source: `cloudflare-worker/src/backends.js` `SAFE_ROUTES`
-> (backends.js:9-26), 16 entries, alongside `ROUTE_METHODS` (index.js:46-63)
+> **Independently verified.** Source: `cloudflare-worker/src/backends.js` `SAFE_ROUTES`,
+> 16 entries, alongside `ROUTE_METHODS` (`index.js`)
 > which fixes one method set per path. The worker entry point is `src/index.js`
-> (wrangler.toml:20); `src/lb.js` performs forwarding and bounded failover (`SAF-LB-PASSTHRU`,
+> (`wrangler.toml`); `src/lb.js` performs forwarding and bounded failover (`SAF-LB-PASSTHRU`,
 > `C-NO-LONG-CONN`).
 
 The gate is **unconditional and fail-closed**. The worker reads no configuration switches at
-all: a path missing from `SAFE_ROUTES` (backends.js:9-26) returns **404** (index.js:82-85), a registered
-path with the wrong method returns **405** (index.js:86-89), and a missing or unparseable
-backend pool returns **503** rather than passing the request through (index.js:91-99).
+all: a path missing from `SAFE_ROUTES` returns **404**, a registered
+path with the wrong method returns **405**, and a missing or unparseable
+backend pool returns **503** rather than passing the request through.
 
 **Forwarded by the worker (16):**
 
@@ -304,13 +307,13 @@ backend pool returns **503** rather than passing the request through (index.js:9
 | Path | Why it is absent from the gateway |
 |---|---|
 | `POST /api/bootstrap` | One-shot trust bootstrap; kept off the public path |
-| `POST /worker` | Queue drain endpoint — driven by the external scheduler, not a human (Bearer-auth'd, `notify.rs:381`; the cron is spelled out in deployment.md §6.3.1); not part of the public gateway path |
+| `POST /worker` | Queue drain endpoint — driven by the external scheduler, not a human (Bearer-auth'd; the cron is spelled out in deployment.md §6.3.1); not part of the public gateway path |
 | `GET /healthz` | Liveness is aggregated by the gateway itself |
 | `/debug/*` (7 routes) | Opt-in remote-debug surface (`SAF-DEBUG-GATE`); absent from `SAFE_ROUTES`, so it is reachable **only** by talking to the backend origin directly |
 
 `GET, PUT /api/enabled` (the `SAF-ENABLE-FLAG` kill switch) **is** forwarded, because the
 admin SPA serves it at the Worker URL and toggles it from the service card (`loadEnabled`
-reads it at `web/config.js:676`, the toggle writes it at `:1048`); both calls are
+reads it, the toggle writes it); both calls are
 admin-session Bearer-auth'd, so the exposure is identical to the already-forwarded
 `/api/admin/session` pair.
 
@@ -320,10 +323,10 @@ needed in front of the backend instances. The SPA's first-boot flow still cannot
 directly, or the bootstrap path must be added to the gateway allowlist.
 
 `POST /api/push/register` and `POST /api/push/disable` **are** forwarded. Both are safe to
-proxy: the callback URL is supplied by the client in the request body (`notify.rs:875`,
-validated as a URL at :1172), and every push subscription record is written to and read back
-from the shared Redis (`lock:push-register:{sha256(url)}`, `get_push_subscription_for_callback`
-at `state.rs:768`), so it does not matter which backend instance the worker picks. Push
+proxy: the callback URL is supplied by the client in the request body and
+validated as a URL before anything is written, and every push subscription record is
+written to and read back from the shared Redis (`lock:push-register:{sha256(url)}`, `get_push_subscription_for_callback`),
+so it does not matter which backend instance the worker picks. Push
 registration therefore no longer requires hitting a specific backend address — see
 deployment.md §10.5.
 
@@ -337,11 +340,11 @@ Three distinct layers. They are not interchangeable.
 
 | Variable | Required | Default | Source |
 |---|---|---|---|
-| `REDIS_URL` | yes | — | read at main.rs:40 |
-| `CONFIG_ENCRYPTION_KEY` | yes | — | `encryption_key_from_env` at main.rs:64 |
-| `PORT` | no | `8080` | `unwrap_or(8080_u16)` at main.rs:45-48. The listener binds it directly (main.rs:49-52); `Config` carries no port field |
-| `DEBUG_ENABLED` | no | — | `std::env::var` at main.rs:104; truthy values are `1`/`true`/`TRUE`/`True`/`yes`/`YES` (exact match); enables the debug surface on its own, paired with `--debug` as an alternative (`SAF-DEBUG-GATE`) |
-| `DEBUG_TOKEN` | no | — | `std::env::var` at main.rs:107, effective only once the debug surface is requested via `DEBUG_ENABLED` or `--debug` (`SAF-DEBUG-GATE` / `SAF-DEBUG-ORIGIN-ONLY`) |
+| `REDIS_URL` | yes | — | read at startup in `src/main.rs` |
+| `CONFIG_ENCRYPTION_KEY` | yes | — | `encryption_key_from_env` |
+| `PORT` | no | `8080` | `unwrap_or(8080_u16)`. The listener binds it directly; `Config` carries no port field |
+| `DEBUG_ENABLED` | no | — | truthy values are `1`/`true`/`TRUE`/`True`/`yes`/`YES` (exact match); enables the debug surface on its own, paired with `--debug` as an alternative (`SAF-DEBUG-GATE`) |
+| `DEBUG_TOKEN` | no | — | effective only once the debug surface is requested via `DEBUG_ENABLED` or `--debug` (`SAF-DEBUG-GATE` / `SAF-DEBUG-ORIGIN-ONLY`) |
 
 `RUN_MODE` **no longer exists**: the identifier was removed together with the legacy
 `Config::from_env()` environment parser (registration in `docs/retired.md`). Both webhook
@@ -349,10 +352,10 @@ and reconcile traffic share one router and reconcile is a standalone `POST /reco
 endpoint, so the variable never changed any runtime behaviour — there is now nothing to set.
 
 **Missing a required variable does not crash the process.** It logs a warning and serves
-`router_configuration_setup` (`notify.rs:1500-1520`), which mounts only `/api/status`,
+`router_configuration_setup`, which mounts only `/api/status`,
 `/ready` and `/healthz` on top of the static SPA. The business and admin routes from §3 are not
-registered at all: `admin_token` is empty, so `constant_time_eq` (`notify.rs:1416`) would reject
-every candidate forever, and `MemoryState` (`state.rs:875`) could not persist a bootstrap
+registered at all: `admin_token` is empty, so `constant_time_eq` would reject
+every candidate forever, and `MemoryState` could not persist a bootstrap
 write anyway. Posting to `/api/bootstrap` in this mode yields `404` (route absent), not a `401`
 that reads as "retry with a better credential". The container stays up and answers the status
 surface while doing no business work. This is a deliberate fail-closed-to-setup posture, and it
@@ -432,28 +435,28 @@ env surface and are listed only so a stale deployment script can be recognised a
 `TG_WEBHOOK_SECRET` · `WORKER_TOKEN`
 
 The `JMAP_*` family is exactly three names. In production the account id arrives as the
-`accountId` request-body field (notify.rs:1122) and is held on the client as
-`account_id` (src/domain/jmap/client.rs:14); the only remaining environment reads of these
-four names are inside the `#[ignore]` real-server smoke test at
-src/domain/jmap/client.rs:517-526, which is not part of the production configuration surface.
+`accountId` request-body field on `jmap_push` and is held on the client as
+`account_id`; the only remaining environment reads of these
+four names are inside the `#[ignore]` real-server smoke test in
+`src/domain/jmap/client.rs`, which is not part of the production configuration surface.
 
 The single prefixed name is `TELEGRAM_CHAT_ID`. Anything else documented as
 `TELEGRAM_BOT_TOKEN` or similar is a documentation error, not a supported variable.
 
 **Trust root.** The SPA admin credential is `CONFIG_ENCRYPTION_KEY` itself: read at startup
-(main.rs:63) and held as `admin_token` (main.rs:92), it is checked in constant time by
-`worker_authorized` (notify.rs:496; compare at notify.rs:1136) at the top of both
-`POST /api/bootstrap` (notify.rs:605) and `POST /api/admin/session` (notify.rs:775). It is
+and held as `admin_token`, it is checked in constant time by
+`worker_authorized` at the top of both
+`POST /api/bootstrap` and `POST /api/admin/session`. It is
 only compared against the request bearer — never echoed, logged, or stored. The session
 issued by `/api/admin/session` is a freshly generated random 32-byte hex token
-(notify.rs:779-788), never the credential; only its digest is retained in Redis under
+(generated per call), never the credential; only its digest is retained in Redis under
 `config:admin_session`. `REDIS_URL` is the Redis connection string alone: an ACL password in
 it, if any, authenticates the Redis connection and is not the credential for any HTTP
 endpoint.
 
 ### 5.4 Notification rendering
 
-`send_notification` (`channel.rs`) is the only function that renders a notification into
+`send_notification` (`src/channel.rs`) is the only function that renders a notification into
 Telegram text, and it renders exactly three metadata lines — never the body, and never an
 LLM summary:
 
@@ -494,10 +497,10 @@ in the SPA and applied hot, with no restart.
 
 | Parameter | Default | Range / cap | Source |
 |---|---|---|---|
-| `jmap_timeout_ms` | 15_000 | 100..=300_000 | default state.rs:56; validated notify.rs:541 |
-| `telegram_timeout_ms` | 10_000 | 100..=300_000 | default state.rs:57; validated notify.rs:542 |
-| `llm_timeout_ms` | 30_000 | 100..=300_000 | default state.rs:58; validated notify.rs:543 |
-| `max_retries` | 3 | hard cap 5 | default state.rs:59; rejected at notify.rs:544; re-clamped at channel.rs:138 |
+| `jmap_timeout_ms` | 15_000 | 100..=300_000 | default in `state.rs`; validated in the write path |
+| `telegram_timeout_ms` | 10_000 | 100..=300_000 | default in `state.rs`; validated in the write path |
+| `llm_timeout_ms` | 30_000 | 100..=300_000 | default in `state.rs`; validated in the write path |
+| `max_retries` | 3 | hard cap 5 | default in `state.rs`; rejected in the write path; re-clamped in `channel.rs` |
 
 There is **no** `LLM_MAX_RETRIES` environment variable; retry count lives in
 `config:outbound` and is bounded at 5 regardless of what is written.
@@ -506,24 +509,24 @@ There is **no** `LLM_MAX_RETRIES` environment variable; retry count lives in
 
 | Constant | Value | Source |
 |---|---|---|
-| `MAX_BASELINE_PAGES` | 100 | worker.rs:249 |
-| `MAX_BASELINE_EMAILS` | 10_000 | worker.rs:250 |
-| `RECONCILE_BUDGET` | 20 s | worker.rs:251 |
-| `CHANGE_WINDOW_CAP` | 4_096 | worker.rs:307 |
-| Lock TTL / heartbeat | 300 s / 90 s | notify.rs:289 / 302 |
+| `MAX_BASELINE_PAGES` | 100 | `worker.rs` |
+| `MAX_BASELINE_EMAILS` | 10_000 | `worker.rs` |
+| `RECONCILE_BUDGET` | 20 s | `worker.rs` |
+| `CHANGE_WINDOW_CAP` | 4_096 | `worker.rs` |
+| Lock TTL / heartbeat | 300 s / 90 s | `reconcile` and its heartbeat task |
 
 `max_changes` is a function parameter, not a constant.
 
 ### 6.3 Idle threshold
 
-XAUTOCLAIM's idle threshold is derived from the live outbound config (state.rs:99):
+XAUTOCLAIM's idle threshold is derived from the live outbound config:
 
 ```
 count × (max_retries + 1) × (jmap_timeout_ms + telegram_timeout_ms + llm_timeout_ms) × 2
 ```
 
-floored at the legacy 300 s single-event ceiling (state.rs:66) and capped at 6 h
-(state.rs:76). The floor is also the fallback when the config cannot be read, so a
+Floored at the legacy 300 s single-event ceiling and capped at 6 h. The floor is also the
+fallback when the config cannot be read, so a
 Redis hiccup never collapses the window. Only duplicate-on-multi-instance is at
 stake, never loss.
 
@@ -531,9 +534,9 @@ stake, never loss.
 
 | Constant | Value | Source |
 |---|---|---|
-| `SEARCH_LIMIT` | 10 | worker.rs:619 |
-| `SEARCH_SUBJECT_MAX` | 120 chars | worker.rs:621 |
-| `SEARCH_PREVIEW_MAX` | 160 chars | worker.rs:623 |
+| `SEARCH_LIMIT` | 10 | `worker.rs` |
+| `SEARCH_SUBJECT_MAX` | 120 chars | `worker.rs` |
+| `SEARCH_PREVIEW_MAX` | 160 chars | `worker.rs` |
 
 ---
 
@@ -541,21 +544,21 @@ stake, never loss.
 
 Served from `src/web.rs`.
 
-- Three routes only: `GET /`, `GET /assets/config.js`, `GET /assets/styles.css` (web.rs:21-23).
+- Three routes only: `GET /`, `GET /assets/config.js`, `GET /assets/styles.css`.
   Everything else returns 404.
-- Assets are embedded at compile time with `include_str!` (web.rs:15-17). There is no
+- Assets are embedded at compile time with `include_str!`. There is no
   filesystem access at runtime.
 - Every response carries `Content-Type`, `Cache-Control: no-store`,
-  `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer` (web.rs:43-51).
-- CSP is applied **only to the HTML document**: the constant is at web.rs:39, inserted inside
-  an `if html` block (web.rs:53-58):
+  `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
+- CSP is applied **only to the HTML document**: inserted inside
+  an `if html` block:
 
   ```
   default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';
   form-action 'self'; base-uri 'none'; frame-ancestors 'none'
   ```
 
-- `X-Frame-Options: DENY` is set alongside the CSP, on the HTML response only (web.rs:58).
+- `X-Frame-Options: DENY` is set alongside the CSP, on the HTML response only.
 
 `default-src 'none'` is deliberately stricter than `'self'`: the page is closed by default
 and only `script-src`, `style-src` and `connect-src` re-open a same-origin channel.
@@ -566,8 +569,8 @@ and only `script-src`, `style-src` and `connect-src` re-open a same-origin chann
 
 Recorded here so that references elsewhere cannot be mistaken for shipped features.
 
-- `/search` **is** implemented (`bfe0fd8`). Adapter: `Intent::Search` at `worker.rs:553` and
-  at `src/domain/jmap.rs:268`, backed by `search_emails` at `src/domain/jmap/client.rs:320`.
+- `/search` **is** implemented (`bfe0fd8`). Adapter: `Intent::Search` in `worker.rs` and
+  in `src/domain/jmap.rs`, backed by `search_emails` in `src/domain/jmap/client.rs`.
   What is *not* possible: **body-level** snippets. jmap-client `0.4.2` only exposes
   `emailId`/`subject`/`preview` from `SearchSnippet/get`, and its `Filter` type has no comparator syntax, so
   per-part body highlight cannot be modelled through the locked crate. Search degrades to
