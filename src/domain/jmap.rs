@@ -55,14 +55,14 @@ pub struct EmailContent {
     pub is_long: bool,
 }
 
-/// A channel-neutral page of JMAP Email/changes. Deleted IDs are retained for
-/// cursor accounting but are not notified because they have no metadata.
+/// A channel-neutral page of JMAP Email/changes. Only `created` and `updated`
+/// drive notification: deletions have no metadata to notify about and are
+/// therefore dropped at the boundary rather than plumbed through.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmailChanges {
     pub new_state: String,
     pub created: Vec<String>,
     pub updated: Vec<String>,
-    pub destroyed: Vec<String>,
     pub has_more: bool,
 }
 
@@ -320,7 +320,6 @@ mod tests {
                 new_state: "new".into(),
                 created: vec!["email-1".into()],
                 updated: vec![],
-                destroyed: vec![],
                 has_more: false,
             })
         }

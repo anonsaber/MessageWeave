@@ -172,7 +172,6 @@ impl JmapBackend for JmapClientBackend {
             new_state: response.new_state().to_owned(),
             created: response.created().to_owned(),
             updated: response.updated().to_owned(),
-            destroyed: response.destroyed().to_owned(),
             has_more: response.has_more_changes(),
         })
     }

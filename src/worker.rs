@@ -341,7 +341,7 @@ impl<B: JmapBackend> WorkerHandler for MetadataWorker<B> {
                     // Re-baseline instead of failing the invocation. jmap-client
                     // 0.4.2 exposes no reset signal: `ChangesResponse` only
                     // carries `oldState`/`newState`/`hasMoreChanges`/`created`/
-                    // `updated`/`destroyed`, so a `/changes` failure is
+                    // `updated`, so a `/changes` failure is
                     // indistinguishable from "the server no longer replays from
                     // this `sinceState`". Returning `Err(())` leaves the cursor
                     // untouched, so every later invocation retries the same dead
