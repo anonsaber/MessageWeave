@@ -1810,8 +1810,14 @@ mod real_redis_ttl_tests {
             .expect("REDIS_TEST_URL must be reachable");
         let run = unique();
 
-        // Zero is floored to 1 second by `.max(1)`: Redis rejects an empty or
-        // zero EX with "invalid expire time in SET command".
+        // Zero is floored to 1 second by `.max(1)`: Redis rejects a zero EX
+        // with "invalid expire time in SET command", so the unwrap below
+        // already proves the floor ran. PTTL rules out the other variant, where
+        // the EX is silently dropped and the key has no expiry at all (-1). A
+        // live readback can only be counting *down* from the 1s floor, and a
+        // whole second is usually gone by the time this reaches a remote TLS
+        // instance, so the floor is asserted as an upper bound rather than as
+        // an absolute value.
         let zero = format!("ttlcheck:dedup:{run}:zero");
         assert!(state.claim_dedup(&zero, 0).await.unwrap());
         let mut conn = state.connection.clone();
@@ -1820,7 +1826,14 @@ mod real_redis_ttl_tests {
             .query_async(&mut conn)
             .await
             .unwrap();
-        assert_within(pttl, 1, 500);
+        assert!(
+            pttl != -1,
+            "EX 0 was not normalized to EX 1: the dedup key was written with no expiry"
+        );
+        assert!(
+            pttl == -2 || pttl <= 1_000 + 2_000,
+            "expected the remaining TTL to be within the 1s floor, got {pttl} ms"
+        );
         delete_key(state.connection.clone(), &zero).await.unwrap();
 
         // A normal request is honoured to the second.
