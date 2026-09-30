@@ -47,6 +47,18 @@ test("aggregateHealth: all up => 200 ok summary", async () => {
   assert.equal(body.total, 2);
 });
 
+test("healthResponse: version 回显；未传时字段整个消失", async () => {
+  const summary = { available: 1, total: 1, backends: [] };
+
+  const withVersion = await healthResponse(summary, "2026.10.1").json();
+  assert.equal(withVersion.version, "2026.10.1");
+  assert.equal(withVersion.status, "ok");
+
+  // 未传 version 时字段必须整体消失（而非 "undefined"），保持向后兼容。
+  const without = await healthResponse(summary).json();
+  assert.equal("version" in without, false);
+});
+
 test("aggregateHealth: partial down => still reports status (partial ok)", async () => {
   const ctx = mockCtx({
     "https://a.example/healthz": { status: 200 },

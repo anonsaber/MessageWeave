@@ -132,14 +132,15 @@ export async function handleFetch(request, env) {
 
 /** 透传路由的统一错误/兜底日志不打印任何 header/body。 */
 async function handleHealth(env) {
+  const version = lbVersion(env);
   let origins;
   try {
     origins = parseBackendOrigins(env.BACKEND_ORIGINS_JSON).map((o) => o.url);
   } catch {
-    return healthResponse({ available: 0, total: 0, backends: [] });
+    return healthResponse({ available: 0, total: 0, backends: [] }, version);
   }
   if (origins.length === 0) {
-    return healthResponse({ available: 0, total: 0, backends: [] });
+    return healthResponse({ available: 0, total: 0, backends: [] }, version);
   }
   const summary = await aggregateHealth(origins, {
     fetch: lazyFetch(),
@@ -147,7 +148,17 @@ async function handleHealth(env) {
     ttlMs: intFromEnv(env.LB_HEALTH_TTL_MS, DEFAULT_HEALTH_TTL_MS),
     cache: healthCache,
   });
-  return healthResponse(summary);
+  return healthResponse(summary, version);
+}
+
+/**
+ * `/healthz` 的版本标识：确认线上是哪次部署在回答（`env.LB_VERSION`，写在
+ * `wrangler.toml` 的 `[vars]`，随 git 变动；每次改 LB 逻辑的提交同时 bump）。
+ * 不进 `[vars]` 的理由：它必须与代码同版本、可 diff，dashboard 里的手写值反而容易漂。
+ * 未配置回退 `unknown`——探针永远不因缺这个字段而失败。
+ */
+function lbVersion(env) {
+  return env.LB_VERSION ?? "unknown";
 }
 
 /** 惰性绑定 globalThis.fetch，避免解构时丢失 this。 */

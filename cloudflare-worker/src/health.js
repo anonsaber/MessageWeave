@@ -67,13 +67,15 @@ export async function aggregateHealth(origins, ctx) {
 /**
  * 组装 LB 级 `/healthz` 响应：有 ≥1 后端存活 → 200；全 down → 503；无配置 → 200 + 明确标记。
  * @param {{available:number,total:number,backends:unknown[]}} summary
+ * @param {string} [version] 版本标识（env.LB_VERSION）；便于确认线上是哪次部署在回答。
+ *   省略时 JSON 不含该字段（JSON.stringify 丢弃 undefined），保持向后兼容。
  * @returns {Response}
  */
-export function healthResponse(summary) {
+export function healthResponse(summary, version) {
   const healthy = summary.total > 0 && summary.available > 0;
   const status =
     summary.total === 0 ? "no-backends" : healthy ? "ok" : "down";
-  return new Response(JSON.stringify({ status, ...summary }), {
+  return new Response(JSON.stringify({ status, version, ...summary }), {
     status: summary.total === 0 ? 200 : healthy ? 200 : 503,
     headers: { "content-type": "application/json" },
   });

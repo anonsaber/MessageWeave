@@ -35,6 +35,16 @@ test("Worker GET /healthz aggregates backend probes without touching forwarded r
     assert.equal(body.available, 2);
     assert.equal(body.total, 2);
     assert.ok(Array.isArray(body.backends));
+    // 未配置 LB_VERSION 时回退 "unknown"——探针绝不因缺这个字段而失败。
+    assert.equal(body.version, "unknown");
+
+    // 配置后原样回显：确认线上是哪次部署在回答。
+    const res2 = await handleFetch(
+      new Request("https://lb.example/healthz", { method: "GET" }),
+      makeEnv({ LB_VERSION: "2026.10.1" }),
+    );
+    const body2 = await res2.json();
+    assert.equal(body2.version, "2026.10.1");
   } finally {
     restore();
   }

@@ -67,6 +67,7 @@
 | `LB_MAX_ATTEMPTS` | 否 | 每请求最多 origin 尝试次数；默认 `2`（= 1 次故障转移）。`POST /reconcile` 固定为 `1`。 |
 | `LB_RECONCILE_TIMEOUT_MS` | 否 | 仅 `POST /reconcile` 的单 origin 超时覆盖；默认 `320000`（须大于后端锁初租 300s + 心跳余量）。 |
 | `LB_HEALTH_TTL_MS` | 否 | 健康探测缓存 TTL；默认 `30000`。 |
+| `LB_VERSION` | 否 | `/healthz` 响应体里的 `version` 字段，用于确认线上是哪次部署在回答；取自 `wrangler.toml` 的 `[vars]`（当前 `2026.10.1`），改 LB 逻辑的提交同时 bump |
 
 > 默认写在 `wrangler.toml` 的 `[vars]`（**明文例外**，因为当前值只是公开可达的 https origin，
 > 不是凭据）。一旦要放内网地址、带内嵌凭据的 URL、或不想公开的 staging 主机名，

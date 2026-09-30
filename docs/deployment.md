@@ -737,7 +737,7 @@ Stalwart PushSub ────┼─▶ https://lb.<you>.workers.dev      ← 唯
 ### 10.4 路由与故障转移
 
 - **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **16 条**（`SAFE_ROUTES` at `backends.js:9-26` + `ROUTE_METHODS` at `index.js:46-63`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`GET|PUT /api/business-config`、`POST /api/business-config/preflight`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`GET|PUT /api/enabled`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 4 类不在 safelist**：`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`POST /worker`（队列排空端点，由外部调度周期性调用而非人工触发，Bearer 鉴权，见 §6.3.1）、`GET /healthz`（网关自行聚合，不转发）、`/debug/*`（7 条远程联调面，`SAF-DEBUG-GATE`，只能直连后端 origin，见 §2.1）——**这 4 类都不承载外部业务流量，因此后端实例前不需要第二道入口**。`GET|PUT /api/enabled` 属于必须透传的例外：管理 SPA 本身只部署在 Worker 域名下，业务总开关由它读取与切换（`loadEnabled` 在 `web/config.js:676` 读、开关写入在 `:1048`），缺了这条白名单，SPA 里那个开关在后端直连模式下可用、经网关部署时恒 404；该路由已强制 admin-session Bearer 鉴权，暴露面与同在白名单内的 `/api/admin/session` 完全一致。`GET|PUT /api/business-config` 与 `POST /api/business-config/preflight` 同属此类必须透传的路由：SPA 由 Worker 服务，配置回读、提交前校验与保存都由它发起，缺了这两条，回读与预校验经网关部署时恒 404/405，整条配置管理页面只剩后端直连可用；两者同样强制 admin-session Bearer 鉴权，且回读只返回密钥存在性布尔（`SAF-NO-SECRET-ECHO`），不新增凭据暴露面。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
-- **健康聚合（`MOD-HEALTH-AGG`）**：Worker 自行承载 `GET /healthz`，按 TTL 缓存（默认 30s，`LB_HEALTH_TTL_MS` 可调）探测各后端 `/healthz`，返回 `{status, available, total, backends:[{origin,up,status}]}`；≥1 后端 up → 200，全 down → 503。`/ready` 透传给后端，做配置 + Redis + 出站只读探测（JMAP session、TG getMe，各 3s、并行，最坏约 3s），不触发业务副作用。
+- **健康聚合（`MOD-HEALTH-AGG`）**：Worker 自行承载 `GET /healthz`，按 TTL 缓存（默认 30s，`LB_HEALTH_TTL_MS` 可调）探测各后端 `/healthz`，返回 `{status, version, available, total, backends:[{origin,up,status}]}`（`version` 取 `LB_VERSION`，用于确认线上是哪次部署在回答）；≥1 后端 up → 200，全 down → 503。`/ready` 透传给后端，做配置 + Redis + 出站只读探测（JMAP session、TG getMe，各 3s、并行，最坏约 3s），不触发业务副作用。
 - **故障转移（`forwardWithFailover`）**：每次请求最多 `min(LB_MAX_ATTEMPTS, origins.length)` 次尝试；**仅**超时（AbortError）或 5xx 触发换下一个 origin；4xx/2xx/3xx 直接返回；默认 `LB_MAX_ATTEMPTS=2`（首次 + 1 次故障转移）。**例外：`POST /reconcile` 固定 `maxAttempts=1`，绝不故障转移**——它持集群级单飞锁，切实例只会立刻撞 `409`；其单请求超时取 `LB_RECONCILE_TIMEOUT_MS`（默认 `320000` ms），其余路由不受影响。
 - **随机分摊**：起点 origin 按 `Math.random` 随机化，实现双活；单 origin 配置时退化为确定性。
 - **全失败兜底**：返回 `503 All Backends Unavailable`，交由 Telegram / Stalwart 自动重投（**不丢消息**）。
@@ -793,6 +793,7 @@ npx wrangler secret put LB_HEALTH_TTL_MS        # 默认 30000ms
 ```toml
 [vars]
 BACKEND_ORIGINS_JSON = '["https://messageweave-eu-1.motofans.club"]'
+LB_VERSION = "2026.10.1"
 ```
 
 **明文例外及其边界**：origin 只是公开可达的 https 地址，不是凭据，所以可以随仓库走（好处是
@@ -827,7 +828,7 @@ npx wrangler secret put BACKEND_ORIGINS_JSON
    这条已修掉：`wrangler.toml` 现已全部展开成 `#` 行，`wrangler deploy --dry-run` 通过（上传 31.48 KiB）。
 2. **`npm test` 在 Node 22.23 上原先跑不起来**：脚本写的是 `node --test test/`，Node 会把 `test/`
    当成模块路径去 require，报 `MODULE_NOT_FOUND`。已改成 `node --test`（不加参数自动发现 `test/`），
-   仍为 32 个用例全通过（`cloudflare-worker/test/backends.test.js` 6 / `cloudflare-worker/test/health.test.js` 4 / `cloudflare-worker/test/index.test.js` 12 / `cloudflare-worker/test/lb.test.js` 10）。
+   当前为 35 个用例全通过（`cloudflare-worker/test/backends.test.js` 6 / `cloudflare-worker/test/health.test.js` 5 / `cloudflare-worker/test/index.test.js` 12 / `cloudflare-worker/test/lb.test.js` 12；lb 含 2 条不可变响应头回归，health 含 1 条 `version` 回显）。
 
 **部署与验证**
 
@@ -843,7 +844,8 @@ curl https://<your-worker>.workers.dev/healthz
 **验证（发布前必做）**
 1. `cd cloudflare-worker && npm test`（Node 单测，代理逻辑 + 健康聚合 + 超时/失败重试 + safelist）。
 2. `npx wrangler deploy --env production` 后 `curl <worker-url>/healthz` 看**响应体里的 `available`**：
-   必须 `available ≥ 1` 才算接通。
+   必须 `available ≥ 1` 才算接通；同时核对 `version` 等于 `wrangler.toml` 里的 `LB_VERSION`，
+   不等就说明跑的还是旧部署。
    ⚠️ **只看 HTTP 200 会误判**：`/healthz` 是 Worker 自己生成的（不透传后端，`cloudflare-worker/src/index.js:75`），
    而且 `BACKEND_ORIGINS_JSON` 缺失、格式错或为空时，`handleHealth` 会吞掉解析异常并返回
    **HTTP 200 + `{"status":"no-backends","available":0,"total":0}`**（`cloudflare-worker/src/index.js:138` 的 catch）。
