@@ -116,7 +116,7 @@ cd /home/okabe/Repo/messageweave && docker run --rm --user 1000:1000 \
   bash -lc 'export PATH=/usr/local/cargo/bin:$PATH; cargo fmt --all -- --check && cargo check --locked && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked 2>&1 | tail -12'
 ```
 
-**当前基线：86 passed / 0 failed / 2 ignored**（2026-09-30 复测；ignored：`real_server_tests::session_list_and_read_smoke` 与 `debug::tests::debug_config_reports_timezone_of_business_configured_app`，均需外部真实 JMAP 服务器凭据）。
+**当前基线：88 passed / 0 failed / 2 ignored**（2026-09-30 复测；ignored：`real_server_tests::session_list_and_read_smoke` 与 `debug::tests::debug_config_reports_timezone_of_business_configured_app`，均需外部真实 JMAP 服务器凭据）。
 
 **注意**：`docker run` 的 bash `-lc` 脚本必须用**单引号**包裹。用双引号会先在宿主机展开 `$PWD` / `$PATH`，容器内找不到 cargo。
 

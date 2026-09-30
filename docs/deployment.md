@@ -78,7 +78,7 @@
 
 **鉴权**
 
-7 条路由全部要求 `Authorization: Bearer <DEBUG_TOKEN>`，统一走 `debug_authorized`（`src/debug.rs:45`），它委托生产同款 `worker_authorized`（`src/notify.rs:496`），因此令牌是**常数时间比较**（`src/notify.rs:1530`）。失败回 `401 unauthorized`，且不设 `Retry-After`（`src/debug.rs:52-54`）。
+7 条路由全部要求 `Authorization: Bearer <DEBUG_TOKEN>`，统一走 `debug_authorized`（`src/debug.rs:47-52`），它委托生产同款 `worker_authorized`（`src/notify.rs:496`），因此令牌是**常数时间比较**（`src/notify.rs:1530`）。失败回 `401 unauthorized`，且不设 `Retry-After`（`src/debug.rs:54-56`）。
 
 **7 条路由与预期状态码**（注册于 `src/debug.rs:72-80`，路径为字面量，无常量抽取）
 
@@ -86,20 +86,22 @@
 |---|---|---|
 | `GET /debug/ping` | `200 {"ok":true}` | 401 |
 | `GET /debug/config` | `200` 见下段 | 401 |
-| `GET /debug/redis` | `200 {"reachable":true,"global_enabled":…}` | 401；Redis 探活失败**仍为 200** `{"reachable":false,"detail":"redis_probe_failed"}`，不返回 503 |
+| `GET /debug/redis` | `200 {"reachable":true,"global_enabled":…}` | 401；Redis 探活失败**仍为 200** `{"reachable":false,"detail":"<classified>"}`，不返回 503 |
 | `GET /debug/jmap` | `200 {"ok":true}` | 401；探针失败**仍为 200** `{"ok":false,"detail":…}`（与 `/ready` 共用同一探针） |
 | `GET /debug/telegram` | `200 {"ok":true}` | 401；同上，探针失败返回 200 + `ok:false` |
 | `GET /debug/worker` | `200`（`revision`、`reconcile_cursor`、`outbound` 预算） | 401 |
-| `POST /debug/notify` | `200 {"ok":true,"result":{…}}` | 401；业务配置未加载或无出站客户端 → `503 service_unavailable` + `Retry-After: 30`（`src/debug.rs:56-58`）；`chat_id` 不在白名单 → `403 chat_not_allowed`（`src/debug.rs:60-62`）；Telegram 发送失败 → `502 telegram_send_failed`（`src/debug.rs:64-66`） |
+| `POST /debug/notify` | `200 {"ok":true,"result":{…}}` | 401；业务配置未加载或无出站客户端 → `503 service_unavailable` + `Retry-After: 30`（`src/debug.rs:58-60`）；`chat_id` 不在白名单 → `403 chat_not_allowed`（`src/debug.rs:62-64`）；Telegram 发送失败 → `502 telegram_send_failed`（`src/debug.rs:66-68`） |
 
-`/debug/config` 的响应字段（`src/debug.rs:110-148`）：恒有 `revision`、`setup_missing`、`business_configured`、`allowlist_size`；业务配置存在时再加 `timezone`（IANA 时区名字符串，如 `Asia/Tokyo`）、`jmap.{session_url,username,account_id}`、`telegram.{chat_id,webhook_secret_configured}`、`worker.{worker_token_configured,reconcile_token_configured}`、`llm.{enabled,allow_net,api_key_configured,base_url,model}`、`outbound.{jmap_timeout_ms,telegram_timeout_ms,llm_timeout_ms,max_retries}`；配置缺失时只回 `business_configured:false` + `allowlist_size`。
+`/debug/redis` 失败时的 `detail` 取值（`src/debug.rs:176-194`）：`authentication_failed` / `io_error` / `busy_loading` / `client_error` / `response_error`（redis 侧，`ErrorKind` 为 `#[non_exhaustive]`，未识别归 `response_error`）或 `state_lock_poisoned` / `encryption_failed`（本进程侧）。这一分类就是区分「密码写错」与「Redis 宕了」的唯一依据。
+
+`/debug/config` 的响应字段（`src/debug.rs:96-152`）：恒有 `revision`、`setup_missing`、`business_configured`、`allowlist_size`；业务配置存在时再加 `timezone`（IANA 时区名字符串，如 `Asia/Tokyo`）、`jmap.{session_url,username,account_id}`、`telegram.{chat_id,webhook_secret_configured}`、`worker.{worker_token_configured,reconcile_token_configured}`、`llm.{enabled,allow_net,api_key_configured,base_url,model}`、`outbound.{jmap_timeout_ms,telegram_timeout_ms,llm_timeout_ms,max_retries}`；配置缺失时只回 `business_configured:false` + `allowlist_size`。
 
 方法不匹配先于鉴权判定（例如 `GET /debug/notify` 返回 `405`）。
 
 **三条约束，部署时务必确认**
 
-- **绝不回显凭据值**：`debug_config`（`src/debug.rs:94`）对每个 Secret 字段只输出 `*_configured` **布尔**——JMAP 密码、bot token、`worker_token`、`reconcile_token`、LLM `api_key` 一律不落响应体（`SAF-DEBUG-AUTH`）。注意这是「不含凭据」，不是「全脱敏」：**非密文的身份与预算字段是明文返回的**（JMAP session URL 与 username、Telegram `chat_id`、LLM `base_url`/`model`、各类超时与重试数），所以该面仍只能放在可信网络上。
-- **`/debug/notify` 受 chat 白名单约束，但空白名单不拦截**：它复用生产同一份白名单快照（`src/notify.rs:1536`），判定条件是「白名单**非空**且 `chat_id` 不在其中」才回 `403 chat_not_allowed`（`src/debug.rs:233-236`）。因此已配置白名单时无法绕过业务侧发送限制；若白名单未配置（为空）则此判定不生效，`chat_id` 可任意指定——所以启用本面时应确认业务白名单已真正配置。`text` 缺省为固定联调文案，并按 1024 字符截断（`src/debug.rs:241-246`）。
+- **绝不回显凭据值**：`debug_config`（`src/debug.rs:96-152`）对每个 Secret 字段只输出 `*_configured` **布尔**——JMAP 密码、bot token、`worker_token`、`reconcile_token`、LLM `api_key` 一律不落响应体（`SAF-DEBUG-AUTH`）。注意这是「不含凭据」，不是「全脱敏」：**非密文的身份与预算字段是明文返回的**（JMAP session URL 与 username、Telegram `chat_id`、LLM `base_url`/`model`、各类超时与重试数），所以该面仍只能放在可信网络上。
+- **`/debug/notify` 受 chat 白名单约束，但空白名单不拦截**：它复用生产同一份白名单快照（`src/notify.rs:1536`），判定条件是「白名单**非空**且 `chat_id` 不在其中」才回 `403 chat_not_allowed`（`src/debug.rs:257-260`）。因此已配置白名单时无法绕过业务侧发送限制；若白名单未配置（为空）则此判定不生效，`chat_id` 可任意指定——所以启用本面时应确认业务白名单已真正配置。`text` 缺省为固定联调文案，并按 1024 字符截断（`src/debug.rs:265-270`）。
 - **不在 Worker 白名单内，只能直连 origin**：网关的 16 条安全路由（`cloudflare-worker/src/backends.js:9-26`）不含任何 `/debug/*`，Worker 对未白名单路径返回 `404 route not forwarded: /debug/...`（`cloudflare-worker/src/index.js:82-85`）。因此 `/debug/*` 只能通过直连后端 origin 访问；若必须经代理，请自行在代理层加鉴权，不要让公网可达。
 
 > **建议**：生产环境不开启。需要远程联调时在控制台设置 `DEBUG_ENABLED=1` 与一次性

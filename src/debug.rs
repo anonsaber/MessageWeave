@@ -1,3 +1,4 @@
+// SPLIT-EVAL: 已评估暂缓拆分——五个 /debug/* 处理器共享同一套 Bearer 鉴权、SAF-NO-SECRET-ECHO 的响应白名单与 SAF-DEBUG-GATE 双因子挂载逻辑，拆分会让每个子模块重复导入这些前置条件并稀释模块级不变式。
 //! `MOD-DEBUG` — optional remote debug / 联调 surface.
 //!
 //! Mounted only when **both** factors of `SAF-DEBUG-GATE` are present: the process was launched
