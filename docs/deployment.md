@@ -858,22 +858,27 @@ Git 集成**必须改的四个字段**（Cloudflare 的默认值对不上本仓�
 |---|---|---|
 | **根目录 / Root directory**（在「高级设置」里） | 仓库根 | `cloudflare-worker` |
 | 应用名 | UI 里自填的名字 | 与 `wrangler.toml` 的 `name` 一致，否则 wrangler 会部署成**另一个名字** |
-| **构建命令** | `npx wrangler deploy` | `node -e "process.exit(0)"` |
-| **预览命令** | `npx wrangler preview` | 留空，并**取消勾选「启用预览构建」** |
+| **构建命令**（可选） | `npx wrangler deploy` | `node -e "process.exit(0)"` |
+| **部署命令**（必需） | `npx wrangler deploy` | **保持不动** |
+| **预览命令**（勾选「启用预览构建」后为必需） | `npx wrangler preview` | `npx wrangler dev --ip 0.0.0.0 --port 8787` |
 
 四条理由（全部实测）：
 
 1. **根目录是决定性的一步。** 本仓库根是 Rust 后端，Worker 在 `cloudflare-worker/` 子目录。
    不设根目录时 Cloudflare 在仓库根跑 wrangler，那里没有 `wrangler.toml`，构建直接失败。
+   「高级设置」默认是折叠的——**展开它**，根目录就是里面的字段；设了之后，
+   构建 / 部署 / 预览三个命令都在 `cloudflare-worker/` 里执行。
 2. **应用名要跟 `wrangler.toml` 的 `name` 对齐。** wrangler 部署用的是 toml 里的 `name`，
    UI 上的名字不一致时，你部署出去的是 toml 里那个名字的 Worker，UI 上那个应用永远等不到部署。
-3. **构建命令别填 `npx wrangler deploy`。** Cloudflare 在构建之后**自己**会跑 wrangler deploy，
-   再在构建命令里写一遍等于部署两次，而且那次拿不到 Cloudflare 注入的部署上下文。
-   本项目无构建步骤（纯 JS，无需编译），构建命令填一个 no-op 即可。
+3. **构建命令 ≠ 部署命令。** 构建命令负责「把源码变成可部署产物」，本项目是纯 JS、无编译步骤，
+   填一个 no-op 即可；`npx wrangler deploy` 属于**部署命令**字段（必需，保持默认）。
+   把 deploy 塞进构建命令，等于在错误的阶段执行部署。
 4. **`wrangler preview` 子命令不存在。** wrangler 3.114.17 的子命令只有 `dev` / `deploy` /
-   `deployments`，填了必然构建失败。更关键的是预览环境没有 `BACKEND_ORIGINS_JSON`
-   （secret 只存在于你的账号配置里，仓库里不该有 `.dev.vars`），预览出来也只有
-   `no-backends` / 503——**预览对这个 Worker 没有意义，直接关掉**。
+   `deployments`，默认那个值填了必然失败。预览命令填 `npx wrangler dev --ip 0.0.0.0 --port 8787`
+   （8787 是 `wrangler dev` 的默认端口，`--ip 0.0.0.0` 让 Cloudflare 的预览代理能连进来）。
+   ⚠️ 预览环境**没有** `BACKEND_ORIGINS_JSON`（secret 只存在于你的账号配置，仓库里不该有
+   `.dev.vars`），所以预览只能验证「Worker 能被拉起 + 路由表生效 + `/healthz` 返回 200 但
+   `status` 是 `no-backends`」，**不能**验证后端转发。后端转发只能看生产。
 
 **Node 版本**用 22 即可（实测 Node 22.23.3 全绿）。npm 版本不必手动固定：
 仓库已提交 cloudflare-worker 下的 lockfile，有 lockfile 时 Cloudflare 跑 `npm ci`，
