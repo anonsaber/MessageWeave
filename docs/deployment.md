@@ -843,7 +843,58 @@ curl https://<your-worker>.workers.dev/healthz
 - Worker **不代理** Redis、不检查数据库侧可用性（`C-NO-DB` / `C-REDIS-ONLY-STATE`）。
 - Worker **不落地** JMAP/Telegram 的 secret；Push verification 由后端通过 JMAP API 动态完成并只在 Redis 短期保存状态。
 
+### 10.9 用 Cloudflare 网页版部署（Dashboard / Git 集成）
+
+CLI 不是唯一入口。两条网页路径：
+
+| 路径 | 适合 | 注意 |
+|---|---|---|
+| **Workers & Pages → Create application → Code Editor** | 首次部署、4 个文件手工粘贴 | 代码无 git 追溯，改动后容易和本仓库漂移 |
+| **Git 集成**（Workers & Pages → 选 GitHub 仓库） | 长期最干净，push 自动部署 | 必须设**根目录**，否则跑在仓库根上找不到 `wrangler.toml` |
+
+Git 集成**必须改的四个字段**（Cloudflare 的默认值对不上本仓库）：
+
+| 字段 | 默认值（❌） | 应改成（✅） |
+|---|---|---|
+| **根目录 / Root directory**（在「高级设置」里） | 仓库根 | `cloudflare-worker` |
+| 应用名 | UI 里自填的名字 | 与 `wrangler.toml` 的 `name` 一致，否则 wrangler 会部署成**另一个名字** |
+| **构建命令** | `npx wrangler deploy` | `node -e "process.exit(0)"` |
+| **预览命令** | `npx wrangler preview` | 留空，并**取消勾选「启用预览构建」** |
+
+四条理由（全部实测）：
+
+1. **根目录是决定性的一步。** 本仓库根是 Rust 后端，Worker 在 `cloudflare-worker/` 子目录。
+   不设根目录时 Cloudflare 在仓库根跑 wrangler，那里没有 `wrangler.toml`，构建直接失败。
+2. **应用名要跟 `wrangler.toml` 的 `name` 对齐。** wrangler 部署用的是 toml 里的 `name`，
+   UI 上的名字不一致时，你部署出去的是 toml 里那个名字的 Worker，UI 上那个应用永远等不到部署。
+3. **构建命令别填 `npx wrangler deploy`。** Cloudflare 在构建之后**自己**会跑 wrangler deploy，
+   再在构建命令里写一遍等于部署两次，而且那次拿不到 Cloudflare 注入的部署上下文。
+   本项目无构建步骤（纯 JS，无需编译），构建命令填一个 no-op 即可。
+4. **`wrangler preview` 子命令不存在。** wrangler 3.114.17 的子命令只有 `dev` / `deploy` /
+   `deployments`，填了必然构建失败。更关键的是预览环境没有 `BACKEND_ORIGINS_JSON`
+   （secret 只存在于你的账号配置里，仓库里不该有 `.dev.vars`），预览出来也只有
+   `no-backends` / 503——**预览对这个 Worker 没有意义，直接关掉**。
+
+**Node 版本**用 22 即可（实测 Node 22.23.3 全绿）。npm 版本不必手动固定：
+仓库已提交 cloudflare-worker 下的 lockfile，有 lockfile 时 Cloudflare 跑 `npm ci`，
+精确复现 wrangler 3.114.17，构建可复现。
+（此前没有 lockfile，`wrangler@^3.57.0` 是浮动范围，每次 CI 可能解析到不同小版本。）
+
+**secret 仍在网页上配**：Workers & Pages → 你的应用 → Settings → Variables & Secrets →
+**Encrypt**（不是 Plain Text）→ 加 `BACKEND_ORIGINS_JSON`。`wrangler.toml` 的 `vars = {}`
+意味着所有配置都走 secret，网页版对应位置是 **Settings → General** 的 Variables（留空）与
+Encrypt（填 secret）。改 secret **即时生效，不需要重新部署**。
+
+**部署前确认已 push**：Git 集成拉的是 GitHub 上的 commit，本地改动不 push 不会生效。
+
+**Git 集成的一个纪律**：每次 push 到默认分支都自动部署，所以**绝不**把 `.dev.vars` 或
+任何明文 secret 提交进仓库（本仓库里没有，`.gitignore` 也排除了）。
+
+**验证方式与 CLI 完全相同**，见上方「验证（发布前必做）」，尤其第 2 条：
+看 `/healthz` 响应体的 `available`，不要只看 HTTP 200。
+
 ---
+
 
 ## 附：稳定 ID 引用索引
 
