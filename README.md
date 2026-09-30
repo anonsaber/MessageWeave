@@ -29,7 +29,7 @@ State is an architectural boundary here, not a preference.
 
 ## 2. 5-minute setup
 
-Requires a reachable Redis 7 instance and a JMAP session plus a Telegram bot token.
+Requires a reachable Redis instance and a JMAP session plus a Telegram bot token.
 
 **This is a local container smoke test.** Production deployment can use any platform that
 can run the backend container, inject encrypted secrets, and connect to externally managed

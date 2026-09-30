@@ -27,7 +27,7 @@ MessageWeave 位于 JMAP 邮件服务器（例如 Stalwart）与 Telegram bot �
 
 ## 2. 五分钟跑起来
 
-需要可达的 Redis 7 实例、一个 JMAP session 与一个 Telegram bot token。
+需要可用的 Redis 服务、一个 JMAP session 与一个 Telegram bot token。
 
 ```sh
 cp .env.example .env           # 填写 REDIS_URL 与 CONFIG_ENCRYPTION_KEY
