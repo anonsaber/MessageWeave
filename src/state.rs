@@ -1621,3 +1621,131 @@ mod tests {
         state.ack("events-dlq", "workers", &id).await.unwrap();
     }
 }
+
+/// Opt-in TTL assertions against a real Redis.
+///
+/// Everything else in this file verifies TTL *plumbing* with `MemoryState`,
+/// which ignores TTL by design. The three write points below are the only
+/// places an expiry actually reaches Redis, and before this module no test
+/// asserted any value of them - a typo like `604_800 -> 60_480` would have
+/// passed CI green.
+///
+/// Run with `REDIS_TEST_URL=... cargo test -- --ignored ttl`.
+/// The URL is never printed.
+#[cfg(test)]
+mod real_redis_ttl_tests {
+    use super::*;
+
+    /// Assert `actual` ms is within `tolerance_ms` of `expected_seconds` s.
+    fn assert_within(actual_ms: i64, expected_seconds: u64, tolerance_ms: u64) {
+        assert!(
+            actual_ms > 0,
+            "expected a live TTL of ~{expected_seconds}s, got {actual_ms} ms - the key either has no expiry or expired already"
+        );
+        let expected_ms = expected_seconds as i64 * 1000;
+        assert!(
+            (actual_ms - expected_ms).abs() <= tolerance_ms as i64,
+            "expected PTTL near {expected_ms} ms, got {actual_ms} ms"
+        );
+    }
+
+    fn unique() -> String {
+        format!("{}:{}", std::process::id(), unix_now())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires REDIS_TEST_URL pointing at a reachable Redis"]
+    async fn ttl_claim_dedup_sets_the_exactly_requested_expiry() {
+        let Some(url) = std::env::var_os("REDIS_TEST_URL") else {
+            eprintln!("skipped: REDIS_TEST_URL is not configured");
+            return;
+        };
+        let state = RedisState::connect(url.to_str().expect("valid utf8 REDIS_TEST_URL"))
+            .await
+            .expect("REDIS_TEST_URL must be reachable");
+        let run = unique();
+
+        // Zero is floored to 1 second by `.max(1)`: Redis rejects an empty or
+        // zero EX with "invalid expire time in SET command".
+        let zero = format!("ttlcheck:dedup:{run}:zero");
+        assert!(state.claim_dedup(&zero, 0).await.unwrap());
+        let mut conn = state.connection.clone();
+        let pttl: i64 = redis::cmd("PTTL")
+            .arg(&zero)
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        assert_within(pttl, 1, 500);
+        delete_key(state.connection.clone(), &zero).await.unwrap();
+
+        // A normal request is honoured to the second.
+        let one_week = format!("ttlcheck:dedup:{run}:week");
+        assert!(state.claim_dedup(&one_week, 604_800).await.unwrap());
+        let pttl: i64 = redis::cmd("PTTL")
+            .arg(&one_week)
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        assert_within(pttl, 604_800, 2_000);
+        delete_key(state.connection.clone(), &one_week)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires REDIS_TEST_URL pointing at a reachable Redis"]
+    async fn ttl_consent_and_retry_landing_on_real_redis() {
+        let Some(url) = std::env::var_os("REDIS_TEST_URL") else {
+            eprintln!("skipped: REDIS_TEST_URL is not configured");
+            return;
+        };
+        let state = RedisState::connect(url.to_str().expect("valid utf8 REDIS_TEST_URL"))
+            .await
+            .expect("REDIS_TEST_URL must be reachable");
+        let run = unique();
+        let mut conn = state.connection.clone();
+
+        // `set_ai_consent` writes an absolute expiry value plus a relative EX.
+        let chat_id: i64 = run.split(':').next().unwrap_or("0").parse().unwrap_or(0);
+        state.set_ai_consent(chat_id, 3600).await.unwrap();
+        let consent_key = format!("consent:ai:{chat_id}");
+        let pttl: i64 = redis::cmd("PTTL")
+            .arg(&consent_key)
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        assert_within(pttl, 3600, 2_000);
+        delete_key(state.connection.clone(), &consent_key)
+            .await
+            .unwrap();
+
+        // The retry counter's 86400s lives in the Lua script, not at a call
+        // site, so it is asserted through `retry_or_dlq` rather than read back
+        // from a constant. max_attempts=99 keeps n below the cap, so the script
+        // returns before XADD/XACK and no stream or group needs to exist.
+        let message = StreamMessage {
+            id: format!("ttlcheck:{run}:msg"),
+            payload: "payload".into(),
+        };
+        let retry_key = format!("retry:ttlcheck:{run}:msg");
+        assert!(!state
+            .retry_or_dlq(
+                "ttlcheck:stream",
+                "ttlcheck:dlq",
+                "ttlcheck:group",
+                &message,
+                99
+            )
+            .await
+            .unwrap());
+        let pttl: i64 = redis::cmd("PTTL")
+            .arg(&retry_key)
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        assert_within(pttl, 86_400, 2_000);
+        delete_key(state.connection.clone(), &retry_key)
+            .await
+            .unwrap();
+    }
+}
