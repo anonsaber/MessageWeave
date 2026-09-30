@@ -4,36 +4,36 @@
 
 ## 你要做的事
 
-**两件，都是交东西不是做判断。**
+**一件：多账号要不要做——产品决策，见文末「后续」。**
 
-1. 一个能用的 Upstash `rediss://` URL（当前持有的两个 token 都已 `WRONGPASS`），用来把 TTL 断言那条真机绿灯补上。
-2. 多账号要不要做——产品决策，见文末「后续」。
+TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），不需要再交任何东西。
 
 ## 阶段目标
 
 | # | 项 | 状态 |
 | --- | --- | --- |
 | 1 | `Email/changes` 的 `newState` 语义 | 已关闭（提交 `269c8f6`） |
-| 2 | TTL 实测 | 代码侧已关闭（提交 `0890eb1` + 本轮）；真机那条绿灯等一个可用的 `REDIS_TEST_URL` |
+| 2 | TTL 实测 | 已关闭（代码收口 `0890eb1` + 真机 `ttl` 两条断言跑通） |
 | 3 | Telegram 入站 / Stalwart `PushSubscription` 联调 | 已关闭（真实流量已驱动，操作步骤见 `docs/deployment.md` §4.1） |
 | 4 | `/worker` 未在部署文档里 | 已关闭（`docs/deployment.md` §6.3.1 已补） |
 
-门禁：`cargo fmt --check` / `cargo check --locked` / `cargo clippy --locked --all-targets -- -D warnings` 全绿；`cargo test --locked` **89 passed / 0 failed / 4 ignored**（忽略的 4 个是需要 `REDIS_TEST_URL` 或 `JMAP_TEST_URL` 的联调用例）；文档门 6/6 全绿，含 102 处行号锚点非空校验。
+门禁：`cargo fmt --check` / `cargo check --locked` / `cargo clippy --locked --all-targets -- -D warnings` 全绿；`cargo test --locked` **93 passed / 0 failed / 4 ignored**（4 个 `#[ignore]` 里 2 个 TTL 断言已用真实 Upstash 跑过：`REDIS_TEST_URL=… cargo test --locked -- --ignored ttl` → **2 passed / 0 failed**；剩 2 个需要真实 JMAP 服务器，该能力已在 staging 联调验证）；文档门 6/6 全绿，含 105 处行号锚点非空校验。
 
 ## 阻塞
 
-**一个，不在代码里：TTL 的真机断言需要一个能认证通过的 `REDIS_TEST_URL`。** 当前持有的两个候选 token 都已被服务端拒绝（`-WRONGPASS invalid username-password pair`），网络与 TLS 握手本身正常。其余三条阻塞项均已关闭。
+**无。四条阶段目标全部关闭，代码侧与真机侧都通了。** 剩下的只有文末那个产品决策（多账号），它不阻塞任何交付。
 
 ## 已关闭
 
-### 1. TTL 实测（代码侧已关闭；真机断言待凭证）
+### 1. TTL 实测（已关闭：常量收口 + 真机断言跑通）
 
 原条目：全代码库 **12 个 TTL 写入点、17 个 TTL 值**，但只有三个真正落到 Redis 的原子命令（`set_nx_ex` 的 `SET … NX EX`、`retry_or_dlq` Lua 里的 `EXPIRE`、`set_ai_consent` 的 `SET … EX`）在真实 Redis 上被断言过实际 PTTL；其余全是裸字面量。测试替身 `MemoryState::claim_dedup` 直接忽略 TTL 参数，所以单测覆盖的是调用路径，不是过期时长——把一个 24 小时去重窗口改成 `60_480` 仍能编译通过、单测全绿。
 
 两步关掉：
 
 1. **真实 Redis 断言**（提交 `0890eb1`）。`src/state.rs` 的 `real_redis_ttl_tests`，两个 `#[ignore]`-gated 用例，照 `src/domain/jmap/client.rs:522` 的模式：缺 `REDIS_TEST_URL` 时打 skipped 并返回，URL 不落日志。断言三个原子写入点的实际 PTTL。运行：`REDIS_TEST_URL=… cargo test --locked -- --ignored ttl`。
-2. **消灭裸字面量**（本轮）。17 个值全部收进 `src/state.rs` 的 `pub(crate) mod ttl`，调用点改引常量，新增 `ttl_contract_is_pinned` 逐个断言常量表，并带两条顺序断言（心跳必须短于锁、同意档位必须严格递增）。原条目里够不到的 B 类 Lua 内嵌值也接上了——`retry_or_dlq` 现在用 `ttl::RETRY_COUNTER_SECONDS` 插值生成脚本字符串，脚本里不再有第二个字面量。改值现在 = 改常量 + 断言失败，两处都得过评审。
+2. **消灭裸字面量**（提交 `0890eb1` 之后的一轮）。17 个值全部收进 `src/state.rs` 的 `pub(crate) mod ttl`，调用点改引常量，新增 `ttl_contract_is_pinned` 逐个断言常量表，并带两条顺序断言（心跳必须短于锁、同意档位必须严格递增）。原条目里够不到的 B 类 Lua 内嵌值也接上了——`retry_or_dlq` 现在用 `ttl::RETRY_COUNTER_SECONDS` 插值生成脚本字符串，脚本里不再有第二个字面量。改值现在 = 改常量 + 断言失败，两处都得过评审。
+3. **真机绿灯**（本轮，用 Upstash 实例跑）。两条断言实际连上真实 Redis 读回 PTTL 并通过，B 类 Lua 内嵌值首次落到真机验证。过程见下文「测试自身的四个 bug」。
 
 契约基线（键的完整语义见 `docs/reference.md` §1）：
 
@@ -63,13 +63,17 @@
 
 生产代码里已经不存在裸 TTL 字面量；`worker.rs` 的同意档位测试断言仍保留数字字面量，那是**刻意的**——用独立于常量的期望值去验生产代码，否则两边一起改的话单测永远绿。
 
-本轮顺手修掉测试自身的三个 bug：
+本轮顺手修掉测试自身的四个 bug。
 
 - 单测二进制不会跑 `main()`，rustls 没装 crypto provider，`rediss://` 握手直接 panic；现在测试模块自己调 `install_rustls_provider()`。
 - `retry:{stream}:{message.id}` 的键构造用消息 id 而不是 run id，断言读到一个从未写入的键，PTTL 返回 `-2`，测试第一句就失败。
 - `worker.rs` 对账增量入队那一处 TTL 字面量原先漏收，仍是裸 `86_400`。
 
-**代码侧的缺口已经关完，但真机那条绿灯还差一把钥匙。** 当前持有的 Upstash token 两个候选都已返回 `WRONGPASS`（裸 RESP+TLS 探针确认：握手 TLSv1.3 正常，`AUTH default <token>` 被服务端拒绝），所以 `connect()` 直接失败，断言根本没机会跑。给我一个新的 `rediss://default:<token>@evolved-chicken-297696.upstash.io:6379`，一条命令就能把它补上。在拿到之前，这项的结论是「断言已就绪 + 常量已收口 + 单测已钉死」，不是「真机已验证」——这个区别不该含糊过去。
+第 4 个是真机断言自身不稳定的，前三个是编译期就能发现的：
+
+- 零值 case 原先断言 `assert_within(pttl, 1, 500)`——要求 1 秒 floor 读回来仍在 ±500 ms 内。但读回发生在跨网络 TLS 往返之后，那一秒通常已被消耗完，连跑三次拿到 `-2`（键已过期）、`269`、`118` ms。产品代码本身没问题：`SET … NX EX 1` 确实落地了，`-2` 恰恰证明 EX 生效、键按预期过期。改判据为「`pttl != -1`」——`-1` 才是真正要防的回归（EX 被静默丢弃、键永不过期），加上「`pttl == -2 || pttl <= 1000 + 2000`」这个只设上界的判断，因为一个还活着的值只会从 1s 往下数。改完连跑 6 轮全绿。
+
+**两条 TTL 断言已在真实 Upstash 实例上跑通（`rediss://`，TLS-only；明文 `redis://` 会在 `AUTH` 后收到空回复断连，故必须走 TLS）**：`SET … NX EX`（`claim_dedup`）、`SET … EX 3600`（`set_ai_consent`）、Lua 内嵌 `EXPIRE 86400`（`retry_or_dlq`）三处原子写入点的实际 PTTL 全部落在 2s 容差内。原条目里够不到的 B 类 Lua 内嵌值现在也是真机验证，不只是常量引用。
 
 ### 2. `Email/changes` 的 `newState` 语义（提交 `269c8f6`）
 

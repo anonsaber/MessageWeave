@@ -558,7 +558,7 @@ pub enum BotError {
 - axum 采用 **0.8**（`ARCH-AXUM-08`）；如后续审核决定调整版本，以 Cargo.toml 为准并同步本节。
 - 当前不实现 SSE/WebSocket/长轮询/SQLite/本地卷（`C-NO-LONG-CONN`/`NG-SQLITE-PERSIST`/`NG-LOCAL-VOLUME`）；入口鉴权（`R1`/`SAF-AUTH-*`）作为 fail-closed 硬门禁落地，鉴权之后的 Push、Streams worker 和 `/reconcile` 业务路径已实现。
 
-**阶段0 P0 门禁（`GATE-P0`）——已通过。首次冻结时为 45 passed / 0 failed / 1 ignored，此后随 ④–⑥ 轮实现持续增长，当前基线为 69 passed / 0 failed / 1 ignored（2026-09-29 复测；唯一 ignored：`real_server_tests::session_list_and_read_smoke`，需外部真实 JMAP 服务器）。以下为阶段0 当时的判据，保留作历史记录：**
+**阶段0 P0 门禁（`GATE-P0`）——已通过。首次冻结时为 45 passed / 0 failed / 1 ignored，此后随 ④–⑥ 轮实现持续增长，当前基线为 93 passed / 0 failed / 4 ignored（2026-09-28 复测；权威值见 `docs/charter.md` 的 `TEST_BASELINE` 行）。以下为阶段0 当时的判据，保留作历史记录：**
 1. `cargo fmt --check` 通过（无格式差异）。
 2. `cargo clippy --all-targets -- -D warnings` 通过（零告警；禁 crate 级 `allow`）。
 3. `cargo test` 通过（含路由/配置最小测试）。
