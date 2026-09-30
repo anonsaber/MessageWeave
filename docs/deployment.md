@@ -788,14 +788,31 @@ npx wrangler secret put LB_RECONCILE_TIMEOUT_MS # 默认 320000ms，仅 POST /re
 npx wrangler secret put LB_HEALTH_TTL_MS        # 默认 30000ms
 ```
 
-`BACKEND_ORIGINS_JSON` 示例（**仅允许 `https://` origin**，其它会被 Worker 启动即 503，`C-HTTPS-INBOUND`）：
+`BACKEND_ORIGINS_JSON` 示例（**仅允许 `https://` origin**，其它会让配置解析失败，`C-HTTPS-INBOUND`）：
 
 ```json
 [
-  {"url":"https://messageweave-a.example.com","weight":100},
-  {"url":"https://messageweave-b.example.com","weight":100}
+  "https://messageweave-a.example.com",
+  "https://messageweave-b.example.com"
 ]
 ```
+
+> **必须是字符串数组，不是 `{"url":…, "weight":…}` 对象数组。**
+> `cloudflare-worker/src/backends.js` 的 `parseBackendOrigin` 只认 `typeof raw === "string"` 的 origin，
+> 对象项会让**整份**配置解析失败；权重也不存在——故障转移是
+> `cloudflare-worker/src/lb.js:107` 用 `rng()` 均匀选一个随机起始源再顺序尝试，没有加权。
+> 症状值得留意：配置是 `cloudflare-worker/src/index.js:93` **每个请求**重新读取并解析的，
+> 所以写错不会「启动即 503」，而是**每个请求都返回 503**（`misconfigured backends`），
+> 日志里也没有异常栈可看。
+
+**照抄会踩的两条实测坑**
+
+1. **`wrangler.toml` 只能用 `#` 注释。** TOML 不认 JSDoc 的 `/** */`，`*` 会被报成
+   `Unknown character "47"`，`deploy` / `secret put` / `dev` 在**读配置阶段**就失败，根本走不到你的 secret。
+   这条已修掉：`wrangler.toml` 现已全部展开成 `#` 行，`wrangler deploy --dry-run` 通过（上传 31.48 KiB）。
+2. **`npm test` 在 Node 22.23 上原先跑不起来**：脚本写的是 `node --test test/`，Node 会把 `test/`
+   当成模块路径去 require，报 `MODULE_NOT_FOUND`。已改成 `node --test`（不加参数自动发现 `test/`），
+   仍为 32 个用例全通过（`cloudflare-worker/test/backends.test.js` 6 / `cloudflare-worker/test/health.test.js` 4 / `cloudflare-worker/test/index.test.js` 12 / `cloudflare-worker/test/lb.test.js` 10）。
 
 **部署与验证**
 
@@ -810,7 +827,13 @@ curl https://<your-worker>.workers.dev/healthz
 
 **验证（发布前必做）**
 1. `cd cloudflare-worker && npm test`（Node 单测，代理逻辑 + 健康聚合 + 超时/失败重试 + safelist）。
-2. `npx wrangler deploy --env production` 后 `curl /healthz` 返回 200 且 `available ≥ 1`。
+2. `npx wrangler deploy --env production` 后 `curl <worker-url>/healthz` 看**响应体里的 `available`**：
+   必须 `available ≥ 1` 才算接通。
+   ⚠️ **只看 HTTP 200 会误判**：`/healthz` 是 Worker 自己生成的（不透传后端，`cloudflare-worker/src/index.js:75`），
+   而且 `BACKEND_ORIGINS_JSON` 缺失、格式错或为空时，`handleHealth` 会吞掉解析异常并返回
+   **HTTP 200 + `{"status":"no-backends","available":0,"total":0}`**（`cloudflare-worker/src/index.js:138` 的 catch）。
+   所以「200」本身不证明配置正确，必须看 `available`。判据速查：
+   `status=ok` 且 `available≥1` → 正常；`no-backends`（200）→ secret 没设好或 JSON 格式错；`down`（503）→ 后端全挂。
 3. `curl -X POST https://<worker>/webhook/tg -H "Content-Type: application/json" -d '{"test":1}'` 应得到后端返回（非 503）。
 4. `curl -X POST https://<worker>/unknown` 应得到 404；`curl -X GET https://<worker>/reconcile` 应得到 405。
 5. 日志仅出现 `method/path/origin/失败类别`，**绝不**含 header/body/secret（`SAF-LOG-PURITY`）。
