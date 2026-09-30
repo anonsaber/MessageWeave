@@ -207,7 +207,7 @@ async fn main() -> Result<(), error::BotError> {
     Ok(())
 }
 
-fn install_rustls_provider() -> bool {
+pub(crate) fn install_rustls_provider() -> bool {
     rustls::crypto::ring::default_provider()
         .install_default()
         .is_ok()

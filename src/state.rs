@@ -1653,6 +1653,16 @@ mod real_redis_ttl_tests {
         format!("{}:{}", std::process::id(), unix_now())
     }
 
+    /// Unit-test binaries never run `main()`, so no rustls crypto provider is
+    /// installed and the TLS handshake to a `rediss://` URL panics before any
+    /// command is sent. Mirror the one-time setup in `main.rs`.
+    fn require_tls_provider() {
+        assert!(
+            crate::install_rustls_provider(),
+            "rustls needs a crypto provider before any Redis TLS client"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires REDIS_TEST_URL pointing at a reachable Redis"]
     async fn ttl_claim_dedup_sets_the_exactly_requested_expiry() {
@@ -1660,6 +1670,7 @@ mod real_redis_ttl_tests {
             eprintln!("skipped: REDIS_TEST_URL is not configured");
             return;
         };
+        require_tls_provider();
         let state = RedisState::connect(url.to_str().expect("valid utf8 REDIS_TEST_URL"))
             .await
             .expect("REDIS_TEST_URL must be reachable");
@@ -1699,6 +1710,7 @@ mod real_redis_ttl_tests {
             eprintln!("skipped: REDIS_TEST_URL is not configured");
             return;
         };
+        require_tls_provider();
         let state = RedisState::connect(url.to_str().expect("valid utf8 REDIS_TEST_URL"))
             .await
             .expect("REDIS_TEST_URL must be reachable");
