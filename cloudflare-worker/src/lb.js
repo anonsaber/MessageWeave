@@ -139,8 +139,21 @@ export async function forwardWithFailover(origins, request, opts) {
   });
 }
 
-/** 在响应上加轻量可观测头（不改 body/状态语义；origin 非敏感，含在响应头中便于排障）。 */
+/**
+ * 在响应上加轻量可观测头（不改 body/状态语义；origin 非敏感，含在响应头中便于排障）。
+ *
+ * ⚠️ 跨域且不带 CORS 允许头的响应，其 `headers` 的 guard 是 immutable，`set` 会抛
+ * `TypeError: Can't modify immutable headers.`（workerd 实测：后端 `/` 返回 200 但无
+ * `access-control-allow-origin` 即触发）。LB 代理的响应几乎都属于这种——若让该异常冒泡到
+ * `forwardWithFailover` 的 catch，一个健康的 200 会被记成 `backend ... unavailable (TypeError)`
+ * 并耗尽重试、返回 503（2026-09-30 生产事故根因）。观测头是尽力而为的元数据，
+ * 不可变时静默放弃，绝不阻塞响应返回。
+ */
 function mark(resp, origin) {
-  resp.headers.set("x-lb-backend", origin);
+  try {
+    resp.headers.set("x-lb-backend", origin);
+  } catch {
+    /* 响应 headers 不可变（跨域且无 CORS）→ 放弃观测头，照常返回响应。 */
+  }
   return resp;
 }

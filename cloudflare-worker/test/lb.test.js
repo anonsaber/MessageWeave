@@ -10,6 +10,7 @@ import { forwardWithFailover, joinUrl, isRetryableError } from "../src/lb.js";
  * 可控 fetch mock：steps[i] 每次调用消费一个；
  * - {status, body?} → 返回该 Response；
  * - {error: Error} → 抛出。
+ * - {response: Response} → 原样返回该对象（用于模拟 workerd 特有行为，如不可变响应头）；
  */
 function mockFetch(steps) {
   const calls = [];
@@ -18,6 +19,7 @@ function mockFetch(steps) {
     calls.push({ url, init });
     const step = steps[Math.min(i, steps.length - 1)];
     if (step.error) throw step.error;
+    if (step.response) return step.response;
     return new Response(step.body ?? "ok", { status: step.status, headers: { "content-type": "text/plain" } });
   };
   return { fetch, calls };
@@ -25,6 +27,24 @@ function mockFetch(steps) {
 
 /** 测试用计时器：不真触发超时。 */
 const noOpTimers = { setTimeout: () => 0, clearTimeout: () => {} };
+
+/**
+ * 模拟「不可变响应头」：跨域且不带 CORS 允许头的响应，其 headers guard 是 immutable，
+ * 任何写操作都抛 `TypeError: Can't modify immutable headers.`（workerd 实测行为）。
+ * 生产 LB 代理后端 `/` 正是这种响应。
+ */
+function immutableResponse(status, body = "healthy") {
+  return {
+    status,
+    headers: {
+      get() { return null; },
+      set() { throw new TypeError("Can't modify immutable headers."); },
+      append() { throw new TypeError("Can't modify immutable headers."); },
+    },
+    body: undefined,
+    text: async () => body,
+  };
+}
 
 function req(path = "/reconcile") {
   return new Request(`https://lb.example${path}`, {
@@ -68,6 +88,38 @@ test("transparent passthrough forwards headers + body + method (SAF-LB-PASSTHRU)
   const body = await new Response(new Uint8Array(calls[0].init.body)).text();
   assert.equal(body, JSON.stringify({ id: 42 }));
   assert.equal(res.headers.get("x-lb-backend"), "https://a.example");
+});
+
+test("immutable response headers never mask a healthy 2xx as 503 (跨域无 CORS)", async () => {
+  // 回归：2026-09-30 生产事故。后端返回健康的 200，但该响应跨域且无 CORS 头，
+  // headers guard 为 immutable；mark() 写 `x-lb-backend` 抛 TypeError，被外层 catch
+  // 记成 `backend ... unavailable (TypeError)` → 重试耗尽 → 503。/healthz 自建响应
+  // 不调 mark()，所以一直正常，掩盖了问题。
+  const { fetch, calls } = mockFetch([{ response: immutableResponse(200) }]);
+  const res = await forwardWithFailover(["https://a.example"], req("/"), {
+    ...noOpTimers,
+    fetch,
+    maxAttempts: 2,
+    timeoutMs: 5000,
+    rng: () => 0,
+  });
+  assert.equal(res.status, 200, "healthy 200 must be returned as-is");
+  assert.equal(calls.length, 1, "a healthy response must not trigger failover");
+  assert.equal(await res.text(), "healthy");
+});
+
+test("immutable headers are tolerated on the 5xx failover path too", async () => {
+  const { fetch, calls } = mockFetch([{ response: immutableResponse(503) }, { status: 200, body: "ok" }]);
+  const res = await forwardWithFailover(["https://a.example", "https://b.example"], req("/"), {
+    ...noOpTimers,
+    fetch,
+    maxAttempts: 2,
+    timeoutMs: 5000,
+    rng: () => 0,
+  });
+  assert.equal(res.status, 200, "503 with immutable headers still fails over");
+  assert.equal(calls.length, 2);
+  assert.equal(res.headers.get("x-lb-backend"), "https://b.example", "marker still added on a mutable response");
 });
 
 test("GET/HEAD do not forward a body", async () => {
