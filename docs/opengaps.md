@@ -77,15 +77,15 @@
 
 代码的实际行为比条目描述的更糟：`Err` 被原样上抛成 `Err(())`，`reconcile:state` 原样保留——下一次 cron 用同一个 dead `sinceState` 重试，再失败，再 503。游标永久冻结，`/reconcile` 永远返回 `503 reconcile_retry` 且没有任何前进。
 
-**修法**：`/changes` 失败时改走重新基线——取一个新鲜的 `current_state()`，写回 `baseline:{fresh_state}:0` 并 `Ok` 返回。position walk 完全不依赖服务端 changelog 保留策略，所以下一轮从 position 0 重走一遍即可恢复；24h 去重键（`enqueue_reconcile_event`，`ttl::DEDUP_JMAP_SECONDS`）保证重放最坏重复一次、不会漏。新增单测 `reconcile_rebaselines_when_changes_replay_is_stale` 锁定该行为。
+**修法**：`/changes` 失败时改走重新基线——取一个新鲜的 `session_state()`，写回 `baseline:{fresh_state}:0` 并 `Ok` 返回。position walk 完全不依赖服务端 changelog 保留策略，所以下一轮从 position 0 重走一遍即可恢复；24h 去重键（`enqueue_reconcile_event`，`ttl::DEDUP_JMAP_SECONDS`）保证重放最坏重复一次、不会漏。新增单测 `reconcile_rebaselines_when_changes_replay_is_stale` 锁定该行为。
 
-> position walk 路径（`list_emails_page(None, position, 100)`）本身不受影响——它把 `state` 传成 `None`，根本不发服务端 state。
+> position walk 路径（`list_emails_page(None, position, BASELINE_PAGE_SIZE)`）本身不受影响——它的签名里根本没有服务端 state 参数（`None` 是 `folder_id`），所以不会碰到上面那类 token 语义。
 
 ## 本轮顺带发现并修掉的部署文档缺陷
 
 `docs/deployment.md` §6.3.1 原来只给了 `/reconcile` 的调度示例，而 `/worker`——全代码库唯一的队列消费入口——被描述成「运维手工触发」，且刻意不在 Worker 白名单里。**照文档照抄部署 = 邮件持续进队列、通知永远发不出去**，这正是联调环境积压了数天才被手工排空的成因。§6.3.1 已补上 `/worker` 的调度步骤、顺序要求、批量上限与「204 不能当成功信号」的说明。
 
-同时修正了 `docs/reference.md` 与 `docs/retired.md` 里 `/worker` 的锚点：原值 `notify.rs:336` 落在 `reconcile` 函数体内，锚点审计不会报错（该行存在且非空），但语义是错的；正确值是 `notify.rs:386`。
+同时修正了 `docs/reference.md` 与 `docs/retired.md` 里 `/worker` 的锚点：原值 `notify.rs:340` 落在 `reconcile` 函数体内，锚点审计不会报错（该行存在且非空），但语义是错的；正确值是 `notify.rs:390`。
 
 ## 后续（多账号）
 

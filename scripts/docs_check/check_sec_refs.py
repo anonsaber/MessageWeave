@@ -72,8 +72,13 @@ def main():
                             f"{rel}:{lineno}: §{m.group(2)} does not exist "
                             f"in {target}")
                 for m in SEC.finditer(line):
-                    # RFC-style three-part numbering (`§7.2.3`) is external,
-                    # not a doc reference.
+                    # External references are not doc references. Two shapes:
+                    # RFC-style three-part numbering (`§7.2.3`), caught below
+                    # by the trailing-dot test, and an explicit RFC attribute
+                    # on a two-part ref (`RFC 8620 §2.1`).
+                    prefix = line[:m.start()]
+                    if re.search(r"RFC\s+\d{3,5}\s*$", prefix):
+                        continue
                     if line[m.end():m.end() + 1] == ".":
                         continue
                     if m.start() <= override_pos:
@@ -81,8 +86,6 @@ def main():
                         continue
                     num = m.group(1)
                     # chained refs (`§2.3、§3.2、§5.7`) inherit `target`
-                    pos = m.start()
-                    prefix = line[:pos]
                     if re.search(r"(?:\.md)[`\s]*$", prefix):
                         target = os.path.basename(
                             re.search(r"([A-Za-z0-9_.-]+\.md)[`\s]*$",

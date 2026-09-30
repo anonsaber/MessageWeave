@@ -89,6 +89,7 @@ and the Chinese prefixes `搜索`, `查找`, `检索` (prefix-matched only, neve
 | `delivery:committed:{stream}:{id}` | EX 604_800 | key built and claimed with `claim_dedup` in the delivery path | `dedup_exists` before send |
 | `retry:{stream}:{id}` | EX 86_400 | `retry_or_dlq`'s Lua script (`INCR` then `EXPIRE` on the same key) | reclaim path |
 | `stalwart:jmap:dlq`, `stalwart:telegram:dlq` | Stream, no EX | the same Lua script's `XADD`; the name is passed in from `retry_or_dlq`'s call site in the worker (with `max_attempts` 3) | **nothing in code reads it** |
+| `state:jmap:since` | none (durable) | `set_reconcile_state` | `get_reconcile_state` before each pass; encoding per §6.5 |
 
 There is no `delivery:pending:{stream}` key — "pending" refers to the Redis Streams
 pending-entries list (PEL), which Redis maintains internally.
@@ -511,13 +512,18 @@ There is **no** `LLM_MAX_RETRIES` environment variable; retry count lives in
 
 | Constant | Value | Source |
 |---|---|---|
-| `MAX_BASELINE_PAGES` | 100 | `worker.rs` |
-| `MAX_BASELINE_EMAILS` | 10_000 | `worker.rs` |
+| `BASELINE_PAGE_SIZE` | 100 | `worker.rs` |
+| `BASELINE_MAX_PAGES` | 100 | `worker.rs` |
+| `BASELINE_MAX_EMAILS` | 10_000 | `worker.rs` |
+| `RECONCILE_MAX_PAGES` | 100 | `worker.rs` |
 | `RECONCILE_BUDGET` | 20 s | `worker.rs` |
 | `CHANGE_WINDOW_CAP` | 4_096 | `worker.rs` |
+| `RECONCILE_INITIAL_CHANGES` | 100 | `notify.rs` |
 | Lock TTL / heartbeat | 300 s / 90 s | `reconcile` and its heartbeat task |
 
-`max_changes` is a function parameter, not a constant.
+`initial_changes` is a function parameter, not a constant: it sizes only the
+first `/changes` call. The replay phase may widen the window afterwards, up to
+`CHANGE_WINDOW_CAP`, before it advances the cursor.
 
 ### 6.3 Idle threshold
 
@@ -539,6 +545,41 @@ stake, never loss.
 | `SEARCH_LIMIT` | 10 | `worker.rs` |
 | `SEARCH_SUBJECT_MAX` | 120 chars | `worker.rs` |
 | `SEARCH_PREVIEW_MAX` | 160 chars | `worker.rs` |
+
+### 6.5 Reconcile cursor
+
+`/reconcile` keeps one cursor, `state:jmap:since`, and it is bimodal:
+
+- `baseline:{hex-encoded-state}:{position}` — a position walk is in flight. The
+  walk enumerates the collection by position (`list_emails_page`) and `/changes`
+  has not been replayed from it yet.
+- A bare state string — the walk is done; this is a token to resume
+  `Email/changes` from.
+
+The two modes are an explicit `ReconcileCursor` variant in `worker.rs`, not a
+reserved position value. The page cap (`BASELINE_MAX_PAGES`) is a hard stop on
+the walk: if the walk is cut there, the cursor is persisted **as a walk**, never
+as a replay, because replay mode asserts the listing is exhausted and replaying
+`/changes` from a half-listed state would skip whatever still remains.
+
+Two token classes are in play and they are not interchangeable:
+
+- `Session.state` (RFC 8620 §2.1) is minted per session and is **not** an
+  `Email`-collection token. A fresh or re-baselined cursor carries it, because
+  the jmap-client `Session` type exposes no per-collection state.
+- `newState` out of a `Changes` response **is** a collection token.
+
+A strictly conforming server may therefore reject the very first `/changes` call
+after a re-baseline with a `sinceState` error. `replay_changes` absorbs it by
+re-baselining to a fresh token and returning, so the mismatch can only ever bite
+one call and the next pass restarts the walk; the 24h dedup key
+(`ttl::DEDUP_JMAP_SECONDS`) bounds the resulting replay to at most one duplicate.
+
+`Email/changes` also returns `destroyed` and `oldState`. Both are dropped by
+`EmailChanges`: a deleted email has nothing left to look up, so it drives no
+notification and does not move the cursor, and `oldState` is the token the
+caller just sent as `sinceState`. Keeping either would have meant storing a
+value nothing reads.
 
 ---
 

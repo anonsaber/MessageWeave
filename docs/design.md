@@ -277,7 +277,7 @@ TG /read 3 → handler 取会话里的 folder+page 游标
 
 当前**没有 FSM**。命令路由由 `src/worker.rs` 的 `parse_intent` 解析为 `Intent`；AI 授权态是 Redis 里的一个布尔加过期时间（键与 TTL 见 `docs/reference.md` 的 AI 授权态一节），不是多步确认态。
 
-仍成立的不变量：AI 摘要必须先有用户显式授权，**没有授权态不得调用 LLM**。授权一旦生效，摘要会拉取邮件正文全文送 LLM（`read_email` 请求 `TextBody` + `BodyValues` 并 `fetch_text_body_values(true)`，见 `src/domain/jmap/client.rs`），但正文**不回传给 Telegram**——出站只发摘要，或失败时回退为前 300 字符（`worker.rs:152` 注释：body text never reaches Telegram）。
+仍成立的不变量：AI 摘要必须先有用户显式授权，**没有授权态不得调用 LLM**。授权一旦生效，摘要会拉取邮件正文全文送 LLM（`read_email` 请求 `TextBody` + `BodyValues` 并 `fetch_text_body_values(true)`，见 `src/domain/jmap/client.rs`），但正文**不回传给 Telegram**——出站只发摘要，或失败时回退为前 300 字符（`worker.rs:227` 注释：body text never reaches Telegram）。
 
 曾设计过的 5 态 FSM（`Idle` / `AwaitClarify` / `AwaitConfirm` / `Analyzing` / `AwaitFallback`）连同状态转移表与渠道中立说明，见 `docs/retired.md`。
 
