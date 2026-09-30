@@ -4,16 +4,17 @@
 
 ## 你要做的事
 
-代码侧**没有**待你实现的项。剩下的一件事需要你腾一个停机窗口；第二件（TTL 实测）不能只靠我跑——它需要一个可连的测试 Redis 实例：
+代码侧**没有**待你实现的项。剩下的这一件（TTL 实测）不能只靠我跑——它需要一个可连的测试 Redis 实例：
 
 | # | 事项 | 谁做 | 你要动手吗 |
 | --- | --- | --- | --- |
-| 1 | `Email/changes` 的 `newState` 语义 | 你 + 我 | 腾一次停机窗口 |
-| 2 | TTL 实测 | 我 | 需要一个可连的测试 Redis 实例 |
+| 1 | TTL 实测 | 我 | 需要一个可连的测试 Redis 实例 |
 
 ## 阶段目标
 
-剩下一条需要停机窗口的阻塞：**在真实环境里确认 `Email/changes` 的 `newState` 语义**；另一条 TTL 实测（第 2 项）也不能靠「我补测」收掉——它需要一个可连的测试 Redis 实例才能跑起 `#[ignore]` 门控的集成测试，在那之前只有人工核对。
+只剩一条，而且不需要你动手：**TTL 实测**——它不能靠「我补测」收掉，需要一个可连的测试 Redis 实例才能跑起 `#[ignore]` 门控的集成测试，在那之前只有人工核对。
+
+上一轮需要停机窗口的第 1 项（`Email/changes` 的 `newState` 语义）已由提交 `269c8f6` 在代码侧关掉，不再需要停机窗口。详见下文「已关闭」。
 
 上一轮真机联调已经关掉了两条阻塞：
 
@@ -32,15 +33,17 @@
 
 ## 阻塞
 
-### 1. `Email/changes` 的 `newState` 语义
+### 已关闭：`Email/changes` 的 `newState` 语义（提交 `269c8f6`）
 
-`jmap-client` 的 `fetchChanges` 在服务器无法回放旧增量时会返回 `newState`，要求客户端重新基线化。本代码库的 `since` 游标处理只在测试服务器上跑过，**尚未出现一次服务器要求重新基线化的真实场景**。
+原条目担心「服务器无法回放旧增量时返回 `newState`，要求客户端重新基线化」。但 jmap-client 0.4.2 的 `ChangesResponse` 只有 `accountId` / `oldState` / `newState` / `hasMoreChanges` / `created` / `updated` / `destroyed` 加展开的调用参数——**没有 reset / re-baseline 信号字段**。所以 `/changes` 失败在代码里就是一个普通的 `Err`，无法区分「临时故障」和「服务端不再回放这个 state」。这个条目因此无法通过任何观测手段闭环：停机窗口里能观测到的仍然是同一个 `Err`。
 
-**你要做的：** 腾一次停机窗口——在邮箱还有新邮件进入的时候把本服务停掉，停到 Stalwart 的增量历史过期为止（保留时长由你的 Stalwart 配置决定；窗口要长于它）。停机期间**不要**跑 `POST /reconcile`。
+代码的实际行为比条目描述的更糟：`Err` 被原样上抛成 `Err(())`，`reconcile:state` 原样保留——下一次 cron 用同一个 dead `sinceState` 重试，再失败，再 503。游标永久冻结，`/reconcile` 永远返回 `503 reconcile_retry` 且没有任何前进。
 
-我来做的：恢复后跑 `POST /reconcile`，再看 `/debug/worker` 的 `reconcile_cursor`。预期是重新变成一个**新的 `baseline:` 游标**（重新基线化成功），而不是报错或停在旧游标。实测语义回填本节。
+**修法**：`/changes` 失败时改走重新基线——取一个新鲜的 `current_state()`，写回 `baseline:{fresh_state}:0` 并 `Ok` 返回。position walk 完全不依赖服务端 changelog 保留策略，所以下一轮从 position 0 重走一遍即可恢复；24h 去重键（`enqueue_reconcile_event`，86400s）保证重放最坏重复一次、不会漏。新增单测 `reconcile_rebaselines_when_changes_replay_is_stale` 锁定该行为。
 
-### 2. TTL 实测
+> position walk 路径（`list_emails_page(None, position, 100)`）本身不受影响——它把 `state` 传成 `None`，根本不发服务端 state。
+
+### 1. TTL 实测
 
 表里 **12 个 TTL 写入点、17 个 TTL 值**，值已人工逐个核对无误。它们分三类，可测性各不相同，不能混为一谈：A 类是调用点的字面量参数（不是模块级常量）；B 类**内嵌在 Lua 脚本字符串里**，在调用点提常量够不到；C 类的值产生于 `worker.rs` 的意图构造处、只是被当作参数透传给写入点。
 
