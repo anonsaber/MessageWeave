@@ -14,6 +14,75 @@ use std::{
 };
 use thiserror::Error;
 
+/// Every TTL literal in the codebase, in seconds.
+///
+/// The key/value table these back is `docs/opengaps.md`. The contract is pinned
+/// by `ttl_contract_is_pinned`, and the three atomic primitives that actually
+/// issue `EX`/`EXPIRE` are asserted against real Redis by
+/// `real_redis_ttl_tests`.
+///
+/// An inline literal at a call site would compile and pass the suite if it
+/// drifted to a wrong-but-valid number, silently shrinking the dedup, lock or
+/// replay window the email → Telegram chain leans on. Naming the intent here
+/// turns that drift into a reviewable const change plus a failing test.
+pub(crate) mod ttl {
+    pub const MINUTE: u64 = 60;
+    pub const HOUR: u64 = 60 * MINUTE;
+    pub const DAY: u64 = 24 * HOUR;
+    pub const WEEK: u64 = 7 * DAY;
+    pub const YEAR: u64 = 365 * DAY;
+
+    /// Initial hold on the reconcile job.
+    pub const RECONCILE_LOCK_SECONDS: u64 = 300;
+    /// Heartbeat renewal. Must stay well under `RECONCILE_LOCK_SECONDS`.
+    pub const RECONCILE_HEARTBEAT_SECONDS: u64 = 90;
+    /// Single-flight lock for JMAP push registration. Outlives the maximum JMAP
+    /// request timeout so a slow create cannot admit a duplicate.
+    pub const PUSH_REGISTER_LOCK_SECONDS: u64 = 360;
+    /// Verification rate limit per push subscription.
+    pub const PUSH_VERIFY_LIMIT_SECONDS: u64 = 30;
+    /// Telegram update de-duplication window.
+    pub const DEDUP_TG_SECONDS: u64 = DAY;
+    /// JMAP de-duplication window. Callback and reconcile share it, so a
+    /// re-baseline replay duplicates at most once instead of being dropped.
+    pub const DEDUP_JMAP_SECONDS: u64 = DAY;
+    /// In-flight delivery guard.
+    pub const DELIVERY_INFLIGHT_SECONDS: u64 = MINUTE;
+    /// Delivery idempotency window.
+    pub const DELIVERY_COMMITTED_SECONDS: u64 = WEEK;
+    /// How long a `disabled` push subscription stays marked before re-check.
+    pub const PUSH_DISABLED_SECONDS: u64 = DAY;
+    /// How long a `pending` push subscription waits for verification.
+    pub const PUSH_STATUS_PENDING_SECONDS: u64 = 900;
+    /// How long a `verified` push subscription stays trusted before re-check.
+    pub const PUSH_STATUS_VERIFIED_SECONDS: u64 = 300;
+    /// Push subscription code and its link to the subscription id.
+    pub const PUSH_SUBSCRIPTION_SECONDS: u64 = 300;
+    /// Callback-URL -> subscription-id registration window.
+    pub const PUSH_REGISTRATION_SECONDS: u64 = WEEK;
+    /// Orphan callback attribution window: a callback with an unknown
+    /// `subscription_id` waits here to be re-attribute after re-registration.
+    pub const PUSH_ORPHAN_SECONDS: u64 = WEEK;
+    /// `/admin` digest session. Must match the `expires_in` reported to the
+    /// admin client.
+    pub const ADMIN_SESSION_SECONDS: u64 = 900;
+    /// Retry counter retention. `retry_or_dlq` interpolates this into its Lua
+    /// script, so there is exactly one literal for it.
+    pub const RETRY_COUNTER_SECONDS: u64 = DAY;
+
+    /// `/ai` "临时 / 一次" grants and the explicit `/ai on` grants.
+    pub const CONSENT_TEMPORARY_SECONDS: u64 = HOUR;
+    /// `/ai` "今天".
+    pub const CONSENT_TODAY_SECONDS: u64 = DAY;
+    /// `/ai` "7天".
+    pub const CONSENT_WEEK_SECONDS: u64 = WEEK;
+    /// `/ai` "直到撤销 / 长期" upper bound.
+    pub const CONSENT_MAXIMUM_SECONDS: u64 = YEAR;
+    /// `/ai off` revocation. Falls through `set_ai_consent`'s `.max(1)` to a
+    /// 1-second key, which is meant to be already gone.
+    pub const CONSENT_REVOKED_SECONDS: u64 = 0;
+}
+
 #[derive(Debug, Error)]
 pub enum StateError {
     #[error("redis operation failed")]
@@ -517,15 +586,18 @@ impl ReliableState for RedisState {
         let mut connection = self.connection.clone();
         let retry_key = format!("retry:{stream}:{}", message.id);
         // Keep increment, DLQ append, and source ACK in one Redis script so a
-        // restart cannot leave an acknowledged event out of both queues.
-        let script = redis::Script::new(
+        // restart cannot leave an acknowledged event out of both queues. The
+        // counter TTL comes from `ttl::RETRY_COUNTER_SECONDS` rather than a
+        // second inline literal, so it cannot drift from the rest of the table.
+        let retry_ttl = ttl::RETRY_COUNTER_SECONDS;
+        let script = redis::Script::new(&format!(
             r#"local n = redis.call('INCR', KEYS[1])
-               redis.call('EXPIRE', KEYS[1], 86400)
+               redis.call('EXPIRE', KEYS[1], {retry_ttl})
                if n < tonumber(ARGV[1]) then return 0 end
                redis.call('XADD', ARGV[2], '*', 'payload', ARGV[3])
                redis.call('XACK', ARGV[4], ARGV[5], ARGV[6])
-               return 1"#,
-        );
+               return 1"#
+        ));
         let moved: i64 = script
             .key(retry_key)
             .arg(max_attempts.max(1))
@@ -796,7 +868,7 @@ impl ReliableState for RedisState {
             .arg(format!("push:orphan:{subscription_id}"))
             .arg(request_id)
             .arg("EX")
-            .arg(604_800_u64)
+            .arg(ttl::PUSH_ORPHAN_SECONDS)
             .query_async::<()>(&mut connection)
             .await?;
         Ok(())
@@ -823,7 +895,7 @@ impl ReliableState for RedisState {
             .arg(push_registration_key(callback_url))
             .arg(subscription_id)
             .arg("EX")
-            .arg(604_800_u64)
+            .arg(ttl::PUSH_REGISTRATION_SECONDS)
             .query_async::<()>(&mut connection)
             .await?;
         Ok(())
@@ -1421,6 +1493,68 @@ async fn delete_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ttl_contract_is_pinned() {
+        // The dedup, lock, consent and replay windows decide whether the email
+        // -> Telegram chain loses or duplicates. The three primitives that issue
+        // EX/EXPIRE are covered against real Redis in real_redis_ttl_tests; this
+        // pins the literals the call sites now route through, so a wrong-but-
+        // valid number cannot slip in as a silent const change.
+        assert_eq!(ttl::MINUTE, 60);
+        assert_eq!(ttl::HOUR, 3_600);
+        assert_eq!(ttl::DAY, 86_400);
+        assert_eq!(ttl::WEEK, 604_800);
+        assert_eq!(ttl::YEAR, 31_536_000);
+
+        assert_eq!(ttl::RECONCILE_LOCK_SECONDS, 300);
+        assert_eq!(ttl::RECONCILE_HEARTBEAT_SECONDS, 90);
+        const {
+            assert!(
+                ttl::RECONCILE_HEARTBEAT_SECONDS < ttl::RECONCILE_LOCK_SECONDS,
+                "the heartbeat must renew before the reconcile lock expires"
+            );
+        }
+        assert_eq!(ttl::PUSH_REGISTER_LOCK_SECONDS, 360);
+        assert_eq!(ttl::PUSH_VERIFY_LIMIT_SECONDS, 30);
+
+        assert_eq!(ttl::PUSH_STATUS_PENDING_SECONDS, 900);
+        assert_eq!(ttl::PUSH_STATUS_VERIFIED_SECONDS, 300);
+        assert_eq!(ttl::PUSH_SUBSCRIPTION_SECONDS, 300);
+        assert_eq!(ttl::PUSH_REGISTRATION_SECONDS, 604_800);
+        assert_eq!(ttl::PUSH_ORPHAN_SECONDS, 604_800);
+        assert_eq!(ttl::ADMIN_SESSION_SECONDS, 900);
+
+        assert_eq!(ttl::DEDUP_TG_SECONDS, 86_400);
+        assert_eq!(ttl::DEDUP_JMAP_SECONDS, 86_400);
+        assert_eq!(
+            ttl::DEDUP_TG_SECONDS,
+            ttl::DEDUP_JMAP_SECONDS,
+            "callback and reconcile must deduplicate on the same window"
+        );
+        assert_eq!(ttl::DELIVERY_INFLIGHT_SECONDS, 60);
+        assert_eq!(ttl::DELIVERY_COMMITTED_SECONDS, 604_800);
+        assert_eq!(ttl::PUSH_DISABLED_SECONDS, 86_400);
+        // Retained in this table because retry_or_dlq interpolates it into its
+        // Lua script; the test above asserts the counter itself in
+        // real_redis_ttl_tests.
+        assert_eq!(ttl::RETRY_COUNTER_SECONDS, 86_400);
+
+        assert_eq!(ttl::CONSENT_TEMPORARY_SECONDS, 3_600);
+        assert_eq!(ttl::CONSENT_TODAY_SECONDS, 86_400);
+        assert_eq!(ttl::CONSENT_WEEK_SECONDS, 604_800);
+        assert_eq!(ttl::CONSENT_MAXIMUM_SECONDS, 31_536_000);
+        assert_eq!(ttl::CONSENT_REVOKED_SECONDS, 0);
+        const {
+            assert!(
+                ttl::CONSENT_TEMPORARY_SECONDS < ttl::CONSENT_TODAY_SECONDS
+                    && ttl::CONSENT_TODAY_SECONDS < ttl::CONSENT_WEEK_SECONDS
+                    && ttl::CONSENT_WEEK_SECONDS < ttl::CONSENT_MAXIMUM_SECONDS,
+                "the consent ladder must stay ordered, or a longer grant would
+                 satisfy a shorter one"
+            );
+        }
+    }
 
     #[test]
     fn rediss_url_accepts_default_acl_and_encoded_password() {

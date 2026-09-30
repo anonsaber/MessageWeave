@@ -5,6 +5,7 @@ use crate::channel::telegram::TelegramClient;
 use crate::config::BusinessConfig;
 use crate::domain::jmap::{JmapBackend, JmapService, SearchResult};
 use crate::domain::Notification;
+use crate::state::ttl;
 use crate::state::ReliableState;
 use async_trait::async_trait;
 use std::{
@@ -409,7 +410,7 @@ impl<B: JmapBackend> MetadataWorker<B> {
         // `false` means another worker already owns the dedup entry for this
         // email in the current window; either way the event is handled here.
         self.state
-            .claim_dedup_and_enqueue(&key, 86_400, "stalwart:jmap", &payload)
+            .claim_dedup_and_enqueue(&key, ttl::DEDUP_JMAP_SECONDS, "stalwart:jmap", &payload)
             .await
             .map_err(|_| ())?;
         Ok(())
@@ -583,25 +584,25 @@ fn parse_intent(input: &str) -> Intent {
     }
     if text.contains("临时") || text.contains("一次") {
         return Intent::Consent {
-            ttl: 3600,
+            ttl: ttl::CONSENT_TEMPORARY_SECONDS,
             label: "临时1小时",
         };
     }
     if text.contains("今天") {
         return Intent::Consent {
-            ttl: 86_400,
+            ttl: ttl::CONSENT_TODAY_SECONDS,
             label: "今天",
         };
     }
     if text.contains("7天") {
         return Intent::Consent {
-            ttl: 7 * 86_400,
+            ttl: ttl::CONSENT_WEEK_SECONDS,
             label: "7天",
         };
     }
     if text.contains("直到我撤销") || text.contains("长期") {
         return Intent::Consent {
-            ttl: 365 * 86_400,
+            ttl: ttl::CONSENT_MAXIMUM_SECONDS,
             label: "直到撤销（最长365天）",
         };
     }
@@ -612,7 +613,7 @@ fn parse_intent(input: &str) -> Intent {
         || text.contains("允许 ai")
     {
         return Intent::Consent {
-            ttl: 3600,
+            ttl: ttl::CONSENT_TEMPORARY_SECONDS,
             label: "1小时",
         };
     }
@@ -622,7 +623,7 @@ fn parse_intent(input: &str) -> Intent {
         || text.contains("停止摘要")
     {
         return Intent::Consent {
-            ttl: 0,
+            ttl: ttl::CONSENT_REVOKED_SECONDS,
             label: "已撤销",
         };
     }

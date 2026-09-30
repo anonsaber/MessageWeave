@@ -27,6 +27,7 @@ use crate::config::{
 };
 use crate::domain::jmap::{client::JmapClientBackend, JmapService};
 use crate::error::BotError;
+use crate::state::ttl;
 use crate::state::MemoryState;
 use crate::state::{runtime_provider, OutboundConfig, ReliableState, RuntimeConfigProvider};
 pub use crate::worker::{
@@ -247,7 +248,7 @@ async fn telegram_webhook(
         return error_response(StatusCode::FORBIDDEN, "forbidden", false);
     }
     let key = format!("dedup:tg:{}", update.update_id);
-    match app.state.claim_dedup(&key, 86_400).await {
+    match app.state.claim_dedup(&key, ttl::DEDUP_TG_SECONDS).await {
         Ok(false) => StatusCode::NO_CONTENT.into_response(),
         Ok(true) => match app
             .state
@@ -287,7 +288,7 @@ async fn reconcile(State(app): State<AppState>, headers: HeaderMap) -> Response 
     let lock_owner = reconcile_lock_owner();
     match app
         .state
-        .acquire_lock("lock:reconcile", &lock_owner, 300)
+        .acquire_lock("lock:reconcile", &lock_owner, ttl::RECONCILE_LOCK_SECONDS)
         .await
     {
         Ok(true) => {
@@ -300,7 +301,11 @@ async fn reconcile(State(app): State<AppState>, headers: HeaderMap) -> Response 
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                     match heartbeat_state
-                        .renew_lock("lock:reconcile", &heartbeat_owner, 90)
+                        .renew_lock(
+                            "lock:reconcile",
+                            &heartbeat_owner,
+                            ttl::RECONCILE_HEARTBEAT_SECONDS,
+                        )
                         .await
                     {
                         Ok(true) => {}
@@ -444,7 +449,11 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
                     }
                 }
                 let inflight_key = format!("delivery:inflight:{stream}:{}", message.id);
-                match app.state.claim_dedup(&inflight_key, 60).await {
+                match app
+                    .state
+                    .claim_dedup(&inflight_key, ttl::DELIVERY_INFLIGHT_SECONDS)
+                    .await
+                {
                     Ok(false) => continue,
                     Err(_) => {
                         return error_response(
@@ -456,7 +465,12 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
                     Ok(true) => {}
                 }
                 if app.worker.process(stream, &message.payload).await.is_ok() {
-                    if app.state.claim_dedup(&delivery_key, 604_800).await.is_err() {
+                    if app
+                        .state
+                        .claim_dedup(&delivery_key, ttl::DELIVERY_COMMITTED_SECONDS)
+                        .await
+                        .is_err()
+                    {
                         let _ = app.state.release_dedup(&inflight_key).await;
                         return error_response(
                             StatusCode::SERVICE_UNAVAILABLE,
@@ -1176,10 +1190,19 @@ async fn create_admin_session(State(app): State<AppState>, headers: HeaderMap) -
     }
     let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     let digest = session_digest(&token);
-    if app.state.put_admin_session(&digest, 900).await.is_err() {
+    if app
+        .state
+        .put_admin_session(&digest, ttl::ADMIN_SESSION_SECONDS)
+        .await
+        .is_err()
+    {
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
     }
-    axum::Json(serde_json::json!({"session": token, "expires_in": 900})).into_response()
+    axum::Json(serde_json::json!({
+        "session": token,
+        "expires_in": ttl::ADMIN_SESSION_SECONDS
+    }))
+    .into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -1208,7 +1231,12 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
         Ok(true)
     ) {
         let limit_key = format!("ratelimit:push-verify:{subscription}");
-        if matches!(app.state.claim_dedup(&limit_key, 30).await, Ok(false)) {
+        if matches!(
+            app.state
+                .claim_dedup(&limit_key, ttl::PUSH_VERIFY_LIMIT_SECONDS)
+                .await,
+            Ok(false)
+        ) {
             return error_response(
                 StatusCode::TOO_MANY_REQUESTS,
                 "push_verify_rate_limited",
@@ -1225,7 +1253,7 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
         }
         if app
             .state
-            .remember_push_subscription(subscription, code, 300)
+            .remember_push_subscription(subscription, code, ttl::PUSH_SUBSCRIPTION_SECONDS)
             .await
             .is_err()
         {
@@ -1237,7 +1265,11 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
         }
         let _ = app
             .state
-            .set_push_subscription_status(subscription, "verified", 300)
+            .set_push_subscription_status(
+                subscription,
+                "verified",
+                ttl::PUSH_STATUS_VERIFIED_SECONDS,
+            )
             .await;
     }
     if push.account_id.is_none() && push.email_id.is_none() {
@@ -1247,7 +1279,7 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
         return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
     };
     let key = format!("dedup:jmap:{account}:{email}");
-    match app.state.claim_dedup(&key, 86_400).await {
+    match app.state.claim_dedup(&key, ttl::DEDUP_JMAP_SECONDS).await {
         Ok(false) => StatusCode::NO_CONTENT.into_response(),
         Ok(true) => match app
             .state
@@ -1298,7 +1330,11 @@ async fn register_push(State(app): State<AppState>, headers: HeaderMap, body: By
         .state
         // The lock must outlive the configured 300s maximum JMAP request
         // timeout; this prevents a slow create from admitting a duplicate.
-        .acquire_lock(&registration_lock, &registration_owner, 360)
+        .acquire_lock(
+            &registration_lock,
+            &registration_owner,
+            ttl::PUSH_REGISTER_LOCK_SECONDS,
+        )
         .await
     {
         Ok(false) => return error_response(StatusCode::CONFLICT, "conflict", false),
@@ -1352,7 +1388,11 @@ async fn register_push(State(app): State<AppState>, headers: HeaderMap, body: By
     }
     if app
         .state
-        .set_push_subscription_status(&subscription_id, "pending", 900)
+        .set_push_subscription_status(
+            &subscription_id,
+            "pending",
+            ttl::PUSH_STATUS_PENDING_SECONDS,
+        )
         .await
         .is_err()
     {
@@ -1423,7 +1463,7 @@ async fn disable_push(State(app): State<AppState>, headers: HeaderMap, body: Byt
     }
     if app
         .state
-        .set_push_subscription_status(&subscription_id, "disabled", 86_400)
+        .set_push_subscription_status(&subscription_id, "disabled", ttl::PUSH_DISABLED_SECONDS)
         .await
         .is_err()
     {
