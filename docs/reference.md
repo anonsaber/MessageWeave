@@ -577,9 +577,9 @@ one call and the next pass restarts the walk; the 24h dedup key
 
 `Email/changes` also returns `destroyed` and `oldState`. Both are dropped by
 `EmailChanges`: a deleted email has nothing left to look up, so it drives no
-notification and does not move the cursor, and `oldState` is the token the
-caller just sent as `sinceState`. Keeping either would have meant storing a
-value nothing reads.
+notification and does not move the cursor, and `oldState` echoes the
+`sinceState` the server accepted, which the caller already holds. Keeping either
+would have meant storing a value nothing reads.
 
 ---
 
