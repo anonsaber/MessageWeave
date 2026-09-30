@@ -15,7 +15,7 @@
 
 ---
 
-## 1. Project goals
+## 1. 项目目标
 
 一个**部署在 Docker + 外部托管 Redis** 的 JMAP 邮件通知服务：
 
@@ -27,7 +27,7 @@
 
 **不做**：多租户、账号体系、Web UI 之外的客户端、消息持久化、邮件双向同步。
 
-## 2. Technology selection (locked)
+## 2. 技术选型（已锁定）
 
 | 层 | 选型 | 版本 |
 |---|---|---|
@@ -45,7 +45,7 @@
 | 前端 | 原生 HTML + 单文件 JS + 单文件 CSS，**无构建工具、无框架** | — |
 | 网关 | Cloudflare Worker（纯 JS，零依赖） | — |
 
-## 3. Security boundary (cannot be violated)
+## 3. 安全边界（不可违反）
 
 23 条，编号 `SAF-*` / `REQ-*` / `C-*`，全部登记在 §8 注册表。
 
@@ -73,7 +73,7 @@
 22. **AI 分析不持久化**：分析结果与授权状态之外的中间态不落盘。
 23. **JMAP capability 动态发现**：禁止硬编码 JMAP 能力列表，必须运行时读取。
 
-## 4. Implementation phase (historical sequence, used to explain code structure)
+## 4. 实施阶段（历史顺序，用于解释代码结构）
 
 | 阶段 | 内容 | 稳定 ID |
 |---|---|---|
@@ -86,7 +86,7 @@
 
 **阶段编号是历史顺序，不是当前状态声明。** 当前状态以 `reference.md` 与代码为准。
 
-## 5. Prohibited matters
+## 5. 禁止事项
 
 1. **不得引入未在本文件 §2 登记的依赖。** 新增依赖须先在本文件登记并说明理由。
 2. **不得为通过门禁而删除测试、跳过校验、放宽检查级别、删除访问控制。**
@@ -99,15 +99,15 @@
 9. **不得在 `web/`、`cloudflare-worker/` 之外引入前端资源**。
 10. **不得让业务配置静默回退到环境变量。**
 
-## 6. Test acceptance and access control
+## 6. 测试验收与访问控制
 
-### 6.1 Change verification closed loop
+### 6.1 变更验证闭环
 
 任何涉及运行时行为或可核对事实的改动，**同一改动内**完成：实现 → 测试 → 文档。
 
 不得只改代码不改文档，也不得只改文档不改代码。
 
-### 6.2 GATE-P0 (code access control)
+### 6.2 GATE-P0（代码门禁）
 
 Debian 最小发行版容器内执行，容器内必须显式 `export PATH=/usr/local/cargo/bin:$PATH`：
 
@@ -122,7 +122,7 @@ cd /home/okabe/Repo/messageweave && docker run --rm --user 1000:1000 \
 
 **注意**：`docker run` 的 bash `-lc` 脚本必须用**单引号**包裹。用双引号会先在宿主机展开 `$PWD` / `$PATH`，容器内找不到 cargo。
 
-### 6.3 GATE-DOCS (Document Access Control)
+### 6.3 GATE-DOCS（文档门禁）
 
 ```bash
 cd /home/okabe/Repo/messageweave && bash scripts/docs_check/run_all.sh
@@ -143,19 +143,19 @@ cd /home/okabe/Repo/messageweave && bash scripts/docs_check/run_all.sh
 **`0 error` 只证明「可达」**：行号存在、引用可解析、表格列数一致、标记就位。
 **它不证明语义正确。** 报告校验结果时必须说明这个区分。
 
-### 6.4 Front-end testing
+### 6.4 前端测试
 
 ```bash
 cd /home/okabe/Repo/messageweave/web && node --test *.test.mjs
 cd /home/okabe/Repo/messageweave/cloudflare-worker && node --test test/*.test.js
 ```
 
-### 6.5 Invariants must have assertions
+### 6.5 不变量必须有断言
 
 §3 的每条安全不变量都要有一条测试或代码级断言能证明它成立，
 而不是只写在文档里。纯重构不得改变测试总数。
 
-### 6.6 External dependency testing
+### 6.6 外部依赖测试
 
 Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查询与**入站回调**两个方向
 均已验证（`setWebhook` 与 `PushSubscription` 的注册、回调、验证往返全部走通），托管 Redis
@@ -163,7 +163,7 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 
 **环境阻塞项：无。** 最后两项也已验证：TTL 数值在真实 Upstash 实例上实测（`SET … NX EX` / `SET … EX 3600` / Lua `EXPIRE 86400` 三处原子写入点，连跑 6 轮全绿），`Email/changes` 的 `newState` 续传在真实 Stalwart 环境触发过（见 docs/design.md §10.5）。[`opengaps.md`](opengaps.zh-CN.md)「阻塞」区当前为空。
 
-## 7. Document boundaries
+## 7. 文档边界
 
 每个文档只回答一个问题；**不得跨文档复制表格、清单或数值。**
 
@@ -188,7 +188,7 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 - **改公共 API / Redis 键与 TTL / 配置项 / 错误码 / 用户可见文案时，同轮同步全部相关文档。**
 - **新增文档必须加入 `scripts/docs_check/` 各校验器的文档清单**，否则它永远不会被校验。
 
-## 8. Stable ID registry
+## 8. 稳定 ID 注册表
 
 **唯一权威索引表。** 跨文档引用一律用稳定 ID（不用 `§x.y` 章节号）。
 

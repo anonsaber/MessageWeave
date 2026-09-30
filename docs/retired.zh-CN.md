@@ -1,4 +1,4 @@
-# 废弃与未采用路线（Retired Routes）
+# 废弃与未采用的方案
 
 > [English version / 英文版 → retired.md](retired.md)
 
@@ -11,7 +11,7 @@
 
 ---
 
-## 1. Route not taken
+## 1. 未采用的方案
 
 | 条目 | 类型 | 原因 | 替代或现状 |
 |---|---|---|---|
@@ -29,7 +29,7 @@
 
 | SPA 管理凭据 = `REDIS_URL` 的 Redis ACL 密码 | 未采用路线 | 混淆基础设施凭据与 UI 管理密码；Redis 无 ACL 密码（TLS-only 托管 Redis）时 `bootstrap_token` 的 `.is_empty()` 守卫让 SPA 永久 401 | 改用 `CONFIG_ENCRYPTION_KEY`（启动必填的 32 字节高熵 hex，常数时间比较） |
 
-### 1.1 Teloxide candidate comparison (evaluation record)
+### 1.1 Teloxide 候选方案对比（评估记录）
 
 下表与下列理由为**当初的评估结论，保留它是决策依据，不是当前技术事实**——「活跃，最新 0.17，下载量大」等框架属性未经本轮复核，不代表这些 crate 的当前版本状态。
 
@@ -51,7 +51,7 @@
 
 **替代/降级**：若 teloxide 升级或破坏性改动，可退到更薄的 `teloxide-core`（保留核心与 types，去掉 dispatcher 抽象）；若需多账户高吞吐，用 `webhooks-axum` + 共享 `axum::Router`。以上两条均随 teloxide 未采用而不再成立。
 
-### 1.2 Dialogue FSM state transition table (target design, not yet implemented)
+### 1.2 对话 FSM 状态转移表（目标设计，尚未实现）
 
 当前没有 FSM：`src/worker.rs` 的 `parse_intent` 直接解析为 `Intent`，AI 授权是 Redis 里的一个布尔加过期时间。曾设计过下面 5 个状态：
 
@@ -69,7 +69,7 @@
 
 ---
 
-## 2. Fictional entries (documentation has been written, code has never existed)
+## 2. 虚构条目（文档曾写过，代码从未存在）
 
 这些名字**从未在代码里存在**。它们有的出现在目标形态的目录树里，有的出现在未提交的草稿与讨论记录里，共同风险是让人误以为"这个功能已经实现"，故在此登记防止再次出现。
 
@@ -104,7 +104,7 @@
 | docker-compose `message-weave health --addr` 示例 | 虚构命令 | 应用无 CLI 子命令；健康检查端点是 `GET /healthz` 与 `GET /ready` | 见 `docs/deployment.md` 的 Health-check 表 |
 | 早期设计辩论问题（消息格式 / 长邮件阈值 / 附件策略 / Identity / 监控 / LLM 供应商 / 熔断等 17 条） | 已由代码回答 | 均已被实现的代码给出答案，不再属于待确认项 | 见 `docs/design.md` 的「已由代码回答的早期问题」一节 |
 
-## 3. Deleted documents
+## 3. 已删除的文档
 
 | 条目 | 类型 | 原因 | 替代或现状 |
 |---|---|---|---|
@@ -113,7 +113,7 @@
 
 ---
 
-## 4. Deleted compatibility path (code used to exist, now deleted)
+## 4. 已删除的兼容路径（代码曾存在，现已删除）
 
 与前两节不同：下列条目**曾经真实存在于代码**，既非虚构也非"未采用"。它们属于早期为兼容
 环境变量部署形态而保留的解析层，现已整体删除——项目早期无需任何兼容性承诺，删除比保留更便宜。
@@ -135,7 +135,7 @@
 > （Redis 运行参数 `max_retries`，回落默认见 `docs/reference.md` §6.1），后者是常量
 > （两个构造器内硬编码 300，未进入业务配置 wire）。
 
-### 4.1 Business/management routes mounted in boot mode
+### 4.1 启动模式下挂载的业务/管理路由
 
 `router_configuration_setup` 原先直接委托全量工厂 `router_with_worker_state_runtime_bootstrap_config`，
 因此 12 条业务与管理路由在引导模式下全部被注册，却**一条也走不通**：引导模式的 `admin_token` 是空值，
@@ -154,7 +154,7 @@
 
 ---
 
-## 5. How to restart one of them
+## 5. 如何重新启用其中一项方案
 
 1. 先在 `docs/opengaps.md` 登记为缺口并归属阶段。
 2. 若涉及 Redis 键、TTL、HTTP 路由或默认值，同轮更新 `docs/reference.md`。

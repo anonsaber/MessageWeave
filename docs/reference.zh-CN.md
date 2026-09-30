@@ -28,9 +28,9 @@
 
 ---
 
-## 1. Redis keys
+## 1. Redis 键
 
-### 1.1 Configuration
+### 1.1 配置
 
 |关键| TTL |作家 |读者|
 |---|---|---|---|
@@ -51,7 +51,7 @@
   在处理程序一侧。
 - `config:enabled` 被视为一个门；缺失或“错误”会导致业务处理中断。
 
-### 1.2 AI consent
+### 1.2 AI 授权
 
 |关键| TTL |作家 |读者|
 |---|---|---|---|
@@ -82,7 +82,7 @@
 以及中文前缀“搜索”、“查找”、“搜索”（仅匹配前缀，绝不是子字符串）
 `意图::搜索`。搜索未授予同意并且不写入 Redis 密钥。
 
-### 1.3 Delivery pipeline
+### 1.3 投递流水线
 
 |关键| TTL |作家 |读者|
 |---|---|---|---|
@@ -108,7 +108,7 @@ DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 
 追加和源确认是原子的，全部都在一个 Lua 脚本内。没有代码路径读取 DLQ
 返回 — 重播是操作员操作，而不是服务功能。
 
-### 1.4 Idempotency and rate limits
+### 1.4 幂等与速率限制
 
 |关键| TTL |作家 |读者|
 |---|---|---|---|
@@ -121,7 +121,7 @@ DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 
 删除，按设计：它是协调游标，过期将强制完全删除
 下次重新启动时重新设定基线。
 
-### 1.5 Locks
+### 1.5 锁
 
 |关键| TTL |作家 |读者|
 |---|---|---|---|
@@ -135,7 +135,7 @@ DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 
 > 锁的寿命必须超过配置的 300 秒最大 JMAP 请求超时时间；这可以防止
 > 由于接受重复项而创建缓慢。
 
-### 1.6 Push subscription state
+### 1.6 推送订阅状态
 
 |关键| TTL |作家 |读者|
 |---|---|---|---|
@@ -166,7 +166,7 @@ DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 
 
 ---
 
-## 2. Error envelope
+## 2. 错误响应封装
 
 每个错误响应都使用一种包络形状：
 
@@ -204,7 +204,7 @@ DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 
 
 ---
 
-## 3. Backend routes
+## 3. 后端路由
 
 所有 HTTP API 路由均在“router_with_worker_state_runtime_bootstrap”中注册。
 最后一个表行中的三个静态 SPA 路由是例外：它们位于
@@ -284,7 +284,7 @@ env var — 并且“DEBUG_TOKEN”非空**（“SAF-DEBUG-GATE”；门被读�
 
 ---
 
-## 4. Gateway vs backend route matrix
+## 4. 网关与后端路由对照表
 
 > **独立验证。** 来源：`cloudflare-worker/src/backends.js` `SAFE_ROUTES`，
 > 18 个条目，以及 `ROUTE_METHODS` (`index.js`)
@@ -333,11 +333,11 @@ proxy：回调 URL 由客户端在请求正文中提供，
 
 ---
 
-## 5. Environment variables
+## 5. 环境变量
 
 三个不同的层。它们不可互换。
 
-### 5.1 Boot-time (2 required, 2 optional with defaults)
+### 5.1 启动时配置（2 项必填，2 项可选且有默认值）
 
 |变量|必填 |默认 |来源 |
 |---|---|---|---|
@@ -362,7 +362,7 @@ proxy：回调 URL 由客户端在请求正文中提供，
 在不做任何业务工作的情况下浮出水面。这是一种故意的失败关闭设置姿势，并且它
 是“容器正常但没有任何反应”的最可能的原因。
 
-### 5.2 Redis-resident business configuration
+### 5.2 存储在 Redis 中的业务配置
 
 SPA 通过 `GET /api/business-config` 读取并写入
 `PUT /api/business-config` （1秒内生效）；第一次成功写入创建
@@ -425,7 +425,7 @@ patch** 仅替换其命名的字段并保留其余字段的存储值（`apply`
 **200**，因为这是呼叫者要求的答案。认证是一样的
 `config_authorized` 门作为写入路径；它故意**不**位于`DEBUG_TOKEN`后面。
 
-### 5.3 No legacy environment path
+### 5.3 不保留旧版环境变量配置路径
 
 `Config::from_env()` 及其助手（`required_secret`、`required_nonblank`、`env_bool`）是
 **已删除** — `config.rs` 根本不执行 `std::env` 读取。下面的名字是遗产
@@ -457,7 +457,7 @@ env 表面并仅列出，以便过时的部署脚本可以被识别为过时的
 它（如果有）对 Redis 连接进行身份验证，并且不是任何 HTTP 的凭据
 端点。
 
-### 5.4 Notification rendering
+### 5.4 通知内容渲染
 
 `send_notification` (`src/channel.rs`) 是唯一将通知渲染到
 Telegram 文本，它只渲染三个元数据行——不是正文，也不是
@@ -494,9 +494,9 @@ build 没有 IANA tz 数据库（“chrono-tz”不可用），因此每个区�
 
 ---
 
-## 6. Outbound and runtime parameters
+## 6. 出站与运行时参数
 
-### 6.1 Outbound
+### 6.1 出站请求
 
 |参数|默认 |范围/上限|来源 |
 |---|---|---|---|
@@ -508,7 +508,7 @@ build 没有 IANA tz 数据库（“chrono-tz”不可用），因此每个区�
 **没有** `LLM_MAX_RETRIES` 环境变量；重试计数位于
 `config:outbound` 并且无论写入什么内容都以 5 为界。
 
-### 6.2 Reconcile budgets
+### 6.2 状态协调预算
 
 |恒定|价值|来源 |
 |---|---|---|
@@ -525,7 +525,7 @@ build 没有 IANA tz 数据库（“chrono-tz”不可用），因此每个区�
 第一个“/changes”调用。重播阶段之后可能会扩大窗口，最多
 `CHANGE_WINDOW_CAP`，在光标前进之前。
 
-### 6.3 Idle threshold
+### 6.3 空闲阈值
 
 XAUTOCLAIM 的空闲阈值源自实时出站配置：
 
@@ -538,7 +538,7 @@ count × (max_retries + 1) × (jmap_timeout_ms + telegram_timeout_ms + llm_timeo
 Redis 打嗝永远不会折叠窗口。仅在多实例上重复
 赌注，永不损失。
 
-### 6.4 Search limits
+### 6.4 搜索限制
 
 |恒定|价值|来源 |
 |---|---|---|
@@ -546,7 +546,7 @@ Redis 打嗝永远不会折叠窗口。仅在多实例上重复
 | `SEARCH_SUBJECT_MAX` | 120 个字符 | `worker.rs` |
 | `SEARCH_PREVIEW_MAX` | 160 个字符 | `worker.rs` |
 
-### 6.5 Reconcile cursor
+### 6.5 状态协调游标
 
 `/reconcile` 保留一个游标，`state:jmap:since`，并且它是双峰的：
 
@@ -583,7 +583,7 @@ Redis 打嗝永远不会折叠窗口。仅在多实例上重复
 
 ---
 
-## 7. Static assets and response headers
+## 7. 静态资源与响应头
 
 从“src/web.rs”提供服务。
 
@@ -608,7 +608,7 @@ Redis 打嗝永远不会折叠窗口。仅在多实例上重复
 
 ---
 
-## 8. Not implemented
+## 8. 尚未实现的功能
 
 在此记录，以便其他地方的引用不会被误认为是已发布的功能。
 
@@ -625,7 +625,7 @@ Redis 打嗝永远不会折叠窗口。仅在多实例上重复
 
 ---
 
-## References
+## 参考资料
 
 外部依赖项，全部可达并在验证时返回 HTTP 200：
 
@@ -650,13 +650,13 @@ Redis 打嗝永远不会折叠窗口。仅在多实例上重复
 (404) 和 `platform.openai.com` 文档路径 (403)。该项目描述了法学硕士
 依赖项与 OpenAI 兼容，并通过“reqwest”记录它。
 
-## 9. Deployment platform details
+## 9. 部署平台细节
 
 面向操作员的序列位于 [`deployment.md`](deployment.zh-CN.md) 中。本节保留
 配置或诊断时有用的特定于平台的行为和设置
 部署。
 
-### 9.1 Backend deployment paths
+### 9.1 后端部署方式
 
 **HostStack 生产路径。** 存储库的 `hoststack.yaml` 是生产路径
 HostStack 的本机 Rust 运行时的配置。它运行 `cargo fetch --locked`，构建
@@ -682,20 +682,20 @@ HostStack路径不执行存储库Dockerfile。它的建造者和运行者是
 由主机注入；秘密不会进入构建参数或图像层。 Docker 平台
 运行状况检查应调用 [`deployment.md`](deployment.zh-CN.md) 中描述的 HTTP 端点。
 
-### 9.2 Backend configuration and secrets
+### 9.2 后端配置与密钥
 
 该进程在启动时仅读取“REDIS_URL”和“CONFIG_ENCRYPTION_KEY”。可选的
 远程调试界面使用独立的“DEBUG_ENABLED”开关和“DEBUG_TOKEN”；离开
 除非有意启用远程诊断，否则两者在生产中均未设置。完全启动
-变量语义和 Redis 业务配置字段位于 [§5](#5-environment-variables) 中。
+变量语义和 Redis 业务配置字段位于 [§5](#5-环境变量) 中。
 
 Telegram、JMAP、allowlist、worker、reconcile 和 LLM 业务设置驻留在 Redis 中，
-不是进程环境变量。 [§5.2](#52-redis-resident-business-configuration)中的字段列表和验证规则
+不是进程环境变量。 [§5.2](#52-存储在-redis-中的业务配置)中的字段列表和验证规则
 是权威的。成功的初始保存可以使用一次性“/api/bootstrap”端点
 在后端原点；该路由不通过 Worker 公开。后续编辑使用
 受保护的配置 API。
 
-### 9.3 Callback registration and scheduled work
+### 9.3 回调注册与定时任务
 
 Telegram 的“setWebhook”请求必须使用配置的 Webhook 密钥并包含“message”
 在“允许的更新”中。使用“getWebhookInfo”检查生成的 URL；电报不回
@@ -714,7 +714,7 @@ Telegram 的“setWebhook”请求必须使用配置的 Webhook 密钥并包含�
 漏极端点返回“204”，响应正文为空； `/reconcile` 可以返回 `409` 而
 另一个协调拥有该锁。
 
-### 9.4 Health and release checks
+### 9.4 健康检查与发布核验
 
 - `GET /healthz` 是后端活跃度。它并不能证明Redis或上游服务已经准备好。
 - `GET /ready` 检查配置、Redis、JMAP 会话和 Telegram 的 `getMe` 端点。
@@ -728,7 +728,7 @@ Telegram 的“setWebhook”请求必须使用配置的 Webhook 密钥并包含�
 [`charter.md`](charter.zh-CN.md)。文档门必须在主机上运行，因此它
 路径审计可以读取Git历史记录。
 
-### 9.5 Cloudflare Worker and Dashboard
+### 9.5 Cloudflare Worker 与控制面板
 
 Worker 是可选的 HTTPS 网关。后端来源必须是 HTTPS 字符串，不带任何内容
 路径、查询、片段或嵌入凭据。目前公开的来源清单和

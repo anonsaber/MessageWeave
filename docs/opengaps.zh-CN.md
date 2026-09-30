@@ -1,4 +1,4 @@
-# 未完成项（Open Gaps）
+# 未完成项
 
 > [English version / 英文版 → opengaps.md](opengaps.md)
 
@@ -6,13 +6,13 @@
 
 已实现的接口与架构设计见 `docs/reference.md`、`docs/design.md`、`docs/deployment.md`，已退役的能力见 `docs/retired.md`。验证基线以 `docs/design.md`「P0 门禁」段落为准。
 
-## What you have to do
+## 待办事项
 
 **无。**
 
 TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），不需要再交任何东西。
 
-## Stage goal
+## 阶段目标
 
 | # | 项 | 状态 |
 | --- | --- | --- |
@@ -25,13 +25,13 @@ TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），�
 
 第 5 项不在阶段目标内：多账号产品决策，2026-09-28 已由用户定为不做，决定边界与将来要做的改动面见 §3。
 
-## blocking
+## 阻塞项
 
 **无。** 四条阶段目标全部关闭，代码侧与真机侧都通了，唯一悬置的产品决策也已定案（§3）。
 
-## Closed
+## 已关闭
 
-### 1. TTL actual measurement (closed: constant closing + real machine assertion run-through)
+### 1. TTL 实测（已关闭：常量收敛并在真实机器上完成断言验证）
 
 原条目：全代码库 **12 个 TTL 写入点、17 个 TTL 值**，但只有三个真正落到 Redis 的原子命令（`set_nx_ex` 的 `SET … NX EX`、`retry_or_dlq` Lua 里的 `EXPIRE`、`set_ai_consent` 的 `SET … EX`）在真实 Redis 上被断言过实际 PTTL；其余全是裸字面量。测试替身 `MemoryState::claim_dedup` 直接忽略 TTL 参数，所以单测覆盖的是调用路径，不是过期时长——把一个 24 小时去重窗口改成 `60_480` 仍能编译通过、单测全绿。
 
@@ -81,7 +81,7 @@ TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），�
 
 **两条 TTL 断言已在真实 Upstash 实例上跑通（`rediss://`，TLS-only；明文 `redis://` 会在 `AUTH` 后收到空回复断连，故必须走 TLS）**：`SET … NX EX`（`claim_dedup`）、`SET … EX 3600`（`set_ai_consent`）、Lua 内嵌 `EXPIRE 86400`（`retry_or_dlq`）三处原子写入点的实际 PTTL 全部落在 2s 容差内。原条目里够不到的 B 类 Lua 内嵌值现在也是真机验证，不只是常量引用。
 
-### 2. `newState` semantics of `Email/changes` (commit `269c8f6`)
+### 2. `Email/changes` 的 `newState` 语义（提交 `269c8f6`）
 
 原条目担心「服务器无法回放旧增量时返回 `newState`，要求客户端重新基线化」。但 jmap-client 0.4.2 的 `ChangesResponse` 只有 `accountId` / `oldState` / `newState` / `hasMoreChanges` / `created` / `updated` / `destroyed` 加展开的调用参数——**没有 reset / re-baseline 信号字段**。所以 `/changes` 失败在代码里就是一个普通的 `Err`，无法区分「临时故障」和「服务端不再回放这个 state」。这个条目因此无法通过任何观测手段闭环：停机窗口里能观测到的仍然是同一个 `Err`。
 
@@ -91,7 +91,7 @@ TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），�
 
 > position walk 路径（`list_emails_page(None, position, BASELINE_PAGE_SIZE)`）本身不受影响——它的签名里根本没有服务端 state 参数（`None` 是 `folder_id`），所以不会碰到上面那类 token 语义。
 
-### 3. Multiple accounts (decided: not to do, 2026-09-28 user decision)
+### 3. 多账户（已决定不做，用户于 2026-09-28 决定）
 
 单账户由需求固定（`REQ-SINGLE-ACCOUNT`），从未进入阶段目标。用户于 2026-09-28 明确「暂时不做多账户」，此缺口关闭。`docs/design.md` §11.3、`docs/charter.md` 的 `REQ-SINGLE-ACCOUNT` 行与 `docs/deployment.md` 的环境变量表 / 需求映射表原本就按此表述，本轮未改这三处。
 
@@ -110,7 +110,7 @@ TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），�
 
 这条不是被跳过，是被明确拒绝：单实例多账户省下的一个部署单元，换不来它引入的路由与游标复杂度。
 
-## Deployment document defects discovered and fixed in this round
+## 本轮发现并修复的部署文档问题
 
 `docs/deployment.md` §6.3.1 原来只给了 `/reconcile` 的调度示例，而 `/worker`——全代码库唯一的队列消费入口——被描述成「运维手工触发」，且刻意不在 Worker 白名单里。**照文档照抄部署 = 邮件持续进队列、通知永远发不出去**，这正是联调环境积压了数天才被手工排空的成因。§6.3.1 已补上 `/worker` 的调度步骤、顺序要求、批量上限与「204 不能当成功信号」的说明。
 
