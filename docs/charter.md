@@ -159,8 +159,7 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 均已验证（`setWebhook` 与 `PushSubscription` 的注册、回调、验证往返全部走通），托管 Redis
 已连接。真实环境集成测试必须用 `#[ignore]` 标注，缺凭据时静默跳过（不泄露凭据、不判失败）。
 
-**环境阻塞项**（未验证，不得声称已验证）见 [`opengaps.md`](opengaps.md)「阻塞」区：
-`Email/changes` 的 `newState` 语义、TTL 数值实测（12 个写入点 / 17 个值）。
+**环境阻塞项：无。** 最后两项也已验证：TTL 数值在真实 Upstash 实例上实测（`SET … NX EX` / `SET … EX 3600` / Lua `EXPIRE 86400` 三处原子写入点，连跑 6 轮全绿），`Email/changes` 的 `newState` 续传在真实 Stalwart 环境触发过（见 docs/design.md §10.5）。[`opengaps.md`](opengaps.md)「阻塞」区当前为空。
 
 ## 7. 文档边界
 

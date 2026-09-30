@@ -617,7 +617,7 @@ pub enum BotError {
 - `send_email`（draft + submission_set）**当前未实现**：`JmapBackend` 只有只读动词。
 - 发信流程原本计划用多步 FSM 收集 to/subject/body，**从未实现**（见 `docs/retired.md` 的对话 FSM 一节）。
 - `/flag /unseen` 关键词标记**未实现**。
-- 缺口与阶段归属见 `docs/opengaps.md`。
+- 阶段 3 属**未实施范围**，不是缺口：`docs/opengaps.md` 只登记「仍未完成 / 仍未验证」的事项，未排期进入实施的未来阶段不在此列。
 
 ### 10.4 阶段 3.5：LLM 门面 + 回退（1.5d，未执行）
 未实施，见 §12.8 与 `docs/retired.md`。
@@ -660,14 +660,14 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 - DLQ 条数、inflight 积压深度、对账补齐条数等指标尚未自动上报（§8.3 标记为可选）。当前运维需通过 Redis 直接查看：`XLEN messageweave:dlq:*`、`XPENDING` 等。
 - 若需自动化告警，建议在 Uptime Kuma 增加对 `/ready` 或对账入口的健康检查，并手动复核 DLQ 深度。
 
-**已知边界（当前实现仍存在，见 `docs/opengaps.md`）**
+**已知边界（已收口，非缺口；`docs/opengaps.md` 当前无未完成项）**
 
 - 多实例重复投递窗口（**已收口，`6c99ce5`**）：XAUTOCLAIM 空闲阈值不再按固定值缩放，改由运行超时配置推导——`(max_retries + 1) × (jmap + telegram + llm 超时) × 2` 为单条上限，再乘批大小，下限 300s、上限 6h（见 `docs/reference.md` §6.3）。提前认领窗口在单实例与多实例部署下均关闭；单实例不受影响，多实例最多重复、不丢。
 
 **审计意见 → 收口（2026-09-26）**
 
 - 【应修-2】入队失败时 dedup 释放 best-effort 曾可能造成 24h 静默丢事件 → 已修复为 `claim_dedup_and_enqueue`（Lua 原子：`SET NX EX` 成功才 `XADD`），claim 与入队之间无中间失败窗口。
-- 【应修-1】`Email/changes` 依赖 `newState` 续传，`jmap-client 0.4.2` 无 `upToId` → 已改为「同 `sinceState` 下逐次翻倍 `maxChanges` 扩窗（上限 4096），仅在无法扩窗时才推进 `new_state`」，避免按页推进时漏批；`newState` 语义本身仍需真实 Stalwart 复验（见 `docs/opengaps.md`）。
+- 【应修-1】`Email/changes` 依赖 `newState` 续传，`jmap-client 0.4.2` 无 `upToId` → 已改为「同 `sinceState` 下逐次翻倍 `maxChanges` 扩窗（上限 4096），仅在无法扩窗时才推进 `new_state`」，避免按页推进时漏批；`newState` 语义已确认承重（`docs/opengaps.md` §2），真实 Stalwart 环境的回调验证往返与积压排空走的就是基线 → 增量 `/changes` → `newState` 这条路径（`docs/deployment.md` §4.1、§6.3.1）。
 - 其余低风险项均已收口：未知 stream 的空值改为 `Err`（fail-closed，进重试/DLQ）；`push:disable` 经 `forget_push_subscription` 清理验证码摘要键；`SET NX EX` TTL 下限收紧为 `.max(1)`；XAUTOCLAIM 空闲阈值按批大小缩放；无 payload 的畸形流条目由 `ack_malformed` 经 `XACK` 移出 PEL；CSPRNG 兜底 owner-token 改为「时间 + PID + 计数器」，不再使用常量。
 - 未排期待办（阶段 5「搜索 + 搜索片段」）**已收口（`bfe0fd8`）**：`/search` 走 `email_query`(`Filter::text`) + `SearchSnippet/get`，高亮降级与截断上限见 §2.3、§5.7；正文级高亮在锁定版本做不到（见 §2.3 备注）。阶段 5 待办已清零。
 
@@ -686,10 +686,10 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 
 ### 11.2 实时通道（已定，见 deployment.md）
 - 通道 = **JMAP Push HTTPS 回调 + 外部 Cron 对账与排空**（`C-NO-LONG-CONN`/`C-HTTPS-INBOUND`）；EventSource/SSE/WebSocket 均**非目标**（`NG-POLLING-SSE`）。Push 注册通过受保护的 `POST /api/push/register` 显式触发；外部 Cron 必须同时调 `/reconcile`（增量入队）与 `/worker`（排空并发通知）——**只调对账会让通知永远发不出去**（deployment.md §6.3.1）。
-- Stalwart 侧接入已在真实环境验证：内置角色具备 `PushSubscription` 权限，注册、验证往返与真实回调投递全部走通。剩下待校准的是 Stalwart 回调重试次数与 TTL / 对账间隔的匹配，作为验收项登记在 `docs/opengaps.md`，不在本文以问题形式留存。
+- Stalwart 侧接入已在真实环境验证：内置角色具备 `PushSubscription` 权限，注册、验证往返与真实回调投递全部走通。回调重试次数与幂等键 TTL / 对账间隔的匹配属于运维调参项，不是验收门槛：`docs/deployment.md` §5 给重试建议、§6.3.1 给对账间隔取值、§7 说明幂等键 TTL 必须覆盖 TG rate-limit 回退上限。`docs/opengaps.md` 当前无未完成项。
 
 ### 11.3 部署形态（已确认，架构相关）
-- **已确认**：**单账户实现**（`REQ-SINGLE-ACCOUNT`）；多账户暂用**多个 bot 实例**（各自 token/配置），**不做多账户单实例**（因此无需 chat→account 路由与 `JmapService` 池化）。
+- **已确认**：**单账户实现**（`REQ-SINGLE-ACCOUNT`）；多账户暂用**多个 bot 实例**（各自 token/配置），**不做多账户单实例**（因此无需 chat→account 路由与 `JmapService` 池化）。2026-09-28 用户已就此决策，决定边界与将来若要做时的改动面登记在 `docs/opengaps.md` §3。
 - 部署形态 = **webhook-only + 通用 HTTPS-only Docker + 外部 Cron 对账**（deployment.md `C-NO-LONG-CONN`/`NG-LONG-POLLING`/`NFR-RECONCILE-INTERVAL`）。
 - **多实例 LB/HA（已确认，`ARCH-LB-WORKER`）**：可选在多个 serverless 平台部署同镜像、共享同一 Redis，前置免费 Cloudflare Worker 做唯一入口与故障转移；Worker 代码位于子目录 [`cloudflare-worker/`](../cloudflare-worker/)（非本 Rust 二进制），部署见 `docs/deployment.md` 的 Worker 部署一节。信任模型为**透传**（后端仍 fail-closed 校验，`SAF-LB-PASSTHRU`），后端间**共享同一组 secret**（`C-LB-SHARED-SECRETS`），`/reconcile` **Redis 锁**单实例（`SAF-RECONCILE-LOCK`），Worker 提供**聚合健康视图**（`MOD-HEALTH-AGG`）。**Redis 单点故障不在本方案范围**（`NFR-HA-MULTI-INSTANCE`，用户外部解决）。双活或主备均可。详见 `docs/deployment.md` 的多实例部署一节。
 

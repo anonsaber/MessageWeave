@@ -19,7 +19,7 @@
 | `grammers` / 旧 `telegram-bot` crate | 未采用 | 直接封 Bot API + 自研即可满足需求 | `src/channel.rs` |
 | `BotError::Telegram(#[from] teloxide::errors::RequestError)` | 目标形态变体，未落地 | 依附 teloxide，随其废弃 | 无 |
 | `BotError::Jmap` / `Storage` / `RateLimited` / `Unauthorized` / `Llm` | 目标形态变体，未落地 | 当时为统一承接 JMAP/Redis/限流/授权/LLM 五类错误而设计；现已由各模块自行处理 | 当前 `BotError` 仅 `Config` / `Io` / `Json` / `State` 四变体（`src/error.rs` 全文） |
-| Telegram 服务端 30 msg/s 限流桶 + 429 专用分支 | 目标设计，未实现 | 无真实 Bot 压测数据，不预设实现 | `src/channel.rs` 的 `max_retries`（默认 3，硬上限 5）通用重试；缺口见 `docs/opengaps.md` |
+| Telegram 服务端 30 msg/s 限流桶 | 目标设计，未实现 | 无真实 Bot 压测数据，不预设实现；服务端分桶由 TG API 自身承担，bot 侧只做退避 | 429 专用分支**已实现**（`src/channel.rs`：解析响应体 `parameters.retry_after` 并钳 ≤60s，优先用服务器指定值否则指数退避），因此本行不构成缺口；服务端限流桶的当前处置仍是 `max_retries`（默认 3，硬上限 5）通用重试 |
 | 多步对话 FSM（`Idle` / `AwaitClarify` / `AwaitConfirm` / `Analyzing` / `AwaitFallback`） | 目标设计，未落地 | 当前 AI 授权只需一个布尔+过期时间，多步态属过度设计 | Redis TTL 授权态，键与 TTL 见 `docs/reference.md` 的 AI 授权态一节 |
 | 把领域 / 渠道 / 通知 / util 各层拆成独立目录（子模块拆分方案） | 目标形态目录，未落地 | 代码量未到需要拆分的规模 | 实际结构见 `docs/design.md` 的工程结构一节：领域层是 `src/domain.rs` + `src/domain/jmap/`（仅 `client.rs`）；LLM 在 `src/ai.rs`；通知在 `src/notify.rs`；加密与工具逻辑内联在 `src/state.rs` / `src/config.rs`，没有独立的 util 层，也没有集成测试目录 |
 | teloxide 风格的出站消息派发集成测试 | 目标形态测试，未落地 | 依附 teloxide 测试模式 | `src/channel.rs` 的单元测试（`#[test]`） |
