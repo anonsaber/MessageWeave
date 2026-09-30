@@ -858,7 +858,7 @@ Git 集成**必须改的四个字段**（Cloudflare 的默认值对不上本仓�
 |---|---|---|
 | **根目录 / Root directory**（在「高级设置」里） | 仓库根 | `cloudflare-worker` |
 | 应用名 | UI 里自填的名字 | 与 `wrangler.toml` 的 `name` 一致，否则 wrangler 会部署成**另一个名字** |
-| **构建命令**（可选） | `npx wrangler deploy` | `node -e "process.exit(0)"` |
+| **构建命令**（可选） | `npx wrangler deploy` | `npm ci --no-audit --no-fund && npm test` |
 | **部署命令**（必需） | `npx wrangler deploy` | **保持不动** |
 | **预览命令**（勾选「启用预览构建」后为必需） | `npx wrangler preview` | `npx wrangler dev --ip 0.0.0.0 --port 8787` |
 
@@ -870,20 +870,26 @@ Git 集成**必须改的四个字段**（Cloudflare 的默认值对不上本仓�
    构建 / 部署 / 预览三个命令都在 `cloudflare-worker/` 里执行。
 2. **应用名要跟 `wrangler.toml` 的 `name` 对齐。** wrangler 部署用的是 toml 里的 `name`，
    UI 上的名字不一致时，你部署出去的是 toml 里那个名字的 Worker，UI 上那个应用永远等不到部署。
-3. **构建命令 ≠ 部署命令。** 构建命令负责「把源码变成可部署产物」，本项目是纯 JS、无编译步骤，
-   填一个 no-op 即可；`npx wrangler deploy` 属于**部署命令**字段（必需，保持默认）。
-   把 deploy 塞进构建命令，等于在错误的阶段执行部署。
-4. **`wrangler preview` 子命令不存在。** wrangler 3.114.17 的子命令只有 `dev` / `deploy` /
+3. **构建命令里必须显式 `npm ci`，不能只填 no-op。** Cloudflare 的默认安装步骤实测用的是
+   `bun install`（CI 日志 `Resolved, downloaded and extracted [334]`、`Saved lockfile`），而
+   bun 不读 npm 的锁文件——那句 `Saved lockfile` 说明是 bun 自己生成了锁文件、按自己的解析
+   结果装依赖，仓库里已提交的锁文件被完全绕过了。所以构建命令里自己跑一次 `npm ci` 才有
+   意义：它会删掉 node_modules、严格按锁文件重装。项目无编译步骤，`npm test` 顺手做一遍
+   当门禁。`npx wrangler deploy` 属于**部署命令**字段（必需，保持默认），把 deploy 塞进
+   构建命令才是错的。
+4. **`wrangler preview` 子命令不存在。** wrangler 4.144.0 的子命令只有 `dev` / `deploy` /
    `deployments`，默认那个值填了必然失败。预览命令填 `npx wrangler dev --ip 0.0.0.0 --port 8787`
    （8787 是 `wrangler dev` 的默认端口，`--ip 0.0.0.0` 让 Cloudflare 的预览代理能连进来）。
    ⚠️ 预览环境**没有** `BACKEND_ORIGINS_JSON`（secret 只存在于你的账号配置，仓库里不该有
    `.dev.vars`），所以预览只能验证「Worker 能被拉起 + 路由表生效 + `/healthz` 返回 200 但
    `status` 是 `no-backends`」，**不能**验证后端转发。后端转发只能看生产。
 
-**Node 版本**用 22 即可（实测 Node 22.23.3 全绿）。npm 版本不必手动固定：
-仓库已提交 cloudflare-worker 下的 lockfile，有 lockfile 时 Cloudflare 跑 `npm ci`，
-精确复现 wrangler 3.114.17，构建可复现。
-（此前没有 lockfile，`wrangler@^3.57.0` 是浮动范围，每次 CI 可能解析到不同小版本。）
+**Node 版本不用管。** Cloudflare 环境实测给的是 `nodejs@24.18.0`，本地在 Node 24.21.0 与
+22.23.3 上都验过（32/32 通过）。**wrangler 已升到 4.144.0**：3.114.17 在 CI 里会打印
+`The version of Wrangler you are using is now out-of-date … to prevent critical errors`，
+4.144.0 在该警告消失，且 wrangler 4 与 wrangler 3 一样会按 `wrangler.toml` 的 `name`
+部署（toml 里的 `name = "messageweave-lb"` 保持不变即可）。lockfile 锁定 wrangler 4.144.0，
+由构建命令里的 `npm ci` 保证 CI 拿到的是同一个版本。
 
 **secret 仍在网页上配**：Workers & Pages → 你的应用 → Settings → Variables & Secrets →
 **Encrypt**（不是 Plain Text）→ 加 `BACKEND_ORIGINS_JSON`。`wrangler.toml` 的 `vars = {}`
