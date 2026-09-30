@@ -238,6 +238,38 @@ pub trait ReliableState: Send + Sync {
     ) -> Result<(), StateError>;
 }
 
+/// Bound on a single Redis connect attempt, for both the initial connection
+/// and every automatic reconnect.
+///
+/// `ConnectionManagerConfig` leaves this `None` by default, which leaves each
+/// attempt at the OS connect timeout. Against a host that drops packets
+/// instead of refusing them that is roughly two minutes per attempt. A
+/// dead-but-reachable peer is far more likely to time out than to refuse, so
+/// the bound has to be ours.
+const REDIS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How many times a single connect/reconnect operation retries before giving
+/// up. This deliberately overrides the crate default of 6.
+///
+/// Measured against an unreachable host with redis 0.27.6
+/// (`ConnectionManager::new_with_config`):
+/// - retries = 0  -> returns in ~0.5 ms with `IoError`
+/// - retries = 1  -> returns in ~1.5 s with `IoError`
+/// - retries = 6  -> **never returns** (still hung at 300 s)
+///
+/// So the crate's own default retry count is an infinite loop in this version,
+/// not a bounded retry. Left at the default, a Redis host that is down when
+/// the process boots makes startup hang forever: no failure, no log, no signal,
+/// and a container that reports `Up` while serving nothing. The pre-manager
+/// code path (`get_multiplexed_async_connection`) returned in about half a
+/// millisecond, so the default silently regressed fail-fast boot.
+///
+/// One retry is still useful: it absorbs a transient refusal. Anything beyond
+/// that is redundant here, because the manager re-enters this path on every
+/// subsequent command once the connection drops, so recovery does not depend
+/// on a single operation retrying many times.
+const REDIS_CONNECT_RETRIES: usize = 1;
+
 pub struct RedisState {
     connection: redis::aio::ConnectionManager,
     encryption_key: Option<[u8; 32]>,
@@ -254,8 +286,13 @@ impl RedisState {
         encryption_key: Option<[u8; 32]>,
     ) -> Result<Self, StateError> {
         let client = redis::Client::open(redis_url)?;
+        // Both knobs are overridden deliberately; see the constant docs.
+        let manager_config = redis::aio::ConnectionManagerConfig::new()
+            .set_number_of_retries(REDIS_CONNECT_RETRIES)
+            .set_connection_timeout(REDIS_CONNECT_TIMEOUT);
         Ok(Self {
-            connection: redis::aio::ConnectionManager::new(client).await?,
+            connection: redis::aio::ConnectionManager::new_with_config(client, manager_config)
+                .await?,
             encryption_key,
         })
     }
