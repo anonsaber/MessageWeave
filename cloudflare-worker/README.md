@@ -62,13 +62,15 @@
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
-| `BACKEND_ORIGINS_JSON` | 是（secret） | JSON 数组，形如 `["https://a.platform1.example","https://b.platform2.example"]`；必须全部 https、无内嵌凭据/query/fragment/路径。 |
+| `BACKEND_ORIGINS_JSON` | 是 | JSON 数组，形如 `["https://a.platform1.example","https://b.platform2.example"]`；必须全部 https、无内嵌凭据/query/fragment/路径。已写在 `wrangler.toml` 的 `[vars]`。 |
 | `LB_REQUEST_TIMEOUT_MS` | 否 | 单 origin 请求超时；默认 `10000`。建议 > 最坏 cold start + 最长 JMAP 拉取。 |
 | `LB_MAX_ATTEMPTS` | 否 | 每请求最多 origin 尝试次数；默认 `2`（= 1 次故障转移）。`POST /reconcile` 固定为 `1`。 |
 | `LB_RECONCILE_TIMEOUT_MS` | 否 | 仅 `POST /reconcile` 的单 origin 超时覆盖；默认 `320000`（须大于后端锁初租 300s + 心跳余量）。 |
 | `LB_HEALTH_TTL_MS` | 否 | 健康探测缓存 TTL；默认 `30000`。 |
 
-> secret 通过 `wrangler secret put BACKEND_ORIGINS_JSON` 注入；`wrangler.toml` 里 `vars` 保持为空，不写明文。
+> 默认写在 `wrangler.toml` 的 `[vars]`（**明文例外**，因为当前值只是公开可达的 https origin，
+> 不是凭据）。一旦要放内网地址、带内嵌凭据的 URL、或不想公开的 staging 主机名，
+> 立刻改用 `npx wrangler secret put BACKEND_ORIGINS_JSON` 并把该行从 `[vars]` 删掉。
 
 ## 本地 / CI 验证
 
@@ -89,14 +91,15 @@ npm run check
 ```bash
 cd cloudflare-worker
 # 安装 dev dep（仅 wrangler）：
-npm install
-# 注入 secret：
-npx wrangler secret put BACKEND_ORIGINS_JSON   # 粘贴 ["https://a.example","https://b.example"]
-# 可选调参：
-npx wrangler secret put LB_REQUEST_TIMEOUT_MS   # 建议 10000
-npx wrangler secret put LB_MAX_ATTEMPTS         # 默认 2
-# 部署：
+npm install --no-audit --no-fund
+# BACKEND_ORIGINS_JSON 已写在 wrangler.toml 的 [vars]，直接部署：
 npx wrangler deploy
+# 可选调参（默认值已够用；要覆盖就用 dashboard 的 Add Variable）：
+#   LB_REQUEST_TIMEOUT_MS / LB_MAX_ATTEMPTS / LB_RECONCILE_TIMEOUT_MS / LB_HEALTH_TTL_MS
+# 仅当 [vars] 里要放非公开值时才改用 secret 注入：
+npx wrangler secret put BACKEND_ORIGINS_JSON
+# 部署后确认：
+curl https://<your-worker>.workers.dev/healthz
 ```
 
 健康探针：
