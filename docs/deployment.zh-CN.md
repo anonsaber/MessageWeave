@@ -186,7 +186,8 @@ Worker 传递请求标头和正文。仍需要后端身份验证
 
 ### 10.4 Routes and failover
 
-Worker 使用“404”拒绝未注册的路由，并使用“405”拒绝错误的方法。普通
+HTTP 请求访问 Worker 时，会先收到永久的 `308` 重定向，前往路径和查询参数相同的
+HTTPS URL，之后才进行路由校验或转发。Worker 使用“404”拒绝未注册的路由，并使用“405”拒绝错误的方法。普通
 请求最多尝试“LB_MAX_ATTEMPTS”来源（默认两个），并且只有超时或“5xx”
 触发故障转移。 `/reconcile` 和 `/worker` 是具有较长超时时间的单次尝试路由
 覆盖。使用[参考](reference.zh-CN.md#4-gateway-vs-backend-route-matrix)中的路由矩阵和调整值。

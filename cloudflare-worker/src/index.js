@@ -80,7 +80,12 @@ const ROUTE_METHODS = Object.freeze({
  * @returns {Promise<Response>}
  */
 export async function handleFetch(request, env) {
-  const path = new URL(request.url).pathname;
+  const requestUrl = new URL(request.url);
+  if (requestUrl.protocol === "http:") {
+    requestUrl.protocol = "https:";
+    return Response.redirect(requestUrl.toString(), 308);
+  }
+  const path = requestUrl.pathname;
 
   // LB 级健康聚合探针（不含敏感信息，SAF-PROBE-PUBLIC 精神）。
   // 挂在 /healthz-worker：/healthz 保留给源站自己的健康检查（透传），这样入站域名上

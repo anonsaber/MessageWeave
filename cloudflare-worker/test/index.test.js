@@ -25,6 +25,15 @@ function stubFetch(impl) {
   };
 }
 
+test("Worker redirects HTTP requests to the same HTTPS URL before forwarding", async () => {
+  const res = await handleFetch(
+    new Request("http://lb.example/api/status?from=http#fragment"),
+    makeEnv(),
+  );
+  assert.equal(res.status, 308);
+  assert.equal(res.headers.get("location"), "https://lb.example/api/status?from=http#fragment");
+});
+
 test("Worker GET /healthz-worker aggregates backend probes without touching forwarded routes", async () => {
   const restore = stubFetch(async (url) => new Response("ok", { status: 200 }));
   try {

@@ -198,9 +198,10 @@ business credentials and Redis state.
 
 ### 10.4 Routes and failover
 
-The Worker rejects unregistered routes with `404` and wrong methods with `405`. Ordinary
-requests try at most `LB_MAX_ATTEMPTS` origins (default two), and only a timeout or `5xx`
-triggers failover. `/reconcile` and `/worker` are single-attempt routes with longer timeout
+HTTP requests to the Worker receive a permanent `308` redirect to the same HTTPS URL before
+route validation or forwarding. The Worker rejects unregistered routes with `404` and wrong
+methods with `405`. Ordinary requests try at most `LB_MAX_ATTEMPTS` origins (default two), and
+only a timeout or `5xx` triggers failover. `/reconcile` and `/worker` are single-attempt routes with longer timeout
 overrides. Use the route matrix and tuning values in the [reference](reference.md#4-gateway-vs-backend-route-matrix).
 
 ### 10.5 Callback URLs

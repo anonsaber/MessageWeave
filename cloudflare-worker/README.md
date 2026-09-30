@@ -35,6 +35,7 @@
   + 相同 App Password（各后端实例的 `JMAP` 可不同，`docs/deployment.md` §10.2）。
 
 ### 路由 safelist（ARCH-LB-WORKER / C-LB-SINGLE-REG-URL）
+- HTTP requests receive a permanent `308` redirect to the same HTTPS URL before route validation or forwarding.
 - 透传公开 `GET /api/status` 启动状态，以及管理 SPA API：`POST /api/admin/session[/revoke]`、`GET|PUT /api/enabled`（业务总开关，SPA 服务卡片读写）、`GET|PUT /api/config`、`GET|PUT /api/business-config`（读回 + 增量保存）、`POST /api/business-config/preflight`（保存前逐组件连通性预检）。启动状态只包含缺少的环境变量名称；管理 API 的鉴权仍由后端执行。
 - 只透传 `POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/telegram/register-webhook`、`POST /api/push/disable`、`POST /reconcile`、`POST /worker`、`GET /ready`。
 - 其它路径 → **404**（不透传，避免 Worker 沦为后端任意路径的跳板）。
@@ -74,7 +75,7 @@
 | `LB_RECONCILE_TIMEOUT_MS` | 否 | 仅 `POST /reconcile` 的单 origin 超时覆盖；默认 `320000`（须大于后端锁初租 300s + 心跳余量）。 |
 | `LB_WORKER_TIMEOUT_MS` | 否 | 仅 `POST /worker` 的单 origin 超时覆盖；默认 `300000`（= 后端单条事件下界 `SINGLE_EVENT_CEILING_FLOOR_MS`）。一次排空 batch 条（默认 10，硬上限 10），batch 拉大时需相应上调。 |
 | `LB_HEALTH_TTL_MS` | 否 | 健康探测缓存 TTL；默认 `30000`。 |
-| `LB_VERSION` | 否 | `/healthz-worker` 响应体里的 `version` 字段，用于确认线上是哪次部署在回答；取自 `wrangler.toml` 的 `[vars]`（当前 `2026.10.3`），改 LB 逻辑的提交同时 bump |
+| `LB_VERSION` | 否 | `/healthz-worker` 响应体里的 `version` 字段，用于确认线上是哪次部署在回答；取自 `wrangler.toml` 的 `[vars]`（当前 `2026.10.4`），改 LB 逻辑的提交同时 bump |
 
 > 默认写在 `wrangler.toml` 的 `[vars]`（**明文例外**，因为当前值只是公开可达的 https origin，
 > 不是凭据）。一旦要放内网地址、带内嵌凭据的 URL、或不想公开的 staging 主机名，
