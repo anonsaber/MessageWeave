@@ -18,7 +18,8 @@
  *   → 透传至后端；后端校验 bootstrap 凭据或短期 admin session
  * - GET  /healthz            → 透传到源站（源站自己的健康检查）
  * - GET  /healthz-worker     → LB 聚合健康（MOD-HEALTH-AGG），响应体带 LB_VERSION
- * - POST /webhook/tg|/push/jmap|/api/push/register|/api/push/disable|/reconcile、GET /ready → 透传 + 有界故障转移
+ * - POST /webhook/tg|/push/jmap|/api/push/register|/api/push/disable、GET /ready → 透传 + 有界故障转移
+ * - POST /reconcile|/worker → 外部 cron 触发的同步长任务，长超时 + 单发不故障转移
  * - 其它 → 404 / 405
  *
  * 日志红线：仅打「方法 / 路径 / origin / 失败类别」，绝不打印 header/body/secret。
@@ -35,6 +36,12 @@ const DEFAULT_MAX_ATTEMPTS = 2; // 首次 + 1 次故障转移（§10.4 建议）
 // 第二实例——第二实例必然立刻撞 409（锁已被占），重试只放大冲突。故仅对此路由覆盖：
 // 长超时（默认 320s > 300s 初租 + 心跳余量）+ maxAttempts=1，绝不故障转移；其余快路径路由保持全局默认。
 const DEFAULT_RECONCILE_TIMEOUT_MS = 320_000;
+// /worker 同样是外部 cron 触发的同步长任务：一次最多排空 batch 条（默认 10，硬上限 10），
+// 每条消息的出站调用会重试 max_retries 次，最坏墙钟远超全局 10s——超时会把一次正常的
+// 排空误判成失败并按 maxAttempts=2 切到第二实例，第二个实例只会重复排同一批消息。
+// 取后端自己的单条事件下界（state.rs SINGLE_EVENT_CEILING_FLOOR_MS = 300s）做默认值：
+// 单条慢消息永远装得下；batch 拉大时需要相应上调。
+const DEFAULT_WORKER_TIMEOUT_MS = 300_000;
 
 /**
  * 健康探测缓存（模块作用域 = CF Worker isolate 内跨请求复用）。
@@ -60,6 +67,7 @@ const ROUTE_METHODS = Object.freeze({
   "/api/push/register": ["POST"],
   "/api/push/disable": ["POST"],
   "/reconcile": ["POST"],
+  "/worker": ["POST"],
   "/healthz": ["GET"],
   "/ready": ["GET"],
 });
@@ -114,6 +122,9 @@ export async function handleFetch(request, env) {
   if (path === "/reconcile") {
     timeoutMs = intFromEnv(env.LB_RECONCILE_TIMEOUT_MS, DEFAULT_RECONCILE_TIMEOUT_MS);
     maxAttempts = 1; // 故障转移无意义：切到另一 origin 必然撞 lock:reconcile 409
+  } else if (path === "/worker") {
+    timeoutMs = intFromEnv(env.LB_WORKER_TIMEOUT_MS, DEFAULT_WORKER_TIMEOUT_MS);
+    maxAttempts = 1; // 故障转移无意义：切到另一 origin 只会重复排同一批消息
   }
 
   // 透传转发 + 有界故障转移（仅超时/5xx）。

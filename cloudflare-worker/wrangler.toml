@@ -36,14 +36,19 @@ compatibility_flags = ["nodejs_compat_v2"]
 #   LB_REQUEST_TIMEOUT_MS 可选，单 origin 超时（默认 10000，建议 > 最坏 cold start）
 #   LB_MAX_ATTEMPTS      可选，每请求最多 origin 尝试次数（默认 2：首次 + 1 次故障转移，
 #                        对应 deployment.md §10.4「有界重试其它实例（建议 1 次）」）
-#   LB_VERSION           版本标识，回显在 GET /healthz 的 JSON 里；用于确认线上是哪次部署
+#   LB_RECONCILE_TIMEOUT_MS 可选，仅 POST /reconcile 的超时覆盖（默认 320000）
+#   LB_WORKER_TIMEOUT_MS  可选，仅 POST /worker 的超时覆盖（默认 300000）
+#                        两条都是外部 cron 触发的同步长任务，且都强制 maxAttempts=1
+#                        不故障转移（第二实例对 /reconcile 必然撞锁 409、对 /worker 只会
+#                        重复排同一批消息），所以各配一个更长的超时，不能用全局 10s
+#   LB_VERSION           版本标识，回显在 GET /healthz-worker 的 JSON 里；用于确认线上是哪次部署
 #                        在回答（改 LB 逻辑的提交同时 bump 它）
 #
 # ⚠️ 明文例外的边界：[vars] 里的 origin 只能是**公开可达的 https origin**（当前就是）。
 # 一旦出现内网地址、带内嵌凭据的 URL、或不想公开的 staging 主机名，立刻从 [vars] 删掉，
 # 改用 `npx wrangler secret put BACKEND_ORIGINS_JSON`（git 历史不可逆，删掉不等于没进过库）。
-# 其余三个 LB_* 调参保持可调、不写死，用 dashboard 的 Add Variable 覆盖默认值即可；
+# 其余五个 LB_* 调参保持可调、不写死，用 dashboard 的 Add Variable 覆盖默认值即可；
 # LB_VERSION 是例外——它是版本标识，必须跟代码同版本、可 diff，写进 dashboard 反而容易漂。
 [vars]
 BACKEND_ORIGINS_JSON = '["https://messageweave-eu-1.motofans.club"]'
-LB_VERSION = "2026.10.2"
+LB_VERSION = "2026.10.3"

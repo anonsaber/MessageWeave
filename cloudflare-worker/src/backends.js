@@ -6,7 +6,8 @@
 
 /** 允许透传的入站路由 safelist（C-LB-SINGLE-REG-URL）：未知路径 → 404。
  * `/healthz` 透传到源站（源站自己的健康检查）；LB 自己的聚合探针在 `/healthz-worker`，不在列。
- * SPA 静态资源为公开 GET；所有管理 API 仍由后端校验 Redis bootstrap 凭据或 admin session。 */
+ * SPA 静态资源为公开 GET；所有管理 API 仍由后端校验 Redis bootstrap 凭据或 admin session。
+ * `/reconcile` 与 `/worker` 都需要外部 cron 触发且都带 Bearer token，成对出现在白名单里。 */
 export const SAFE_ROUTES = Object.freeze([
   "/",
   "/assets/config.js",
@@ -23,6 +24,7 @@ export const SAFE_ROUTES = Object.freeze([
   "/api/push/register",
   "/api/push/disable",
   "/reconcile",
+  "/worker",
   "/healthz",
   "/ready",
 ]);

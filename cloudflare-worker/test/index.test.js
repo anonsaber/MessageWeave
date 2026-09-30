@@ -291,3 +291,44 @@ test("Worker: /reconcile 走 per-route 长超时且绝不故障转移；其余�
     restore();
   }
 });
+
+test("Worker: POST /worker 在白名单内，走 per-route 长超时且绝不故障转移；GET /worker => 405", async () => {
+  // /worker 和 /reconcile 一样只由外部 cron 触发（scripts/cron-drain.sh）。全局 10s 超时会把
+  // 一次正常的排空误判成失败并切到第二实例，而第二个实例只会重复排同一批消息。
+  const seen = [];
+  let lastTimeoutMs = null;
+  const restore = stubFetch(async (url) => {
+    seen.push(String(url));
+    return new Response("err", { status: 503 });
+  });
+  const origSetTimeout = globalThis.setTimeout;
+  const origClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (_fn, ms) => {
+    lastTimeoutMs = ms;
+    return 0;
+  };
+  globalThis.clearTimeout = () => {};
+  try {
+    await handleFetch(new Request("https://lb.example/worker", { method: "POST", body: "{}" }), makeEnv());
+    assert.equal(seen.length, 1, "POST /worker 必须 maxAttempts=1：后端 503 也不换实例");
+    assert.equal(lastTimeoutMs, 300_000, "POST /worker 默认超时 300000ms");
+
+    seen.length = 0;
+    await handleFetch(
+      new Request("https://lb.example/worker", { method: "POST", body: "{}" }),
+      makeEnv({ LB_WORKER_TIMEOUT_MS: "60000" }),
+    );
+    assert.equal(seen.length, 1, "POST /worker 的 maxAttempts=1 不受 env 覆盖影响");
+    assert.equal(lastTimeoutMs, 60_000, "POST /worker 必须遵守 LB_WORKER_TIMEOUT_MS");
+
+    seen.length = 0;
+    const res = await handleFetch(new Request("https://lb.example/worker", { method: "GET" }), makeEnv());
+    assert.equal(res.status, 405, "GET /worker 必须 405，不能被误透传");
+    assert.equal(res.headers.get("allow"), "POST");
+    assert.equal(seen.length, 0, "405 必须被 LB 拦住，不打到后端");
+  } finally {
+    globalThis.setTimeout = origSetTimeout;
+    globalThis.clearTimeout = origClearTimeout;
+    restore();
+  }
+});
