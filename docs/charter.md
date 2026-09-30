@@ -116,7 +116,7 @@ cd /home/okabe/Repo/messageweave && docker run --rm --user 1000:1000 \
   bash -lc 'export PATH=/usr/local/cargo/bin:$PATH; cargo fmt --all -- --check && cargo check --locked && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked 2>&1 | tail -12'
 ```
 
-**当前基线：88 passed / 0 failed / 4 ignored**（2026-09-30 复测；ignored：`real_server_tests::session_list_and_read_smoke` 与 `debug::tests::debug_config_reports_timezone_of_business_configured_app` 需外部真实 JMAP 服务器凭据，`real_redis_ttl_tests::ttl_claim_dedup_sets_the_exactly_requested_expiry` 与 `real_redis_ttl_tests::ttl_consent_and_retry_landing_on_real_redis` 需 `REDIS_TEST_URL`）。
+**当前基线：89 passed / 0 failed / 4 ignored**（2026-09-30 复测；ignored：`real_server_tests::session_list_and_read_smoke` 与 `debug::tests::debug_config_reports_timezone_of_business_configured_app` 需外部真实 JMAP 服务器凭据，`real_redis_ttl_tests::ttl_claim_dedup_sets_the_exactly_requested_expiry` 与 `real_redis_ttl_tests::ttl_consent_and_retry_landing_on_real_redis` 需 `REDIS_TEST_URL`）。
 
 **注意**：`docker run` 的 bash `-lc` 脚本必须用**单引号**包裹。用双引号会先在宿主机展开 `$PWD` / `$PATH`，容器内找不到 cargo。
 
@@ -235,7 +235,7 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 | `REQ-AI-EXTERNAL-CONSENT` | docs/design.md §12 / §3 | 仅用户明确允许后才向外部 AI 发正文 | 需求 |
 | `REQ-AI-CONSENT` | docs/design.md §12.3.1 | AI 授权期限与 Redis 短期 TTL（授权有效期、到期后重新询问） | 需求 |
 | `REQ-SINGLE-ACCOUNT` | docs/design.md §3.1/§11.3 | 单账户；多账户 = 多 bot 实例 | 需求 |
-| `REQ-PUSH-TYPES` | src/domain/jmap/client.rs:109 注释 | `PushSubscription/set` create 在 jmap-client 0.4.2 中没有 `types` 参数；订阅 id 对外暴露前须经 `push_subscription_update_types` 收窄为 `Email` + `EmailDelivery` | 需求 |
+| `REQ-PUSH-TYPES` | src/domain/jmap/client.rs:110 注释 | `PushSubscription/set` create 在 jmap-client 0.4.2 中没有 `types` 参数；订阅 id 对外暴露前须经 `push_subscription_update_types` 收窄为 `Email` + `EmailDelivery` | 需求 |
 | `REQ-RECONCILE-IDEMPOTENCY` | src/state.rs `claim_dedup` + `get_reconcile_state` / docs/design.md §8.2 | JMAP 对账游标只有在全部分页事件成功入队（XADD）后才推进；单次对账由 Redis SET NX EX 锁 `lock:reconcile` 保证单飞（TTL 300s，owner token 续期 90s，仅持有者可续期/释放）；处理端再经 `claim_dedup`（SET NX EX，86400s）保证同一流消息不重复投递 | 需求 |
 | `REQ-TIMEZONE-DISPLAY` | src/config.rs `SUPPORTED_TIMEZONES` / docs/reference.md §5.4 | 通知的收件时间按业务配置 `timezone`（IANA，默认 `Asia/Shanghai`）渲染为 `%Y-%m-%d %H:%M`；仅接受 16 个无夏令时区域，未匹配返回 422，不做时区库推断 | 需求 |
 | `NFR-NOTIFY-SLA` | docs/deployment.md §6.5 | 通知可用性 ≥99.9%，允许少量延迟 | 非功能 |

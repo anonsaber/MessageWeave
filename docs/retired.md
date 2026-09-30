@@ -75,10 +75,10 @@
 |---|---|---|---|
 | 把 Telegram 接入拆成「模块入口 / 命令解析 / 会话状态 / 回复渲染」四个文件的目录方案 | 虚构目录方案 | 目标目录树里画出，从未创建 | 命令解析在 `parse_intent`（`src/worker.rs`）；会话/授权态走 Redis TTL（`docs/reference.md` 的 AI 授权态一节）；渲染函数在 `src/channel.rs` 内 |
 | `delivery:pending:{stream}` | 虚构键 | 与 Redis Streams 的 pending-entries list（PEL）混淆——PEL 由 Redis 内部维护，不是可写键 | 真实键：`delivery:inflight:{stream}:{id}`（EX 60）与 `delivery:committed:{stream}:{id}`（EX 604_800），见 `docs/reference.md` 的投递流水线键一节 |
-| `check_config_reload` | 虚构函数 | 未提交草稿中的名字，从未进入代码 | 热更新为 `refresh_business_config`（`src/notify.rs:1112`） |
-| `push:registration:{sha256(callback_url)}` 曾被写成「360s 注册单飞锁」 | 事实误标 | 该键是 7d 回调→订阅 ID 映射 | 真正的 360s 单飞锁是 `lock:push-register:{sha256(callback_url)}`（`src/notify.rs:1292-1296`） |
+| `check_config_reload` | 虚构函数 | 未提交草稿中的名字，从未进入代码 | 热更新为 `refresh_business_config`（`src/notify.rs:1126`） |
+| `push:registration:{sha256(callback_url)}` 曾被写成「360s 注册单飞锁」 | 事实误标 | 该键是 7d 回调→订阅 ID 映射 | 真正的 360s 单飞锁是 `lock:push-register:{sha256(callback_url)}`（`src/notify.rs:1324-1326`） |
 | `MESSAGWEAVE_DOMAIN` 曾被写成「生产未配置时 Worker 白名单失效」 | 虚构断言（未提交草稿/讨论中出现，未进文档） | 该环境变量全仓零命中；Worker 白名单是**无条件 fail-closed**：未知路径 404、method 不符 405、后端缺失或解析失败 503（`cloudflare-worker/src/index.js:77-92`） | 无需配置开关，白名单恒生效 |
-| `read_batch` / `retry_or_dlq`「Redis 出错时仍可能返回 `Ok(())`，消费循环因此不会因单次失败退出」 | 虚构断言 | 消费入口是 HTTP handler `worker`（`notify.rs:381`），**不是后台循环**：全仓 `src/` 零命中 `select!`，无信号处理、无常驻 worker 进程。`read_batch`（`state.rs:385`）经 `?` 把 Redis 错误原样上抛（:425），唯一被丢弃的结果是 XGROUP `CREATE` 的 `BUSYGROUP` 幂等保护（:394-401）；`retry_or_dlq` 同样经 `?` 上抛。调用方对每一处 `Err` 都返回 `503 service_unavailable` + `retryable=true`，故「循环不因单次失败退出」这一语义前提本身不成立 | 无——不存在该缺口；`docs/opengaps.md`（原名 `docs/roadmap.md`）「代码缺口」4 → 3，`docs/design.md`「已知边界」同句已删 |
+| `read_batch` / `retry_or_dlq`「Redis 出错时仍可能返回 `Ok(())`，消费循环因此不会因单次失败退出」 | 虚构断言 | 消费入口是 HTTP handler `worker`（`notify.rs:386`），**不是后台循环**：全仓 `src/` 零命中 `select!`，无信号处理、无常驻 worker 进程。`read_batch`（`state.rs:491`）经 `?` 把 Redis 错误原样上抛（`state.rs:531`），唯一被丢弃的结果是 XGROUP `CREATE` 的 `BUSYGROUP` 幂等保护（`state.rs:499-507`）；`retry_or_dlq` 同样经 `?` 上抛。调用方对每一处 `Err` 都返回 `503 service_unavailable` + `retryable=true`，故「循环不因单次失败退出」这一语义前提本身不成立 | 无——不存在该缺口；`docs/opengaps.md`（原名 `docs/roadmap.md`）「代码缺口」4 → 3，`docs/design.md`「已知边界」同句已删 |
 
 ---
 
@@ -87,7 +87,7 @@
 | 把渠道层建成目录模块（含模块入口文件） | 虚构目录 | 渠道层就是 `src/channel.rs` 一个文件 | 无 |
 | `notify::push_handler` / `notify::worker` / `notify::reconcile` 作为模块路径 | 虚构模块路径 | 这些是 `src/notify.rs` 内的自由函数（`jmap_push` / `worker` / `reconcile`），不是模块路径 | 无 |
 | `mod_dedup` / `mod_streams` / `mod_sincestate` | 虚构模块名 | `state.rs` / `notify.rs` 都是平铺文件，无子模块；去重与 Streams 逻辑以自由函数存在 | 无 |
-| `PushVerification` 类型 | 虚构类型 | 未定义；`register_push`（`notify.rs:1261`）内联处理回调 URL 与验证码回写 | 无 |
+| `PushVerification` 类型 | 虚构类型 | 未定义；`register_push`（`notify.rs:1311`）内联处理回调 URL 与验证码回写 | 无 |
 | `CancellationToken` | 虚构类型 | 未使用；无优雅关闭、无信号处理（`src/` 零命中 `tokio::signal` / `ctrl_c`） | 无 |
 | `Preview` 类型 / 4000 字符长邮件保护 / `[继续查看原文]` 按钮 / `/llm-fallback` 按钮 | 虚构类型与 UI | 全部未实现；授权后把全文交给 LLM，失败即回退前 300 字符，无任何截断标注或按钮 | 无 |
 | `LlmErr`（5 变体） | 虚构枚举 | 真实是 `AiError`，仅 3 个变体（`InvalidEndpoint` / `Request` / `Response`） | 无 |
@@ -96,7 +96,7 @@
 | 熔断器 / 半开态 / 熔断后 60s 冷却 / 规则兜底（Redis 共享计数） | 未实施设计 | 只有超时 + 重试；LLM 失败静默降级为前 300 字回退，无用户侧提示、无状态记录 | 无 |
 | 定时摘要 / 每日邮件摘要推送 | 未实施 | 未实现 | 无 |
 | 附件下载（`send_document` / `Blob/get` / 下载按钮） | 未实施 | JMAP 侧只读；邮件附件仅以 `has_attachment: bool` 形式出现 | 无 |
-| `/flag` / `/unseen` / 发信命令 | 未实施 | 当前识别 6 个意图（帮助 / 同意 / 摘要 / 搜索 / 普通消息 / 未识别）；其中 `/search` 已实现（`worker.rs:553`） | 无 |
+| `/flag` / `/unseen` / 发信命令 | 未实施 | 当前识别 6 个意图（帮助 / 同意 / 摘要 / 搜索 / 普通消息 / 未识别）；其中 `/search` 已实现（`worker.rs:572`） | 无 |
 | `Identity` 概念 | 未实施 | 账号识别只依赖 `ACCOUNT_ID`，无身份层抽象 | 无 |
 | 把 `RUN_MODE` 抽成独立配置文件 | 虚构拆分方案 | `RUN_MODE` 曾由 `config.rs` 读取并在 `src/main.rs` 校验取值，**该变量与校验块现已一并删除**（见 §4）；从未存在 `validate_env_or_exit` 这类函数 | 无 |
 | docker-compose `message-weave health --addr` 示例 | 虚构命令 | 应用无 CLI 子命令；健康检查端点是 `GET /healthz` 与 `GET /ready` | 见 `docs/deployment.md` 的 Health-check 表 |
@@ -127,7 +127,7 @@
 | `Config.port` / `Config.redis_url` 字段 | 已删除字段 | `port` 在两个构造器里硬编码 `8080`，而监听绑定直接从环境变量取值——字段值可与真实监听端口静默不一致，且全仓零读取方；`redis_url` 同样零读取 | `Config` 收窄为 7 字段：`telegram` / `jmap` / `account_id` / `llm` / `auth` / `worker_token` / `timezone`（末项镜像自 `BusinessConfig`，供 worker 渲染时间戳） |
 | 两个构造器的 `redis_url` 参数 | 已删除参数 | 唯一读者（原 main.rs 第 72 行）在上一轮改造中被移除 | `redis_only()` 与 `from_business(value)`；包装器 `from_business_json` / `from_business_value` 同步去掉首参 |
 | 19 个遗留环境变量名 | 已删除读取 | 见上；这些名字在代码中已无任何读取方 | 名单见 `docs/reference.md` §5.3；语义见 `docs/design.md` §7.1 |
-| `Channel` / `Notifier` / `MessageAdapter`（`src/channel.rs`）+ `UserCommand`（`src/domain.rs`） | 已删除占位 trait 与类型 | 三者**无实现、无调用方、无 dyn 绑定**，`#[expect(dead_code)]` 属性是仅有的引用来源；实际 Telegram 出站走 `channel::telegram::TelegramClient`，由 `worker.rs` 的 `MetadataWorker` 与 `notify.rs` 直接持有，从未经过它们。`UserCommand` 的唯一使用者是被删的 `Channel` | `channel.rs` 只留 `pub mod telegram`（`TelegramClient`，`reqwest` 自研）；`domain.rs` 只留领域 `Notification`（worker.rs:234 在用）。这是 src/ 里最后 3 个 `#[expect(dead_code)]` |
+| `Channel` / `Notifier` / `MessageAdapter`（`src/channel.rs`）+ `UserCommand`（`src/domain.rs`） | 已删除占位 trait 与类型 | 三者**无实现、无调用方、无 dyn 绑定**，`#[expect(dead_code)]` 属性是仅有的引用来源；实际 Telegram 出站走 `channel::telegram::TelegramClient`，由 `worker.rs` 的 `MetadataWorker` 与 `notify.rs` 直接持有，从未经过它们。`UserCommand` 的唯一使用者是被删的 `Channel` | `channel.rs` 只留 `pub mod telegram`（`TelegramClient`，`reqwest` 自研）；`domain.rs` 只留领域 `Notification`（worker.rs:235 在用）。这是 src/ 里最后 3 个 `#[expect(dead_code)]` |
 
 > 注意 `LLM_MAX_RETRIES` 与 `LLM_SUMMARY_TARGET_CHARS` 的区别：前者从来不是环境变量
 > （Redis 运行参数 `max_retries`，回落默认见 `docs/reference.md` §6.1），后者是常量
