@@ -54,14 +54,14 @@
           </div>
           <div><p class="eyebrow" data-i18n="auth.eyebrow">Authorization required</p><h2 id="auth-title" data-i18n="auth.title">Create admin session</h2></div>
         </div>
-        <p class="panel-copy"><span data-i18n="auth.bodyPre">Enter the value of the required startup key </span><code>CONFIG_ENCRYPTION_KEY</code><span data-i18n="auth.bodyPost">. The server issues a 15-minute admin session; the key and session exist only in the current page memory.</span></p>
+        <p class="panel-copy"><span data-i18n="auth.bodyPre">Enter </span><code>CONFIG_ENCRYPTION_KEY</code><span data-i18n="auth.bodyPost">. The session lasts 15 minutes and lives only in this page's memory.</span></p>
         <form id="auth-form" class="auth-form" autocomplete="off">
           <label for="bootstrap-input" data-i18n="auth.label">Business encryption key</label>
           <div class="token-row">
-            <input id="bootstrap-input" name="admin-credential" type="password" autocomplete="new-password" spellcheck="false" required data-i18n-placeholder="auth.placeholder" placeholder="Enter the CONFIG_ENCRYPTION_KEY value" aria-describedby="bootstrap-hint" />
+            <input id="bootstrap-input" name="admin-credential" type="password" autocomplete="new-password" spellcheck="false" required data-i18n-placeholder="auth.placeholder" placeholder="Paste the value" aria-describedby="bootstrap-hint" />
             <button id="connect-button" class="button button-primary" type="submit" data-i18n="auth.submit">Create session</button>
           </div>
-          <p id="bootstrap-hint" class="field-hint" data-i18n="auth.hint">Never written to localStorage, sessionStorage or cookies. You must re-authorize after closing or refreshing the page.</p>
+          <p id="bootstrap-hint" class="field-hint" data-i18n="auth.hint">You must re-authorize after closing or refreshing the page.</p>
         </form>
       </section>
 
