@@ -335,11 +335,29 @@ impl<B: JmapBackend> WorkerHandler for MetadataWorker<B> {
                 return if pages == 0 { Err(()) } else { Ok(cursor) };
             }
             pages += 1;
-            let changes = self
-                .jmap
-                .email_changes(&cursor, window)
-                .await
-                .map_err(|_| ())?;
+            let changes = match self.jmap.email_changes(&cursor, window).await {
+                Ok(changes) => changes,
+                Err(_) => {
+                    // Re-baseline instead of failing the invocation. jmap-client
+                    // 0.4.2 exposes no reset signal: `ChangesResponse` only
+                    // carries `oldState`/`newState`/`hasMoreChanges`/`created`/
+                    // `updated`/`destroyed`, so a `/changes` failure is
+                    // indistinguishable from "the server no longer replays from
+                    // this `sinceState`". Returning `Err(())` leaves the cursor
+                    // untouched, so every later invocation retries the same dead
+                    // state and `reconcile:state` freezes forever (a persistent
+                    // 503 `reconcile_retry` with no forward progress). The
+                    // position walk above does not depend on server-side
+                    // changelog retention at all, so re-baselining to a fresh
+                    // state at position 0 recovers on the next run. The 24h
+                    // dedup key makes the resulting re-read at-most-duplicate,
+                    // never-loss.
+                    return Ok(encode_baseline_cursor(
+                        &self.jmap.current_state().await.map_err(|_| ())?,
+                        0,
+                    ));
+                }
+            };
             for email_id in changes.created.iter().chain(changes.updated.iter()) {
                 self.enqueue_reconcile_event(email_id).await?;
             }
@@ -1102,5 +1120,122 @@ mod reload_tests {
         // Out-of-range values fall back to "unknown" upstream instead of panicking.
         assert_eq!(format_received_at(i64::MIN, shanghai), None);
         assert_eq!(format_received_at(unix, 25 * 3600), None);
+    }
+}
+
+#[cfg(test)]
+mod reconcile_rebaseline_tests {
+    use super::*;
+    use crate::domain::jmap::{EmailChanges, EmailContent, EmailMetadata, Folder, JmapError};
+    use crate::state::{runtime_provider, MemoryState, OutboundConfig};
+    use secrecy::SecretString;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A backend whose `Email/changes` replay is already invalid while position
+    /// paging still works: `current_state()` succeeds, `list_emails_page`
+    /// succeeds, `/changes` fails.
+    struct StaleChangesBackend {
+        changes_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl JmapBackend for StaleChangesBackend {
+        async fn create_push_subscription(&self, _callback_url: &str) -> Result<String, JmapError> {
+            unreachable!("not exercised")
+        }
+        async fn destroy_push_subscription(&self, _subscription_id: &str) -> Result<(), JmapError> {
+            unreachable!("not exercised")
+        }
+        async fn verify_push_subscription(
+            &self,
+            _subscription_id: &str,
+            _verification_code: &str,
+        ) -> Result<(), JmapError> {
+            unreachable!("not exercised")
+        }
+        async fn current_state(&self) -> Result<String, JmapError> {
+            Ok("state-fresh".to_string())
+        }
+        async fn email_changes(
+            &self,
+            _account_id: &str,
+            _since_state: &str,
+            _max_changes: usize,
+        ) -> Result<EmailChanges, JmapError> {
+            self.changes_calls.fetch_add(1, Ordering::SeqCst);
+            Err(JmapError::InvalidRequest("email changes"))
+        }
+        async fn list_folders(&self, _account_id: &str) -> Result<Vec<Folder>, JmapError> {
+            unreachable!("not exercised")
+        }
+        async fn list_emails(
+            &self,
+            _account_id: &str,
+            _folder_id: Option<&str>,
+            _limit: usize,
+        ) -> Result<Vec<EmailMetadata>, JmapError> {
+            unreachable!("not exercised")
+        }
+        async fn list_emails_page(
+            &self,
+            _account_id: &str,
+            _folder_id: Option<&str>,
+            _position: usize,
+            _limit: usize,
+        ) -> Result<Vec<EmailMetadata>, JmapError> {
+            Ok(vec![])
+        }
+        async fn read_email(
+            &self,
+            _account_id: &str,
+            _email_id: &str,
+        ) -> Result<Option<EmailContent>, JmapError> {
+            unreachable!("not exercised")
+        }
+        async fn search_emails(
+            &self,
+            _account_id: &str,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<SearchResult, JmapError> {
+            unreachable!("not exercised")
+        }
+    }
+
+    /// A frozen `baseline:` cursor whose server-side replay is stale must
+    /// re-baseline rather than wedge. `Err(())` used to leave `reconcile:state`
+    /// untouched, so every later run retried the same dead `sinceState` and
+    /// reconcile answered 503 forever. Asserting `Ok` pins the whole loop: the
+    /// state key gets a fresh cursor, so the next run restarts the walk.
+    #[tokio::test]
+    async fn reconcile_rebaselines_when_changes_replay_is_stale() {
+        let changes_calls = Arc::new(AtomicUsize::new(0));
+        let backend = StaleChangesBackend {
+            changes_calls: changes_calls.clone(),
+        };
+        let jmap = JmapService::new(backend, "account-x").expect("account id");
+        let telegram = TelegramClient::with_endpoint(
+            SecretString::from("token".to_string()),
+            runtime_provider(OutboundConfig::default()),
+            "http://127.0.0.1:1/".to_string(),
+        );
+        let state: Arc<dyn ReliableState> = Arc::new(MemoryState::enabled_for_tests());
+        let worker = MetadataWorker::new(jmap, telegram, 42, state, None, 0);
+
+        let stale = "baseline:7374616c65:98";
+        let result = worker.reconcile(Some(stale), 100).await;
+
+        let cursor = result.expect("a stale replay must re-baseline instead of failing the run");
+        assert_eq!(
+            decode_baseline_cursor(&cursor),
+            Some(("state-fresh".to_string(), 0)),
+            "the cursor must hold a freshly fetched state at position 0"
+        );
+        assert_ne!(&cursor, stale);
+        assert_eq!(
+            changes_calls.load(Ordering::SeqCst),
+            1,
+            "the stale state is attempted exactly once before re-baselining"
+        );
     }
 }
