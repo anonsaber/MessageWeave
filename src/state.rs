@@ -1706,7 +1706,11 @@ mod real_redis_ttl_tests {
         let mut conn = state.connection.clone();
 
         // `set_ai_consent` writes an absolute expiry value plus a relative EX.
-        let chat_id: i64 = run.split(':').next().unwrap_or("0").parse().unwrap_or(0);
+        // Telegram ids stay under ~1e11 in magnitude, so anchor far outside that
+        // range: this test may target a shared database and must never shadow a
+        // real chat's consent flag.
+        let pid: i64 = std::process::id().into();
+        let chat_id: i64 = -(4_000_000_000_000_000_000) + pid;
         state.set_ai_consent(chat_id, 3600).await.unwrap();
         let consent_key = format!("consent:ai:{chat_id}");
         let pttl: i64 = redis::cmd("PTTL")
@@ -1723,19 +1727,16 @@ mod real_redis_ttl_tests {
         // site, so it is asserted through `retry_or_dlq` rather than read back
         // from a constant. max_attempts=99 keeps n below the cap, so the script
         // returns before XADD/XACK and no stream or group needs to exist.
+        let stream_name = "ttlcheck:stream";
         let message = StreamMessage {
             id: format!("ttlcheck:{run}:msg"),
             payload: "payload".into(),
         };
-        let retry_key = format!("retry:ttlcheck:{run}:msg");
+        // Mirror `retry_or_dlq`'s own key format exactly, or the PTTL would be
+        // read from a key the call never wrote.
+        let retry_key = format!("retry:{stream_name}:{}", message.id);
         assert!(!state
-            .retry_or_dlq(
-                "ttlcheck:stream",
-                "ttlcheck:dlq",
-                "ttlcheck:group",
-                &message,
-                99
-            )
+            .retry_or_dlq(stream_name, "ttlcheck:dlq", "ttlcheck:group", &message, 99)
             .await
             .unwrap());
         let pttl: i64 = redis::cmd("PTTL")
