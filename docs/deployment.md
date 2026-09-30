@@ -102,7 +102,7 @@
 
 - **绝不回显凭据值**：`debug_config`（`src/debug.rs:96-152`）对每个 Secret 字段只输出 `*_configured` **布尔**——JMAP 密码、bot token、`worker_token`、`reconcile_token`、LLM `api_key` 一律不落响应体（`SAF-DEBUG-AUTH`）。注意这是「不含凭据」，不是「全脱敏」：**非密文的身份与预算字段是明文返回的**（JMAP session URL 与 username、Telegram `chat_id`、LLM `base_url`/`model`、各类超时与重试数），所以该面仍只能放在可信网络上。
 - **`/debug/notify` 受 chat 白名单约束，但空白名单不拦截**：它复用生产同一份白名单快照（`src/notify.rs:1563`），判定条件是「白名单**非空**且 `chat_id` 不在其中」才回 `403 chat_not_allowed`（`src/debug.rs:257-260`）。因此已配置白名单时无法绕过业务侧发送限制；若白名单未配置（为空）则此判定不生效，`chat_id` 可任意指定——所以启用本面时应确认业务白名单已真正配置。`text` 缺省为固定联调文案，并按 1024 字符截断（`src/debug.rs:265-270`）。
-- **不在 Worker 白名单内，只能直连 origin**：网关的 17 条安全路由（`cloudflare-worker/src/backends.js:10-28`）不含任何 `/debug/*`，Worker 对未白名单路径返回 `404 route not forwarded: /debug/...`（`cloudflare-worker/src/index.js:87-89`）。因此 `/debug/*` 只能通过直连后端 origin 访问；若必须经代理，请自行在代理层加鉴权，不要让公网可达。
+- **不在 Worker 白名单内，只能直连 origin**：网关的 18 条安全路由（`cloudflare-worker/src/backends.js:10-30`）不含任何 `/debug/*`，Worker 对未白名单路径返回 `404 route not forwarded: /debug/...`（`cloudflare-worker/src/index.js:95-96`）。因此 `/debug/*` 只能通过直连后端 origin 访问；若必须经代理，请自行在代理层加鉴权，不要让公网可达。
 
 > **建议**：生产环境不开启。需要远程联调时在控制台设置 `DEBUG_ENABLED=1` 与一次性
 > `DEBUG_TOKEN`，重新部署后联调；结束立即把 `DEBUG_ENABLED` 置空并轮换 `DEBUG_TOKEN`。
@@ -409,7 +409,8 @@ GET  /ready          公开就绪探针；检查配置完整性 + Redis 可达�
 | 作用 | 增量入队 + 推进游标 | 排空两条 stream 并发通知 |
 | 调度顺序 | 先 | 紧随其后 |
 | 鉴权 | Bearer + `reconcile_token` | Bearer + `worker_token` |
-| 可走 Worker 吗 | 可以（在 `SAFE_ROUTES` 内） | 不行，必须直连后端 origin |
+| 可走 Worker 吗 | 可以（在 `SAFE_ROUTES` 内） | 可以（在 `SAFE_ROUTES` 内） |
+| LB 超时 | `LB_RECONCILE_TIMEOUT_MS` 默认 320s，`maxAttempts=1` 不故障转移 | `LB_WORKER_TIMEOUT_MS` 默认 300s，`maxAttempts=1` 不故障转移 |
 | 幂等 | `SET NX lock:reconcile 300s` 单飞锁，撞锁回 409 | 无单飞锁，靠逐条 `delivery:*` 去重声明防重投 |
 | 单次上限 | 100 条变更（`src/notify.rs:294`） | 10 条消息（`src/notify.rs:407`） |
 | 常态返回 | 204 | 204（**不能当成功信号**） |
@@ -420,8 +421,11 @@ admin-session 兜底**（`src/notify.rs:395`），这是有意的：cron 不需�
 token 轮换后**无需重启**——worker 处理函数开头先 `refresh_business_config`（`src/notify.rs:390`），
 再从热更新快照取值（`:385`，快照由 `auth_snapshot` 读取）。
 
-`/worker` 不在 Worker 转发白名单里（`SAFE_ROUTES`：`/reconcile` 在内、`/worker` 不在），
-走 Worker 会被 404 `route not forwarded` 挡掉，必须打后端 origin。见 §10.4。
+两个端点都在 Worker 转发白名单里，**cron 打 Worker 域名和打后端 origin 都能用**。它们走
+per-route 覆盖：各自用独立的更长超时（见上表）并且 `maxAttempts=1` 绝不故障转移——全局 10s
+超时会把一次正常的排空误判成失败，而第二个实例对 `/reconcile` 必然撞锁 409、对 `/worker`
+只会重复排同一批消息。`/worker` 此前被挡在白名单外（走 Worker 是 404 `route not forwarded`），
+现已加入；它和 `/reconcile` 一样只接受 Bearer token，不带人工流量。见 §10.4。
 
 不想自己拼 curl 的话，仓库里有现成脚本 `scripts/cron-drain.sh`：两步都做了，参数全部走
 环境变量（`MW_APP_URL` / `MW_WORKER_URL` / `MW_RECONCILE_TOKEN` / `MW_WORKER_TOKEN`
@@ -444,28 +448,29 @@ curl -sS -o /dev/null -w '%{http_code}\n' \
   --max-time 60
 ```
 
-`/worker` 也先手动跑一遍，但要打**后端 origin 直连地址**（它不在 Worker 转发白名单里，见 §10.4）。空请求体是合法的，等价于取默认 10 条，不用带 `-d`：
+`/worker` 也先手动跑一遍，可以直接打 Worker 域名（它与 `/reconcile` 一样在转发白名单里，见 §10.4）。空请求体是合法的，等价于取默认 10 条，不用带 `-d`；它可能跑几分钟，`-m` 要给够（LB 侧默认 `LB_WORKER_TIMEOUT_MS` = 300s）：
 
 ```bash
 curl -sS -o /dev/null -w '%{http_code}\n' \
-  -X POST "https://<后端origin直连地址>/worker" \
+  -X POST "https://<你的平台URL>/worker" \
   -H "Authorization: Bearer <WORKER_TOKEN>" \
-  --max-time 60
+  --max-time 300
 ```
 
 最小调度（两步一条 cron，顺序不能反）：
 
 ```
-# 每 5 分钟：先对账入队，再排空队列
-*/5 * * * * curl -fsS -m 60 -X POST https://<你的平台URL>/reconcile \
+# 每 5 分钟：先对账入队，再排空队列（两步都走 Worker 域名，顺序不能反）
+*/5 * * * * curl -fsS -m 320 -X POST https://<你的平台URL>/reconcile \
     -H "Authorization: Bearer $RECONCILE_TOKEN" >/dev/null ; \
-  curl -fsS -m 60 -X POST https://<后端origin直连地址>/worker \
+  curl -fsS -m 300 -X POST https://<你的平台URL>/worker \
     -H "Authorization: Bearer $WORKER_TOKEN" >/dev/null
 ```
 
 - 两条之间用 `;` 而不是 `&&`：对账撞锁拿 409、或临时 503，都不该阻断排空——上一次对账
   入队的消息同样需要被消费。
-- 排空那条必须是**后端 origin 的直连地址**，不是 Worker 域名。
+- 两条都用 Worker 域名即可（都在转发白名单里）；`-m` 要比 LB 侧的 per-route 超时略大，
+  否则 curl 会先掐掉一个本来能完成的排空。
 - 请求体可带 `{"batch":N}`；`N` 会被压回上限 10，不会因传大值而报错（`src/notify.rs:407`）。
   传非法 JSON 才是 400 `invalid_request`（`src/notify.rs:411`）。
 
@@ -493,15 +498,13 @@ spec:
               command: ["/bin/sh", "-c"]
               args:
                 - |
-                  curl -fsS -m 60 -X POST "${APP_URL}/reconcile" \
+                  curl -fsS -m 320 -X POST "${APP_URL}/reconcile" \
                     -H "Authorization: Bearer ${RECONCILE_TOKEN}" >/dev/null
-                  curl -fsS -m 60 -X POST "${WORKER_ORIGIN}/worker" \
+                  curl -fsS -m 300 -X POST "${APP_URL}/worker" \
                     -H "Authorization: Bearer ${WORKER_TOKEN}" >/dev/null
               env:
                 - name: APP_URL
                   value: "https://<你的平台URL>"
-                - name: WORKER_ORIGIN
-                  value: "https://<后端origin直连地址>"
                 - name: RECONCILE_TOKEN
                   valueFrom:
                     secretKeyRef: {name: messageweave, key: reconcile-token}
@@ -543,11 +546,12 @@ spec:
 - 调度间隔按 `NFR-RECONCILE-INTERVAL` 取 **5–10 分钟**。Push 是主路径，对账是兜底；
   但**排空不是兜底项**——没有它，邮件只会一直进队列，一行通知都不会发出来。
 - **`/reconcile` 不会返回 400**：它没有请求体解析，传了 body 会被静默忽略，所以不要以为要传 `since`。
-- 走 Worker 转发**无需特殊设置**：网关已为 `POST /reconcile` 单独覆盖超时与尝试次数——超时取
+- 走 Worker 转发**无需特殊设置**：网关已为两个排空端点单独覆盖超时与尝试次数——`POST /reconcile` 取
   `LB_RECONCILE_TIMEOUT_MS`（默认 `320000` ms，大于单飞锁租期 300 s + 心跳余量；锁续租逻辑见
-  `src/notify.rs:305`），且 `maxAttempts=1` **绝不故障转移**（故障转移只会让第二实例立刻返回
-  `409`）。其余快路径仍用全局 `LB_REQUEST_TIMEOUT_MS`（默认 `10000` ms）与 `LB_MAX_ATTEMPTS`
-  （默认 `2`），不受影响。`POST /worker` 走不了 Worker，不受这些参数影响。
+  `src/notify.rs:305`），`POST /worker` 取 `LB_WORKER_TIMEOUT_MS`（默认 `300000` ms = 后端单条事件
+  下界，batch 拉大时按需上调），两者都 `maxAttempts=1` **绝不故障转移**（对 `/reconcile` 切实例会立刻
+  返回 `409`，对 `/worker` 切实例只会重复排同一批消息）。其余快路径仍用全局 `LB_REQUEST_TIMEOUT_MS`
+  （默认 `10000` ms）与 `LB_MAX_ATTEMPTS`（默认 `2`），不受影响。
 
 ### 6.4 可靠性策略（Reliability）
 
@@ -748,9 +752,9 @@ Stalwart PushSub ────┼─▶ https://lb.<you>.workers.dev      ← 唯
 
 ### 10.4 路由与故障转移
 
-- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **17 条**（`SAFE_ROUTES` at `backends.js:10-28` + `ROUTE_METHODS` at `index.js:47-65`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`GET|PUT /api/business-config`、`POST /api/business-config/preflight`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`GET|PUT /api/enabled`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`、`GET /healthz`（源站自身健康检查；LB 自己的聚合探针在 `/healthz-worker`，不在列）；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 3 类不在 safelist**：`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`POST /worker`（队列排空端点，由外部调度周期性调用而非人工触发，Bearer 鉴权，见 §6.3.1）、`/debug/*`（7 条远程联调面，`SAF-DEBUG-GATE`，只能直连后端 origin，见 §2.1）——**这 3 类都不承载外部业务流量，因此后端实例前不需要第二道入口**。`GET|PUT /api/enabled` 属于必须透传的例外：管理 SPA 本身只部署在 Worker 域名下，业务总开关由它读取与切换（`loadEnabled` 在 `web/config.js:676` 读、开关写入在 `:1048`），缺了这条白名单，SPA 里那个开关在后端直连模式下可用、经网关部署时恒 404；该路由已强制 admin-session Bearer 鉴权，暴露面与同在白名单内的 `/api/admin/session` 完全一致。`GET|PUT /api/business-config` 与 `POST /api/business-config/preflight` 同属此类必须透传的路由：SPA 由 Worker 服务，配置回读、提交前校验与保存都由它发起，缺了这两条，回读与预校验经网关部署时恒 404/405，整条配置管理页面只剩后端直连可用；两者同样强制 admin-session Bearer 鉴权，且回读只返回密钥存在性布尔（`SAF-NO-SECRET-ECHO`），不新增凭据暴露面。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
+- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **18 条**（`SAFE_ROUTES` at `backends.js:10-30` + `ROUTE_METHODS` at `index.js:54-73`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`GET|PUT /api/business-config`、`POST /api/business-config/preflight`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`GET|PUT /api/enabled`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`POST /worker`（两条都是外部 cron 触发的排空端点，Bearer 鉴权，见 §6.3.1）、`GET /ready`、`GET /healthz`（源站自身健康检查；LB 自己的聚合探针在 `/healthz-worker`，不在列）；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 2 类不在 safelist**：`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`/debug/*`（7 条远程联调面，`SAF-DEBUG-GATE`，只能直连后端 origin，见 §2.1）——**这 2 类都不承载外部业务流量，因此后端实例前不需要第二道入口**。`GET|PUT /api/enabled` 属于必须透传的例外：管理 SPA 本身只部署在 Worker 域名下，业务总开关由它读取与切换（`loadEnabled` 在 `web/config.js:676` 读、开关写入在 `:1048`），缺了这条白名单，SPA 里那个开关在后端直连模式下可用、经网关部署时恒 404；该路由已强制 admin-session Bearer 鉴权，暴露面与同在白名单内的 `/api/admin/session` 完全一致。`GET|PUT /api/business-config` 与 `POST /api/business-config/preflight` 同属此类必须透传的路由：SPA 由 Worker 服务，配置回读、提交前校验与保存都由它发起，缺了这两条，回读与预校验经网关部署时恒 404/405，整条配置管理页面只剩后端直连可用；两者同样强制 admin-session Bearer 鉴权，且回读只返回密钥存在性布尔（`SAF-NO-SECRET-ECHO`），不新增凭据暴露面。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
 - **健康聚合（`MOD-HEALTH-AGG`）**：Worker 自行承载 `GET /healthz-worker`，按 TTL 缓存（默认 30s，`LB_HEALTH_TTL_MS` 可调）探测各后端 `/healthz`，返回 `{status, version, available, total, backends:[{origin,up,status}]}`（`version` 取 `LB_VERSION`，用于确认线上是哪次部署在回答）；≥1 后端 up → 200，全 down → 503。`/ready` 透传给后端，做配置 + Redis + 出站只读探测（JMAP session、TG getMe，各 3s、并行，最坏约 3s），不触发业务副作用。
-- **故障转移（`forwardWithFailover`）**：每次请求最多 `min(LB_MAX_ATTEMPTS, origins.length)` 次尝试；**仅**超时（AbortError）或 5xx 触发换下一个 origin；4xx/2xx/3xx 直接返回；默认 `LB_MAX_ATTEMPTS=2`（首次 + 1 次故障转移）。**例外：`POST /reconcile` 固定 `maxAttempts=1`，绝不故障转移**——它持集群级单飞锁，切实例只会立刻撞 `409`；其单请求超时取 `LB_RECONCILE_TIMEOUT_MS`（默认 `320000` ms），其余路由不受影响。
+- **故障转移（`forwardWithFailover`）**：每次请求最多 `min(LB_MAX_ATTEMPTS, origins.length)` 次尝试；**仅**超时（AbortError）或 5xx 触发换下一个 origin；4xx/2xx/3xx 直接返回；默认 `LB_MAX_ATTEMPTS=2`（首次 + 1 次故障转移）。**例外：`POST /reconcile` 与 `POST /worker` 固定 `maxAttempts=1`，绝不故障转移**——前者切实例只会立刻撞 `409`（集群级单飞锁），后者切实例只会重复排同一批消息；这两条也各有独立超时：`LB_RECONCILE_TIMEOUT_MS`（默认 `320000` ms）与 `LB_WORKER_TIMEOUT_MS`（默认 `300000` ms = 后端单条事件下界），其余路由不受影响。
 - **随机分摊**：起点 origin 按 `Math.random` 随机化，实现双活；单 origin 配置时退化为确定性。
 - **全失败兜底**：返回 `503 All Backends Unavailable`，交由 Telegram / Stalwart 自动重投（**不丢消息**）。
 - **超时预算**（`LB_REQUEST_TIMEOUT_MS`，默认 10s）> 最坏 cold start。
@@ -797,6 +801,7 @@ npx wrangler deploy
 npx wrangler secret put LB_REQUEST_TIMEOUT_MS   # 默认 10000ms
 npx wrangler secret put LB_MAX_ATTEMPTS         # 默认 2（首次 + 1 次故障转移）
 npx wrangler secret put LB_RECONCILE_TIMEOUT_MS # 默认 320000ms，仅 POST /reconcile 生效
+npx wrangler secret put LB_WORKER_TIMEOUT_MS    # 默认 300000ms，仅 POST /worker 生效
 npx wrangler secret put LB_HEALTH_TTL_MS        # 默认 30000ms
 ```
 
@@ -805,7 +810,7 @@ npx wrangler secret put LB_HEALTH_TTL_MS        # 默认 30000ms
 ```toml
 [vars]
 BACKEND_ORIGINS_JSON = '["https://messageweave-eu-1.motofans.club"]'
-LB_VERSION = "2026.10.2"
+LB_VERSION = "2026.10.3"
 ```
 
 **明文例外及其边界**：origin 只是公开可达的 https 地址，不是凭据，所以可以随仓库走（好处是
@@ -829,7 +834,7 @@ npx wrangler secret put BACKEND_ORIGINS_JSON
 > `cloudflare-worker/src/backends.js` 的 `parseBackendOrigin` 只认 `typeof raw === "string"` 的 origin，
 > 对象项会让**整份**配置解析失败；权重也不存在——故障转移是
 > `cloudflare-worker/src/lb.js:107` 用 `rng()` 均匀选一个随机起始源再顺序尝试，没有加权。
-> 症状值得留意：配置是 `cloudflare-worker/src/index.js:93` **每个请求**重新读取并解析的，
+> 症状值得留意：配置是 `cloudflare-worker/src/index.js:105` **每个请求**重新读取并解析的，
 > 所以写错不会「启动即 503」，而是**每个请求都返回 503**（`misconfigured backends`），
 > 日志里也没有异常栈可看。
 
@@ -840,7 +845,7 @@ npx wrangler secret put BACKEND_ORIGINS_JSON
    这条已修掉：`wrangler.toml` 现已全部展开成 `#` 行，`wrangler deploy --dry-run` 通过（上传 31.48 KiB）。
 2. **`npm test` 在 Node 22.23 上原先跑不起来**：脚本写的是 `node --test test/`，Node 会把 `test/`
    当成模块路径去 require，报 `MODULE_NOT_FOUND`。已改成 `node --test`（不加参数自动发现 `test/`），
-   当前为 35 个用例全通过（`cloudflare-worker/test/backends.test.js` 6 / `cloudflare-worker/test/health.test.js` 5 / `cloudflare-worker/test/index.test.js` 12 / `cloudflare-worker/test/lb.test.js` 12；lb 含 2 条不可变响应头回归，health 含 1 条 `version` 回显）。
+   当前为 37 个用例全通过（`cloudflare-worker/test/backends.test.js` 6 / `cloudflare-worker/test/health.test.js` 5 / `cloudflare-worker/test/index.test.js` 14 / `cloudflare-worker/test/lb.test.js` 12；index 含 `/reconcile` 与 `/worker` 两条 per-route 长超时回归，lb 含 2 条不可变响应头回归，health 含 1 条 `version` 回显）。
 
 **部署与验证**
 
@@ -858,9 +863,9 @@ curl https://<your-worker>.workers.dev/healthz-worker
 2. `npx wrangler deploy --env production` 后 `curl <worker-url>/healthz-worker` 看**响应体里的 `available`**：
    必须 `available ≥ 1` 才算接通；同时核对 `version` 等于 `wrangler.toml` 里的 `LB_VERSION`，
    不等就说明跑的还是旧部署。
-   ⚠️ **只看 HTTP 200 会误判**：`/healthz-worker` 是 Worker 自己生成的（不透传后端，`cloudflare-worker/src/index.js:78-82`），
+   ⚠️ **只看 HTTP 200 会误判**：`/healthz-worker` 是 Worker 自己生成的（不透传后端，`cloudflare-worker/src/index.js:87-91`），
    而且 `BACKEND_ORIGINS_JSON` 缺失、格式错或为空时，`handleHealth` 会吞掉解析异常并返回
-   **HTTP 200 + `{"status":"no-backends","available":0,"total":0}`**（`cloudflare-worker/src/index.js:138` 的 catch）。
+   **HTTP 200 + `{"status":"no-backends","available":0,"total":0}`**（`cloudflare-worker/src/lb.js:155` 的 catch）。
    所以「200」本身不证明配置正确，必须看 `available`。判据速查：
    `status=ok` 且 `available≥1` → 正常；`no-backends`（200）→ secret 没设好或 JSON 格式错；`down`（503）→ 后端全挂。
 3. `curl -X POST https://<worker>/webhook/tg -H "Content-Type: application/json" -d '{"test":1}'` 应得到后端返回（非 503）。

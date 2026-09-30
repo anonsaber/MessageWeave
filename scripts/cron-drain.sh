@@ -21,10 +21,9 @@
 # --- 环境变量 ---
 #   MW_APP_URL            必填。对外平台 URL（走 LB 的域名），用于 GET /api/status、
 #                         GET /healthz、POST /reconcile。
-#   MW_WORKER_URL         可选，默认 = MW_APP_URL。POST /worker 的地址。**重要**：
-#                         /worker 不在 LB 的路由白名单内，前面有 LB 时必须指向源站
-#                         直连地址（如 https://messageweave-eu-1.motofans.club），
-#                         否则返回 404 route not forwarded。
+#   MW_WORKER_URL         可选，默认 = MW_APP_URL。POST /worker 的地址。/worker 已在 LB
+#                         路由白名单内，默认直接走 MW_APP_URL 即可；要跳过 LB 直连源站
+#                         时才需要覆盖（如想绕过 LB 的排空超时，或源站另有独立域名）。
 #   MW_DEBUG_URL          可选，默认 = MW_WORKER_URL。GET /debug/* 与 POST /debug/notify
 #                         的地址（需要后端以 --debug 启动且 DEBUG_TOKEN 非空，
 #                         且需直连源站）。
@@ -274,7 +273,8 @@ run_worker() {
     404)
       if printf '%s' "$BODY" | grep -q 'route not forwarded'; then
         log "worker=404 $WORKER_URL/worker 被 LB 拦截（route not forwarded）"
-        log "      /worker 不在 LB 白名单内，把 MW_WORKER_URL 指向源站直连地址"
+        log "      LB 版本太旧：/worker 需要 LB_VERSION >= 2026.10.3（见 /healthz-worker）"
+        log "      升级 LB，或把 MW_WORKER_URL 指向源站直连地址绕过 LB"
       else
         log "worker=404 $WORKER_URL/worker 不存在（MW_WORKER_URL 可能指错）"
       fi

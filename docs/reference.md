@@ -284,7 +284,7 @@ Response conventions:
 ## 4. Gateway vs backend route matrix
 
 > **Independently verified.** Source: `cloudflare-worker/src/backends.js` `SAFE_ROUTES`,
-> 16 entries, alongside `ROUTE_METHODS` (`index.js`)
+> 18 entries, alongside `ROUTE_METHODS` (`index.js`)
 > which fixes one method set per path. The worker entry point is `src/index.js`
 > (`wrangler.toml`); `src/lb.js` performs forwarding and bounded failover (`SAF-LB-PASSTHRU`,
 > `C-NO-LONG-CONN`).
