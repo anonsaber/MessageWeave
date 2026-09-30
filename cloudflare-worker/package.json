@@ -5,7 +5,7 @@
   "type": "module",
   "description": "MessageWeave Cloudflare Worker: 统一 HTTPS 入口 + 多后端 origin 故障转移（透传模型，SAF-LB-PASSTHRU）。零运行时依赖（仅 ES2022 + Fetch API），可直接 node --test。",
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test",
     "check": "node --check src/*.js && node --check test/*.test.js && wrangler deploy --dry-run --outdir=.build-check",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev --local"
