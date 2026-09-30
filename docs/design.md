@@ -577,7 +577,7 @@ pub enum BotError {
 
 **运行监控（`GATE-UPTIME-KUMA`）：**
 - 使用 Uptime Kuma HTTP(s) Monitor 检查 `/healthz`（进程存活）和 `/ready`（配置 / Redis / 上游可达就绪），分别期望 HTTP 200；`/ready` 最坏约 3s，探针超时需设 ≥10s；`/ready` 不就绪时返回 `503` 与标准错误 envelope（`service_unavailable` + `Retry-After: 30`），Uptime Kuma 仍按状态码判定，不受响应体变化影响。
-- `/healthz` 是纯 liveness（无条件 `200`）；`/ready` 检查配置完整性 + Redis 可达性 + 出站只读探测（JMAP session `GET`、TG `getMe`，各 3s、并行，最坏约 3s），探针只读、不回显 token 或第三方响应、不触发业务副作用，报告体不含敏感信息；由于 `/ready` 是最重的一环（可能 3s），平台侧应优先使用网关聚合的 `/healthz` 作为存活探测，避免高频出站请求。
+- `/healthz` 是纯 liveness（无条件 `200`）；`/ready` 检查配置完整性 + Redis 可达性 + 出站只读探测（JMAP session `GET`、TG `getMe`，各 3s、并行，最坏约 3s），探针只读、不回显 token 或第三方响应、不触发业务副作用，报告体不含敏感信息；由于 `/ready` 是最重的一环（可能 3s），平台侧应优先使用网关聚合的 `/healthz-worker` 作为存活探测，避免高频出站请求。
 - 不引入 Prometheus、Exporter 或额外指标端口；真实 Stalwart/Telegram 端到端链路仍需单独联调。
 
 **生产红线（贯穿所有阶段）**：

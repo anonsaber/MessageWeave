@@ -42,16 +42,16 @@ test("BACKEND_ORIGINS_JSON parses, dedups, validates all entries", () => {
   assert.throws(() => parseBackendOrigins("[]"), /non-empty/);
 });
 
-test("route safelist excludes /healthz and unknown paths (C-LB-SINGLE-REG-URL)", () => {
+test("route safelist forwards /healthz and blocks unknown paths (C-LB-SINGLE-REG-URL)", () => {
   for (const r of [
     "/", "/assets/config.js", "/assets/styles.css", "/api/status", "/ready", "/webhook/tg", "/push/jmap", "/reconcile",
     "/api/push/register", "/api/push/disable",
     "/api/config", "/api/business-config", "/api/admin/session", "/api/admin/session/revoke",
-    "/api/enabled",
+    "/api/enabled", "/healthz",
   ]) {
     assert.ok(LB_ROUTES.includes(r), `forwarded: ${r}`);
   }
-  for (const r of ["/healthz", "/admin", "/debug", "/jmap/session", "/ready/extra"]) {
+  for (const r of ["/healthz-worker", "/admin", "/debug", "/jmap/session", "/ready/extra"]) {
     assert.ok(!LB_ROUTES.includes(r), `must be blocked: ${r}`);
     assert.ok(!SAFE_ROUTES.includes(r), `must not be a safe route: ${r}`);
   }

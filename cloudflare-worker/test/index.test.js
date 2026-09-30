@@ -1,6 +1,6 @@
 /**
  * 集成测试：Cloudflare Worker 主入口 handle fetch（ARCH-LB-WORKER / SAF-LB-PASSTHRU）。
- * 验证：路由分发、/healthz 聚合、未白名单 404、method 拦截、配置异常 fail-closed、鉴权头透传。
+ * 验证：路由分发、/healthz-worker 聚合、/healthz 透传、未白名单 404、method 拦截、配置异常 fail-closed、鉴权头透传。
  * 运行：cd cloudflare-worker && node --test
  */
 import test from "node:test";
@@ -25,10 +25,10 @@ function stubFetch(impl) {
   };
 }
 
-test("Worker GET /healthz aggregates backend probes without touching forwarded routes", async () => {
+test("Worker GET /healthz-worker aggregates backend probes without touching forwarded routes", async () => {
   const restore = stubFetch(async (url) => new Response("ok", { status: 200 }));
   try {
-    const res = await handleFetch(new Request("https://lb.example/healthz", { method: "GET" }), makeEnv());
+    const res = await handleFetch(new Request("https://lb.example/healthz-worker", { method: "GET" }), makeEnv());
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.status, "ok");
@@ -40,7 +40,7 @@ test("Worker GET /healthz aggregates backend probes without touching forwarded r
 
     // 配置后原样回显：确认线上是哪次部署在回答。
     const res2 = await handleFetch(
-      new Request("https://lb.example/healthz", { method: "GET" }),
+      new Request("https://lb.example/healthz-worker", { method: "GET" }),
       makeEnv({ LB_VERSION: "2026.10.1" }),
     );
     const body2 = await res2.json();
@@ -50,13 +50,28 @@ test("Worker GET /healthz aggregates backend probes without touching forwarded r
   }
 });
 
-test("Worker: wrong method on the local /healthz probe => 405, not 404", async () => {
+test("Worker: wrong method on the local /healthz-worker probe => 405, not 404", async () => {
   const res = await handleFetch(
-    new Request("https://lb.example/healthz", { method: "POST", body: "{}" }),
+    new Request("https://lb.example/healthz-worker", { method: "POST", body: "{}" }),
     makeEnv(),
   );
   assert.equal(res.status, 405);
   assert.equal(res.headers.get("allow"), "GET");
+});
+
+test("Worker GET /healthz is forwarded to the origin, not answered by the LB", async () => {
+  // 两个健康检查共存：/healthz 属于源站，/healthz-worker 属于 LB。
+  const restore = stubFetch(async () => new Response("origin-ok", { status: 200 }));
+  try {
+    const res = await handleFetch(
+      new Request("https://lb.example/healthz", { method: "GET" }),
+      makeEnv(),
+    );
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), "origin-ok");
+  } finally {
+    restore();
+  }
 });
 
 test("Worker: unknown route => 404 (C-LB-SINGLE-REG-URL)", async () => {

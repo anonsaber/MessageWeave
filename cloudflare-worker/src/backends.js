@@ -4,7 +4,8 @@
  * 仅 ES2022，零依赖，可 node 直接执行。
  */
 
-/** 允许透传的入站路由 safelist（C-LB-SINGLE-REG-URL；/healthz 由 Worker 自身聚合，不在列）：未知路径 → 404。
+/** 允许透传的入站路由 safelist（C-LB-SINGLE-REG-URL）：未知路径 → 404。
+ * `/healthz` 透传到源站（源站自己的健康检查）；LB 自己的聚合探针在 `/healthz-worker`，不在列。
  * SPA 静态资源为公开 GET；所有管理 API 仍由后端校验 Redis bootstrap 凭据或 admin session。 */
 export const SAFE_ROUTES = Object.freeze([
   "/",
@@ -22,6 +23,7 @@ export const SAFE_ROUTES = Object.freeze([
   "/api/push/register",
   "/api/push/disable",
   "/reconcile",
+  "/healthz",
   "/ready",
 ]);
 

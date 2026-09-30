@@ -102,7 +102,7 @@
 
 - **绝不回显凭据值**：`debug_config`（`src/debug.rs:96-152`）对每个 Secret 字段只输出 `*_configured` **布尔**——JMAP 密码、bot token、`worker_token`、`reconcile_token`、LLM `api_key` 一律不落响应体（`SAF-DEBUG-AUTH`）。注意这是「不含凭据」，不是「全脱敏」：**非密文的身份与预算字段是明文返回的**（JMAP session URL 与 username、Telegram `chat_id`、LLM `base_url`/`model`、各类超时与重试数），所以该面仍只能放在可信网络上。
 - **`/debug/notify` 受 chat 白名单约束，但空白名单不拦截**：它复用生产同一份白名单快照（`src/notify.rs:1563`），判定条件是「白名单**非空**且 `chat_id` 不在其中」才回 `403 chat_not_allowed`（`src/debug.rs:257-260`）。因此已配置白名单时无法绕过业务侧发送限制；若白名单未配置（为空）则此判定不生效，`chat_id` 可任意指定——所以启用本面时应确认业务白名单已真正配置。`text` 缺省为固定联调文案，并按 1024 字符截断（`src/debug.rs:265-270`）。
-- **不在 Worker 白名单内，只能直连 origin**：网关的 16 条安全路由（`cloudflare-worker/src/backends.js:9-26`）不含任何 `/debug/*`，Worker 对未白名单路径返回 `404 route not forwarded: /debug/...`（`cloudflare-worker/src/index.js:82-85`）。因此 `/debug/*` 只能通过直连后端 origin 访问；若必须经代理，请自行在代理层加鉴权，不要让公网可达。
+- **不在 Worker 白名单内，只能直连 origin**：网关的 17 条安全路由（`cloudflare-worker/src/backends.js:10-28`）不含任何 `/debug/*`，Worker 对未白名单路径返回 `404 route not forwarded: /debug/...`（`cloudflare-worker/src/index.js:87-89`）。因此 `/debug/*` 只能通过直连后端 origin 访问；若必须经代理，请自行在代理层加鉴权，不要让公网可达。
 
 > **建议**：生产环境不开启。需要远程联调时在控制台设置 `DEBUG_ENABLED=1` 与一次性
 > `DEBUG_TOKEN`，重新部署后联调；结束立即把 `DEBUG_ENABLED` 置空并轮换 `DEBUG_TOKEN`。
@@ -138,7 +138,7 @@
 - 非 root 用户运行（保留既有约定）
 - **公网 HTTPS 入口（`C-HTTPS-URL` 已确认）**：运维在平台上给 bot 配一个公网 HTTPS URL（如 `https://bot.example.com`），平台 ingress/反代把 `https://…/webhook/tg`、`/push/jmap`、`/reconcile` 路由到容器 `PORT`。**bot 自身不申请证书、不监听 443**；证书由平台/反代管理（`C-HTTPS-INBOUND`）。
 - 需要在 Stalwart 与 Telegram 两侧使用这个公网 URL：Telegram `setWebhook` 指向 `/webhook/tg`；管理员调用 `POST /api/push/register` 并提交该 URL 的 `/push/jmap` 路径，后端负责执行 `PushSubscription/set create`。服务不会自动猜测平台公网域名。
-- **出站 egress 是 `/ready` 的硬依赖**：就绪探针向配置的 JMAP session host 与 `api.telegram.org:443` 发起只读 `GET`。该 egress 不通时 `/ready` 会长期 `503`，即使配置与 Redis 都正常。若 egress 必须经 HTTP(S) 代理则**无法使用**：应用内 `reqwest` 以 `default-features = false` 编译（`Cargo.toml:12`），未启用 `proxy` feature，**不解析 `HTTPS_PROXY`/`HTTP_PROXY`**；这种情况下请用网关聚合的 `/healthz`（无条件 200）作为存活监控，`/ready` 仅作人工排查。
+- **出站 egress 是 `/ready` 的硬依赖**：就绪探针向配置的 JMAP session host 与 `api.telegram.org:443` 发起只读 `GET`。该 egress 不通时 `/ready` 会长期 `503`，即使配置与 Redis 都正常。若 egress 必须经 HTTP(S) 代理则**无法使用**：应用内 `reqwest` 以 `default-features = false` 编译（`Cargo.toml:12`），未启用 `proxy` feature，**不解析 `HTTPS_PROXY`/`HTTP_PROXY`**；这种情况下请用网关聚合的 `/healthz-worker`（无条件 200）作为存活监控，`/ready` 仅作人工排查。
 - **多实例 LB/HA 时登记的是 Worker URL 而非各后端 URL**（`C-LB-SINGLE-REG-URL`，§10）：Telegram / Stalwart / Cron 只认 Worker 的稳定域名；后端平台入口不对外登记。
 - Secrets 运行期注入（环境变量/容器平台 secret），见 §5（同文件内章节链接）
 
@@ -736,8 +736,8 @@ Stalwart PushSub ────┼─▶ https://lb.<you>.workers.dev      ← 唯
 
 ### 10.4 路由与故障转移
 
-- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **16 条**（`SAFE_ROUTES` at `backends.js:9-26` + `ROUTE_METHODS` at `index.js:46-63`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`GET|PUT /api/business-config`、`POST /api/business-config/preflight`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`GET|PUT /api/enabled`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 4 类不在 safelist**：`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`POST /worker`（队列排空端点，由外部调度周期性调用而非人工触发，Bearer 鉴权，见 §6.3.1）、`GET /healthz`（网关自行聚合，不转发）、`/debug/*`（7 条远程联调面，`SAF-DEBUG-GATE`，只能直连后端 origin，见 §2.1）——**这 4 类都不承载外部业务流量，因此后端实例前不需要第二道入口**。`GET|PUT /api/enabled` 属于必须透传的例外：管理 SPA 本身只部署在 Worker 域名下，业务总开关由它读取与切换（`loadEnabled` 在 `web/config.js:676` 读、开关写入在 `:1048`），缺了这条白名单，SPA 里那个开关在后端直连模式下可用、经网关部署时恒 404；该路由已强制 admin-session Bearer 鉴权，暴露面与同在白名单内的 `/api/admin/session` 完全一致。`GET|PUT /api/business-config` 与 `POST /api/business-config/preflight` 同属此类必须透传的路由：SPA 由 Worker 服务，配置回读、提交前校验与保存都由它发起，缺了这两条，回读与预校验经网关部署时恒 404/405，整条配置管理页面只剩后端直连可用；两者同样强制 admin-session Bearer 鉴权，且回读只返回密钥存在性布尔（`SAF-NO-SECRET-ECHO`），不新增凭据暴露面。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
-- **健康聚合（`MOD-HEALTH-AGG`）**：Worker 自行承载 `GET /healthz`，按 TTL 缓存（默认 30s，`LB_HEALTH_TTL_MS` 可调）探测各后端 `/healthz`，返回 `{status, version, available, total, backends:[{origin,up,status}]}`（`version` 取 `LB_VERSION`，用于确认线上是哪次部署在回答）；≥1 后端 up → 200，全 down → 503。`/ready` 透传给后端，做配置 + Redis + 出站只读探测（JMAP session、TG getMe，各 3s、并行，最坏约 3s），不触发业务副作用。
+- **路由 safelist**（`C-LB-SINGLE-REG-URL`）：Worker 只透传 **17 条**（`SAFE_ROUTES` at `backends.js:10-28` + `ROUTE_METHODS` at `index.js:47-65`）：`GET /`、`/assets/config.js`、`/assets/styles.css`、`GET /api/status`、`GET|PUT /api/config`、`GET|PUT /api/business-config`、`POST /api/business-config/preflight`、`POST /api/admin/session`、`POST /api/admin/session/revoke`、`GET|PUT /api/enabled`、`POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`GET /ready`、`GET /healthz`（源站自身健康检查；LB 自己的聚合探针在 `/healthz-worker`，不在列）；**未知路径 404、method 不符 405**，不透传至后端。**后端另有 3 类不在 safelist**：`POST /api/bootstrap`（一次性信任引导，**不能**走 Worker 域名）、`POST /worker`（队列排空端点，由外部调度周期性调用而非人工触发，Bearer 鉴权，见 §6.3.1）、`/debug/*`（7 条远程联调面，`SAF-DEBUG-GATE`，只能直连后端 origin，见 §2.1）——**这 3 类都不承载外部业务流量，因此后端实例前不需要第二道入口**。`GET|PUT /api/enabled` 属于必须透传的例外：管理 SPA 本身只部署在 Worker 域名下，业务总开关由它读取与切换（`loadEnabled` 在 `web/config.js:676` 读、开关写入在 `:1048`），缺了这条白名单，SPA 里那个开关在后端直连模式下可用、经网关部署时恒 404；该路由已强制 admin-session Bearer 鉴权，暴露面与同在白名单内的 `/api/admin/session` 完全一致。`GET|PUT /api/business-config` 与 `POST /api/business-config/preflight` 同属此类必须透传的路由：SPA 由 Worker 服务，配置回读、提交前校验与保存都由它发起，缺了这两条，回读与预校验经网关部署时恒 404/405，整条配置管理页面只剩后端直连可用；两者同样强制 admin-session Bearer 鉴权，且回读只返回密钥存在性布尔（`SAF-NO-SECRET-ECHO`），不新增凭据暴露面。`/api/status` 只返回启动状态和缺少的环境变量名；所有管理 API 的 Bearer 鉴权由后端执行（`SAF-LB-PASSTHRU`）。
+- **健康聚合（`MOD-HEALTH-AGG`）**：Worker 自行承载 `GET /healthz-worker`，按 TTL 缓存（默认 30s，`LB_HEALTH_TTL_MS` 可调）探测各后端 `/healthz`，返回 `{status, version, available, total, backends:[{origin,up,status}]}`（`version` 取 `LB_VERSION`，用于确认线上是哪次部署在回答）；≥1 后端 up → 200，全 down → 503。`/ready` 透传给后端，做配置 + Redis + 出站只读探测（JMAP session、TG getMe，各 3s、并行，最坏约 3s），不触发业务副作用。
 - **故障转移（`forwardWithFailover`）**：每次请求最多 `min(LB_MAX_ATTEMPTS, origins.length)` 次尝试；**仅**超时（AbortError）或 5xx 触发换下一个 origin；4xx/2xx/3xx 直接返回；默认 `LB_MAX_ATTEMPTS=2`（首次 + 1 次故障转移）。**例外：`POST /reconcile` 固定 `maxAttempts=1`，绝不故障转移**——它持集群级单飞锁，切实例只会立刻撞 `409`；其单请求超时取 `LB_RECONCILE_TIMEOUT_MS`（默认 `320000` ms），其余路由不受影响。
 - **随机分摊**：起点 origin 按 `Math.random` 随机化，实现双活；单 origin 配置时退化为确定性。
 - **全失败兜底**：返回 `503 All Backends Unavailable`，交由 Telegram / Stalwart 自动重投（**不丢消息**）。
@@ -793,7 +793,7 @@ npx wrangler secret put LB_HEALTH_TTL_MS        # 默认 30000ms
 ```toml
 [vars]
 BACKEND_ORIGINS_JSON = '["https://messageweave-eu-1.motofans.club"]'
-LB_VERSION = "2026.10.1"
+LB_VERSION = "2026.10.2"
 ```
 
 **明文例外及其边界**：origin 只是公开可达的 https 地址，不是凭据，所以可以随仓库走（好处是
@@ -836,17 +836,17 @@ npx wrangler secret put BACKEND_ORIGINS_JSON
 cd cloudflare-worker
 npx wrangler deploy --env production
 # 验证 LB 健康聚合
-curl https://<your-worker>.workers.dev/healthz
+curl https://<your-worker>.workers.dev/healthz-worker
 ```
 
 **Telegram / Stalwart / Cron 登记的唯一 URL** 改为 `https://<your-worker>.workers.dev/webhook/tg` 等（`C-LB-SINGLE-REG-URL`）；**各后端平台的 HTTPS 入口不再对外登记**（小平台入口可能被公网直连，故**后端鉴权不可省**，`SAF-LB-PASSTHRU`）。
 
 **验证（发布前必做）**
 1. `cd cloudflare-worker && npm test`（Node 单测，代理逻辑 + 健康聚合 + 超时/失败重试 + safelist）。
-2. `npx wrangler deploy --env production` 后 `curl <worker-url>/healthz` 看**响应体里的 `available`**：
+2. `npx wrangler deploy --env production` 后 `curl <worker-url>/healthz-worker` 看**响应体里的 `available`**：
    必须 `available ≥ 1` 才算接通；同时核对 `version` 等于 `wrangler.toml` 里的 `LB_VERSION`，
    不等就说明跑的还是旧部署。
-   ⚠️ **只看 HTTP 200 会误判**：`/healthz` 是 Worker 自己生成的（不透传后端，`cloudflare-worker/src/index.js:75`），
+   ⚠️ **只看 HTTP 200 会误判**：`/healthz-worker` 是 Worker 自己生成的（不透传后端，`cloudflare-worker/src/index.js:78-82`），
    而且 `BACKEND_ORIGINS_JSON` 缺失、格式错或为空时，`handleHealth` 会吞掉解析异常并返回
    **HTTP 200 + `{"status":"no-backends","available":0,"total":0}`**（`cloudflare-worker/src/index.js:138` 的 catch）。
    所以「200」本身不证明配置正确，必须看 `available`。判据速查：
@@ -903,7 +903,7 @@ Git 集成**必须改的四个字段**（Cloudflare 的默认值对不上本仓�
    （8787 是 `wrangler dev` 的默认端口，`--ip 0.0.0.0` 让 Cloudflare 的预览代理能连进来）。
    ⚠️ 但预览环境**拿不到** dashboard 里加的 secret：现在 `BACKEND_ORIGINS_JSON` 写在
    `wrangler.toml` 的 `[vars]` 里，预览因此也能跑通转发；**一旦改回 secret 注入**，预览就只剩
-   「Worker 能被拉起 + 路由表生效 + `/healthz` 返回 200 但 `status` 是 `no-backends`」，
+   「Worker 能被拉起 + 路由表生效 + `/healthz-worker` 返回 200 但 `status` 是 `no-backends`」，
    **不能**验证后端转发，转发只能看生产。（仓库里也不该有 `.dev.vars`，它只对 `wrangler dev` 生效。）
 
 **Node 版本不用管。** Cloudflare 环境实测给的是 `nodejs@24.18.0`，本地在 Node 24.21.0 与
@@ -925,7 +925,7 @@ Encrypt（填 secret）。改 secret **即时生效，不需要重新部署**。
 任何明文 secret 提交进仓库（本仓库里没有，`.gitignore` 也排除了）。
 
 **验证方式与 CLI 完全相同**，见上方「验证（发布前必做）」，尤其第 2 条：
-看 `/healthz` 响应体的 `available`，不要只看 HTTP 200。
+看 `/healthz-worker` 响应体的 `available`，不要只看 HTTP 200。
 
 ---
 

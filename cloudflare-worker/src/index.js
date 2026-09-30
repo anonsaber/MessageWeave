@@ -5,7 +5,7 @@
  * - SAF-LB-PASSTHRU：透传 headers/body（含鉴权头），不做鉴权改写。
  * - C-HTTPS-INBOUND：仅 https 后端 origin。
  * - ARCH-LB-WORKER / C-LB-SINGLE-REG-URL：safelist 路由，未知路径 404、method 不符 405。
- * - MOD-HEALTH-AGG：/healthz 由 Worker 聚合，不落后端。
+ * - MOD-HEALTH-AGG：/healthz-worker 由 Worker 聚合；/healthz 透传到源站。
  * - C-NO-DB / C-REDIS-ONLY-STATE：不代理 Redis/JMAP；不检查数据库侧可用性。
  * - C-NO-LONG-CONN：纯请求-响应，body 一次性读入回灌；无 WS/SSE/长轮询。
  * - C-NO-SECRET-IN-IMAGE：日志仅「方法/路径/origin/失败类别」，不含 secret；origin 清单走 wrangler secret。
@@ -16,7 +16,8 @@
  * - GET|PUT /api/config、GET|PUT /api/business-config、POST /api/business-config/preflight、
  *   POST /api/admin/session[/revoke]
  *   → 透传至后端；后端校验 bootstrap 凭据或短期 admin session
- * - GET  /healthz            → LB 聚合健康（MOD-HEALTH-AGG）
+ * - GET  /healthz            → 透传到源站（源站自己的健康检查）
+ * - GET  /healthz-worker     → LB 聚合健康（MOD-HEALTH-AGG），响应体带 LB_VERSION
  * - POST /webhook/tg|/push/jmap|/api/push/register|/api/push/disable|/reconcile、GET /ready → 透传 + 有界故障转移
  * - 其它 → 404 / 405
  *
@@ -38,7 +39,7 @@ const DEFAULT_RECONCILE_TIMEOUT_MS = 320_000;
 /**
  * 健康探测缓存（模块作用域 = CF Worker isolate 内跨请求复用）。
  * 仅存「origin → {at,up,status}」，不含任何 header/body/secret（SAF-LOG-PURITY 精神）。
- * TTL 由 LB_HEALTH_TTL_MS 控制；isolate 冷启时为空，首个 /healthz 全量探测。
+ * TTL 由 LB_HEALTH_TTL_MS 控制；isolate 冷启时为空，首个 /healthz-worker 全量探测。
  */
 const healthCache = new Map();
 
@@ -59,6 +60,7 @@ const ROUTE_METHODS = Object.freeze({
   "/api/push/register": ["POST"],
   "/api/push/disable": ["POST"],
   "/reconcile": ["POST"],
+  "/healthz": ["GET"],
   "/ready": ["GET"],
 });
 
@@ -72,9 +74,11 @@ export async function handleFetch(request, env) {
   const path = new URL(request.url).pathname;
 
   // LB 级健康聚合探针（不含敏感信息，SAF-PROBE-PUBLIC 精神）。
-  if (path === "/healthz") {
+  // 挂在 /healthz-worker：/healthz 保留给源站自己的健康检查（透传），这样入站域名上
+  // 两个健康检查互不遮蔽、能分别看到 LB 与源站的版本。
+  if (path === "/healthz-worker") {
     if (request.method !== "GET") {
-      return text("method not allowed for /healthz", 405, { allow: "GET" });
+      return text("method not allowed for /healthz-worker", 405, { allow: "GET" });
     }
     return handleHealth(env);
   }

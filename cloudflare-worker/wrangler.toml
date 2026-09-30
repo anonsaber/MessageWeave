@@ -46,4 +46,4 @@ compatibility_flags = ["nodejs_compat_v2"]
 # LB_VERSION 是例外——它是版本标识，必须跟代码同版本、可 diff，写进 dashboard 反而容易漂。
 [vars]
 BACKEND_ORIGINS_JSON = '["https://messageweave-eu-1.motofans.club"]'
-LB_VERSION = "2026.10.1"
+LB_VERSION = "2026.10.2"

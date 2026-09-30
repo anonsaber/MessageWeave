@@ -2,7 +2,8 @@
  * 健康聚合探针（稳定 ID：MOD-HEALTH-AGG │ C-NO-DB │ C-REDIS-ONLY-STATE）。
  *
  * 语义：
- * - Worker 暴露 LB 级 `GET /healthz`，聚合探测各后端 origin 的 `/healthz`（后端公开探针，无敏感信息）。
+ * - Worker 暴露 LB 级 `GET /healthz-worker`，聚合探测各后端 origin 的 `/healthz`
+ *   （后端公开探针，无敏感信息）；入站 `/healthz` 保留给源站自己的健康检查（透传）。
  * - 缓存 TTL（默认 30秒）避免健康探测放大；TTL 内复用上次结果，过期后才重探。
  * - 探测失败/超时 → 该 origin 记为 down；`available` 统计存活数。
  * - 仅 HTTP 层健康（<500 记为 up）：**不**检查/代理 Redis、JMAP（C-NO-DB / C-REDIS-ONLY-STATE），
@@ -65,7 +66,7 @@ export async function aggregateHealth(origins, ctx) {
 }
 
 /**
- * 组装 LB 级 `/healthz` 响应：有 ≥1 后端存活 → 200；全 down → 503；无配置 → 200 + 明确标记。
+ * 组装 LB 级 `/healthz-worker` 响应：有 ≥1 后端存活 → 200；全 down → 503；无配置 → 200 + 明确标记。
  * @param {{available:number,total:number,backends:unknown[]}} summary
  * @param {string} [version] 版本标识（env.LB_VERSION）；便于确认线上是哪次部署在回答。
  *   省略时 JSON 不含该字段（JSON.stringify 丢弃 undefined），保持向后兼容。

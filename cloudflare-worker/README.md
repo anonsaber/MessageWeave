@@ -3,7 +3,7 @@
 统一 HTTPS 入口 + 多后端 origin 故障转移（HA/LB 子项目）。
 **透传模型**：Worker 不感知业务，原样转发请求到多个 https 后端 origin；仅「超时 / 5xx」做有界故障转移。
 
-> 本组件是 **safelist 受限的边缘负载均衡器（edge load balancer）**：路由固定 16 条白名单、
+> 本组件是 **safelist 受限的边缘负载均衡器（edge load balancer）**：路由固定 17 条白名单、
 > 后端 origin 在部署期固定且仅允许 https、未知路径一律 404。它只对固定后端做请求转发与
 > 故障转移，不接受任意目标主机，也不提供任何形式的流量中转或访问隐藏能力。
 
@@ -67,7 +67,7 @@
 | `LB_MAX_ATTEMPTS` | 否 | 每请求最多 origin 尝试次数；默认 `2`（= 1 次故障转移）。`POST /reconcile` 固定为 `1`。 |
 | `LB_RECONCILE_TIMEOUT_MS` | 否 | 仅 `POST /reconcile` 的单 origin 超时覆盖；默认 `320000`（须大于后端锁初租 300s + 心跳余量）。 |
 | `LB_HEALTH_TTL_MS` | 否 | 健康探测缓存 TTL；默认 `30000`。 |
-| `LB_VERSION` | 否 | `/healthz` 响应体里的 `version` 字段，用于确认线上是哪次部署在回答；取自 `wrangler.toml` 的 `[vars]`（当前 `2026.10.1`），改 LB 逻辑的提交同时 bump |
+| `LB_VERSION` | 否 | `/healthz-worker` 响应体里的 `version` 字段，用于确认线上是哪次部署在回答；取自 `wrangler.toml` 的 `[vars]`（当前 `2026.10.2`），改 LB 逻辑的提交同时 bump |
 
 > 默认写在 `wrangler.toml` 的 `[vars]`（**明文例外**，因为当前值只是公开可达的 https origin，
 > 不是凭据）。一旦要放内网地址、带内嵌凭据的 URL、或不想公开的 staging 主机名，
