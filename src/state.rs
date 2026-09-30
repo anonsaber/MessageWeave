@@ -239,7 +239,7 @@ pub trait ReliableState: Send + Sync {
 }
 
 pub struct RedisState {
-    connection: redis::aio::MultiplexedConnection,
+    connection: redis::aio::ConnectionManager,
     encryption_key: Option<[u8; 32]>,
 }
 
@@ -255,7 +255,7 @@ impl RedisState {
     ) -> Result<Self, StateError> {
         let client = redis::Client::open(redis_url)?;
         Ok(Self {
-            connection: client.get_multiplexed_async_connection().await?,
+            connection: redis::aio::ConnectionManager::new(client).await?,
             encryption_key,
         })
     }
@@ -827,7 +827,7 @@ fn stream_id_to_message(item: redis::streams::StreamId) -> Option<StreamMessage>
 /// can never be processed, so acknowledging them keeps the consumer group's PEL
 /// from filling up with unclaimable junk; the failure is logged for operators.
 async fn ack_malformed(
-    connection: &mut redis::aio::MultiplexedConnection,
+    connection: &mut redis::aio::ConnectionManager,
     stream: &str,
     group: &str,
     ids: &[String],
@@ -854,7 +854,7 @@ async fn ack_malformed(
 }
 
 async fn set_nx_ex(
-    mut connection: redis::aio::MultiplexedConnection,
+    mut connection: redis::aio::ConnectionManager,
     key: &str,
     ttl_seconds: u64,
 ) -> Result<bool, StateError> {
@@ -1371,7 +1371,7 @@ fn hex_decode(value: &str, max_len: usize) -> Result<Vec<u8>, StateError> {
 }
 
 async fn delete_key(
-    mut connection: redis::aio::MultiplexedConnection,
+    mut connection: redis::aio::ConnectionManager,
     key: &str,
 ) -> Result<(), StateError> {
     let _: i64 = redis::cmd("DEL")

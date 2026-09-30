@@ -12,7 +12,7 @@ axum = "0.8"
 chrono = "0.4"
 # Read-only HTTP JMAP only; keep WebSocket/EventSource out of the dependency graph.
 jmap-client = { version = "=0.4.2", default-features = false, features = ["async", "rustls"] }
-redis = { version = "0.27", default-features = false, features = ["aio", "tokio-comp", "streams", "script", "tokio-rustls-comp"] }
+redis = { version = "0.27", default-features = false, features = ["aio", "tokio-comp", "streams", "script", "tokio-rustls-comp", "connection-manager"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 ring = "0.17.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

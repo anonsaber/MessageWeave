@@ -29,6 +29,7 @@ use crate::notify::{
     business_client, chat_allowlist_snapshot, error_response, probe_jmap_session,
     probe_telegram_get_me, refresh_business_config, worker_authorized, AppState,
 };
+use crate::state::StateError;
 
 const DEFAULT_DEBUG_MESSAGE: &str = "messageweave debug: outbound test OK";
 const MAX_DEBUG_MESSAGE_CHARS: usize = 1024;
@@ -158,9 +159,31 @@ async fn debug_redis(State(app): State<AppState>, headers: HeaderMap) -> Respons
     }
     let body = match app.state.is_enabled().await {
         Ok(enabled) => serde_json::json!({ "reachable": true, "global_enabled": enabled }),
-        Err(_) => serde_json::json!({ "reachable": false, "detail": "redis_probe_failed" }),
+        Err(err) => serde_json::json!({ "reachable": false, "detail": redis_failure_detail(&err) }),
     };
     Json(body).into_response()
+}
+
+/// Classify a Redis probe failure into a stable reason.
+///
+/// `StateError::Redis` carries the underlying `redis::RedisError`, so the class
+/// can be read here without losing information. Previously every failure was
+/// collapsed to the single string `"redis_probe_failed"`, which made an
+/// authentication mistake, a dead TCP connection, and a network outage
+/// indistinguishable from `/debug/redis`. `ErrorKind` is `#[non_exhaustive]`,
+/// so the fallback keeps this compiling across redis minor releases.
+fn redis_failure_detail(err: &StateError) -> &'static str {
+    match err {
+        StateError::Redis(redis_error) => match redis_error.kind() {
+            redis::ErrorKind::AuthenticationFailed => "authentication_failed",
+            redis::ErrorKind::IoError => "io_error",
+            redis::ErrorKind::BusyLoadingError => "busy_loading",
+            redis::ErrorKind::ClientError => "client_error",
+            _ => "response_error",
+        },
+        StateError::Poisoned => "state_lock_poisoned",
+        StateError::Encryption => "encryption_failed",
+    }
 }
 
 /// JMAP reachability. Reuses `probe_jmap_session` so `/ready` and debug can never drift.
