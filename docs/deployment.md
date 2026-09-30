@@ -775,17 +775,32 @@ Stalwart PushSub ────┼─▶ https://lb.<you>.workers.dev      ← 唯
 - 后端各实例 env 必须共享同一组 secret（`C-LB-SHARED-SECRETS`）。
 - 已注册 Cloudflare 账号与 Workers 计划。
 
-**配置**（所有值通过 `wrangler secret` 注入，**禁止**写入 `wrangler.toml` 或 `git` 明文）
+**配置**（origin 列表当前是 `cloudflare-worker/wrangler.toml` 的 `[vars]`，见下方**明文例外**）
 
 ```bash
 cd cloudflare-worker
 npm install --no-audit --no-fund
-npx wrangler secret put BACKEND_ORIGINS_JSON   # JSON 数组，见下方示例
-# 可选（带默认值）
+npx wrangler deploy
+# 可选（带默认值，dashboard 的 Add Variable 或 CLI 二选一）
 npx wrangler secret put LB_REQUEST_TIMEOUT_MS   # 默认 10000ms
 npx wrangler secret put LB_MAX_ATTEMPTS         # 默认 2（首次 + 1 次故障转移）
 npx wrangler secret put LB_RECONCILE_TIMEOUT_MS # 默认 320000ms，仅 POST /reconcile 生效
 npx wrangler secret put LB_HEALTH_TTL_MS        # 默认 30000ms
+```
+
+`wrangler.toml` 里的当前值：
+
+```toml
+[vars]
+BACKEND_ORIGINS_JSON = '["https://messageweave-eu-1.motofans.club"]'
+```
+
+**明文例外及其边界**：origin 只是公开可达的 https 地址，不是凭据，所以可以随仓库走（好处是
+配置在 PR 里可审，预览环境也能拿到）。一旦要放内网地址、带内嵌凭据的 URL、或不想公开的
+staging 主机名，立刻从 `[vars]` 删掉、改用 secret 注入（git 历史不可逆，删掉不等于没进过库）：
+
+```bash
+npx wrangler secret put BACKEND_ORIGINS_JSON
 ```
 
 `BACKEND_ORIGINS_JSON` 示例（**仅允许 `https://` origin**，其它会让配置解析失败，`C-HTTPS-INBOUND`）：
@@ -884,9 +899,10 @@ Git 集成**必须改的四个字段**（Cloudflare 的默认值对不上本仓�
 4. **`wrangler preview` 子命令不存在。** wrangler 4.144.0 的子命令只有 `dev` / `deploy` /
    `deployments`，默认那个值填了必然失败。预览命令填 `npx wrangler dev --ip 0.0.0.0 --port 8787`
    （8787 是 `wrangler dev` 的默认端口，`--ip 0.0.0.0` 让 Cloudflare 的预览代理能连进来）。
-   ⚠️ 预览环境**没有** `BACKEND_ORIGINS_JSON`（secret 只存在于你的账号配置，仓库里不该有
-   `.dev.vars`），所以预览只能验证「Worker 能被拉起 + 路由表生效 + `/healthz` 返回 200 但
-   `status` 是 `no-backends`」，**不能**验证后端转发。后端转发只能看生产。
+   ⚠️ 但预览环境**拿不到** dashboard 里加的 secret：现在 `BACKEND_ORIGINS_JSON` 写在
+   `wrangler.toml` 的 `[vars]` 里，预览因此也能跑通转发；**一旦改回 secret 注入**，预览就只剩
+   「Worker 能被拉起 + 路由表生效 + `/healthz` 返回 200 但 `status` 是 `no-backends`」，
+   **不能**验证后端转发，转发只能看生产。（仓库里也不该有 `.dev.vars`，它只对 `wrangler dev` 生效。）
 
 **Node 版本不用管。** Cloudflare 环境实测给的是 `nodejs@24.18.0`，本地在 Node 24.21.0 与
 22.23.3 上都验过（32/32 通过）。**wrangler 已升到 4.144.0**：3.114.17 在 CI 里会打印
