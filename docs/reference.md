@@ -1,5 +1,7 @@
 # MessageWeave — Reference
 
+> [中文版本 / Chinese version → reference.zh-CN.md](reference.zh-CN.md)
+
 > **This file is the single source of truth for verifiable facts.**
 > When any other document disagrees with this one, this one wins.
 >
@@ -216,6 +218,7 @@ admin route; §5.1 explains why that is deliberate.
 | POST | `/webhook/tg` | `telegram_webhook` |
 | POST | `/push/jmap` | `jmap_push` |
 | POST | `/api/push/register` | `register_push` |
+| POST | `/api/telegram/register-webhook` | `register_telegram_webhook` |
 | POST | `/api/push/disable` | `disable_push` |
 | POST | `/reconcile` | `reconcile` |
 | POST | `/worker` | `worker` |
@@ -294,22 +297,20 @@ all: a path missing from `SAFE_ROUTES` returns **404**, a registered
 path with the wrong method returns **405**, and a missing or unparseable
 backend pool returns **503** rather than passing the request through.
 
-**Forwarded by the worker (16):**
+**Forwarded by the worker (19):**
 
 `/` · `/assets/config.js` · `/assets/styles.css` · `/api/status` · `/api/config` ·
 `/api/business-config` · `/api/business-config/preflight` · `/api/admin/session` ·
 `/api/admin/session/revoke` ·
 `/api/enabled` ·
-`/webhook/tg` · `/push/jmap` · `/api/push/register` · `/api/push/disable` · `/reconcile` ·
-`/ready`
+`/webhook/tg` · `/push/jmap` · `/api/push/register` · `/api/telegram/register-webhook` · `/api/push/disable` · `/reconcile` ·
+`/worker` · `/ready` · `/healthz`
 
-**Registered on the backend but NOT forwarded (4):**
+**Registered on the backend but NOT forwarded (2):**
 
 | Path | Why it is absent from the gateway |
 |---|---|
 | `POST /api/bootstrap` | One-shot trust bootstrap; kept off the public path |
-| `POST /worker` | Queue drain endpoint — driven by the external scheduler, not a human (Bearer-auth'd; the cron is spelled out in deployment.md §6.3.1); not part of the public gateway path |
-| `GET /healthz` | Liveness is aggregated by the gateway itself |
 | `/debug/*` (7 routes) | Opt-in remote-debug surface (`SAF-DEBUG-GATE`); absent from `SAFE_ROUTES`, so it is reachable **only** by talking to the backend origin directly |
 
 `GET, PUT /api/enabled` (the `SAF-ENABLE-FLAG` kill switch) **is** forwarded, because the
@@ -318,18 +319,17 @@ reads it, the toggle writes it); both calls are
 admin-session Bearer-auth'd, so the exposure is identical to the already-forwarded
 `/api/admin/session` pair.
 
-Consequence: none of the four carries external business traffic, so no second ingress is
+Consequence: neither remaining route carries external business traffic, so no second ingress is
 needed in front of the backend instances. The SPA's first-boot flow still cannot drive
 `/api/bootstrap` through the worker — bootstrap must be performed against the backend origin
 directly, or the bootstrap path must be added to the gateway allowlist.
 
-`POST /api/push/register` and `POST /api/push/disable` **are** forwarded. Both are safe to
+`POST /api/push/register`, `POST /api/telegram/register-webhook` and `POST /api/push/disable` **are** forwarded. These are safe to
 proxy: the callback URL is supplied by the client in the request body and
 validated as a URL before anything is written, and every push subscription record is
 written to and read back from the shared Redis (`lock:push-register:{sha256(url)}`, `get_push_subscription_for_callback`),
 so it does not matter which backend instance the worker picks. Push
-registration therefore no longer requires hitting a specific backend address — see
-deployment.md §10.5.
+registration therefore no longer requires hitting a specific backend address. After an operator saves business configuration, the SPA submits both callback URLs through these protected endpoints.
 
 ---
 
@@ -649,3 +649,117 @@ External dependencies, all reachable and returning HTTP 200 at the time of verif
 Not linked because they do not resolve to documentation: `crates.io/crates/jmap-client`
 (404) and `platform.openai.com` documentation paths (403). The project describes the LLM
 dependency as OpenAI-compatible and documents it through `reqwest` instead.
+
+## 9. Deployment platform details
+
+The operator-facing sequence is in [`deployment.md`](deployment.md). This section keeps
+platform-specific behavior and settings that are useful when configuring or diagnosing a
+deployment.
+
+### 9.1 Backend deployment paths
+
+**HostStack production path.** The repository's `hoststack.yaml` is the production
+configuration for HostStack's native Rust runtime. It runs `cargo fetch --locked`, builds
+with `cargo build --release --locked`, starts `./target/release/message-weave`, and uses
+`/healthz` for liveness. Set `REDIS_URL` and `CONFIG_ENCRYPTION_KEY` as encrypted service
+secrets. The service commands declared in YAML override stored dashboard commands; removing
+the file can restore HostStack's default `./target/release/app`, which is not this package's
+binary. Keep the YAML checked in unless all dashboard commands have been corrected and a
+replacement deployment has been verified.
+
+The HostStack path does not execute the repository Dockerfile. Its builder and runner are
+managed by the platform. The Dockerfile is for local container runs and Docker-based hosts.
+
+**Docker image path.** The root Dockerfile has two stages:
+
+1. `rust:1-slim-bookworm` builds the release binary with the locked Cargo dependencies.
+2. `debian:bookworm-slim` receives that binary, CA certificates, `tini`, and read-only
+   diagnostic tools (`curl`, `procps`, `iproute2`, `jq`, and `netcat-openbsd`). It creates
+   and runs as the `messageweave` system user, sets `PORT=8080`, exposes only that port, and
+   starts the service through `tini`.
+
+The image has no Redis process, database, or persistent data volume. Runtime configuration is
+injected by the host; secrets do not enter build arguments or image layers. Docker-platform
+health checks should call the HTTP endpoints described in [`deployment.md`](deployment.md).
+
+### 9.2 Backend configuration and secrets
+
+The process reads only `REDIS_URL` and `CONFIG_ENCRYPTION_KEY` at startup. The optional
+remote-debug surface uses the independent `DEBUG_ENABLED` switch and `DEBUG_TOKEN`; leave
+both unset in production unless remote diagnostics are deliberately enabled. Full startup
+variable semantics and Redis business configuration fields are in [§5](#5-environment-variables).
+
+Telegram, JMAP, allowlist, worker, reconcile, and LLM business settings are Redis-resident,
+not process environment variables. The field list and validation rules in [§5.2](#52-redis-resident-business-configuration)
+are authoritative. A successful initial save can use the one-shot `/api/bootstrap` endpoint
+on the backend origin; that route is not exposed through the Worker. Subsequent edits use the
+protected configuration API.
+
+### 9.3 Callback registration and scheduled work
+
+Telegram's `setWebhook` request must use the configured webhook secret and include `message`
+in `allowed_updates`. Check the resulting URL with `getWebhookInfo`; Telegram does not return
+the secret in that response. Re-run `setWebhook` after rotating the secret.
+
+Register Stalwart push with `POST /api/push/register` and an HTTPS `callback_url`. The backend
+creates the subscription and completes Stalwart's verification callback. Repeating the same
+callback URL is idempotent. Use `POST /api/push/disable` with that URL to remove it.
+
+The backend has no internal scheduler. [`scripts/cron-drain.sh`](../scripts/cron-drain.sh)
+calls `/reconcile` (when `MW_RECONCILE_TOKEN` is set) and then `/worker`. Configure
+`MW_APP_URL`, `MW_WORKER_TOKEN`, and optionally `MW_RECONCILE_TOKEN` in the external
+scheduler's secret store. `MW_WORKER_URL` can override the default when the operator needs
+to call a backend origin directly. `--once` is for cron; `--loop` is for a managed process.
+The script also provides `--diagnose` and `--test-notify` for troubleshooting. Both successful
+drain endpoints return `204` with an empty response body; `/reconcile` can return `409` while
+another reconciliation owns the lock.
+
+### 9.4 Health and release checks
+
+- `GET /healthz` is backend liveness. It does not prove Redis or upstream services are ready.
+- `GET /ready` checks configuration, Redis, the JMAP session, and Telegram's `getMe` endpoint.
+  It returns `503` with `Retry-After` when a dependency is unavailable. The upstream checks
+  need outbound HTTPS access from the backend.
+- `GET /api/status` reports boot readiness and missing required boot-variable names.
+- `GET /healthz-worker` is generated by the Worker. Check both `available >= 1` and `version`;
+  HTTP 200 alone can mean `no-backends` when the origin configuration is missing.
+
+For the backend code gate, use the locked commands and container environment in
+[`charter.md`](charter.md). The documentation gate must run on the host so its
+path audit can read Git history.
+
+### 9.5 Cloudflare Worker and Dashboard
+
+The Worker is an optional HTTPS gateway. The backend origins must be HTTPS strings, with no
+path, query, fragment, or embedded credentials. The current public origin list and
+`LB_VERSION` are declared in `cloudflare-worker/wrangler.toml` under `[vars]`. Move
+`BACKEND_ORIGINS_JSON` to an encrypted secret only when its values are private; never store
+credentials in that list. The Worker itself does not hold Telegram, JMAP, Redis, or backend
+business credentials.
+
+| Setting | Dashboard value | Notes |
+|---|---|---|
+| Root directory | `cloudflare-worker` | The repository root contains the Rust service, not the Worker configuration. |
+| Application name | `messageweave-lb` | Match the `name` in `wrangler.toml`. |
+| Build command | Leave empty | Wrangler bundles the Worker during deploy; this field is not the test command. |
+| Deploy command | `npx wrangler deploy` | Keep this command in the required deploy field. |
+| Preview command | `npx wrangler dev --ip 0.0.0.0 --port 8787` | Use when preview builds are enabled; `wrangler preview` is not a valid command. |
+
+In the Dashboard, add Worker tuning values under **Settings → Variables & Secrets → Add
+Variable**. Defaults are `LB_REQUEST_TIMEOUT_MS=10000`, `LB_MAX_ATTEMPTS=2`,
+`LB_RECONCILE_TIMEOUT_MS=320000`, `LB_WORKER_TIMEOUT_MS=300000`, and
+`LB_HEALTH_TTL_MS=30000`. These are adjustable variables, not secrets. `LB_VERSION` belongs
+in `[vars]` so the deployed version stays visible in source control.
+
+If a private origin list must be stored in the Dashboard, use **Encrypt** and add
+`BACKEND_ORIGINS_JSON` under **Settings → Variables & Secrets**; remove its `[vars]` entry.
+Changes to encrypted variables take effect without a code rebuild. Preview environments only
+receive secrets configured for that environment; a preview without the origin list can start
+but cannot verify backend forwarding.
+
+For Git integration, push the selected commit to the GitHub repository connected to
+Cloudflare after setting the `cloudflare-worker` root directory. The build command can be
+empty; run `npm test` separately as the Worker code check. After deploy, request
+`/healthz-worker`, confirm `available` is at least one, and check that `version` matches
+`LB_VERSION`. `status: no-backends` with HTTP 200 means the Worker has no usable origin list;
+`status: down` with HTTP 503 means all configured backends failed their health check.

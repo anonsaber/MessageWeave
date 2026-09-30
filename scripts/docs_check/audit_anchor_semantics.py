@@ -46,8 +46,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 DOCS = ['AGENTS.md', 'README.md', 'README.zh-CN.md', 'docs/design.md',
-        'docs/deployment.md', 'docs/reference.md', 'docs/retired.md',
-        'docs/opengaps.md', 'docs/charter.md', 'cloudflare-worker/README.md']
+        'docs/design.zh-CN.md', 'docs/deployment.md', 'docs/deployment.zh-CN.md',
+        'docs/reference.md', 'docs/reference.zh-CN.md', 'docs/retired.md',
+        'docs/retired.zh-CN.md', 'docs/opengaps.md', 'docs/opengaps.zh-CN.md',
+        'docs/charter.md', 'docs/charter.zh-CN.md', 'cloudflare-worker/README.md']
 
 FILE = r'((?:[A-Za-z0-9_.-]+/)?[A-Za-z0-9_-]+)'
 EXT = r'\.(rs|js):(\d+)'

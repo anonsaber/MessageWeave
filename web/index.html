@@ -138,6 +138,15 @@
           </form>
         </section>
 
+        <section class="panel config-section" aria-labelledby="callback-title">
+          <div class="section-heading">
+            <div><p class="eyebrow" data-i18n="callback.eyebrow">External callbacks</p><h2 id="callback-title" data-i18n="callback.title">Register Telegram and Stalwart callbacks</h2></div>
+          </div>
+          <p class="section-copy" data-i18n="callback.copy">Save the business configuration first. Enter the public HTTPS origin that receives callbacks, then register both services from this page.</p>
+          <div class="field field-wide"><label for="callback-origin" data-i18n="callback.originLabel">Public HTTPS origin</label><input id="callback-origin" type="url" inputmode="url" autocomplete="url" placeholder="https://mail.example.com" data-i18n-placeholder="callback.originPlaceholder"/><small data-i18n="callback.originHint">Use the Worker URL when enabled; otherwise use the backend URL. Enter only the origin, without a path.</small></div>
+          <div class="form-footer"><p id="callback-state" class="save-state" aria-live="polite" data-i18n="callback.state">Registration is an explicit action and can be repeated safely.</p><div class="form-actions"><button id="callback-register-button" class="button button-primary" type="button" disabled data-i18n="callback.register">Register callbacks</button></div></div>
+        </section>
+
         <section class="panel config-section runtime-section" aria-labelledby="runtime-title">
           <div class="section-heading">
             <div><p class="eyebrow" data-i18n="runtime.eyebrow">Outbound requests</p><h2 id="runtime-title" data-i18n="runtime.title">Timeouts and retries</h2></div>

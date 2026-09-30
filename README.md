@@ -31,11 +31,9 @@ State is an architectural boundary here, not a preference.
 
 Requires a reachable Redis 7 instance and a JMAP session plus a Telegram bot token.
 
-**This is the local/dev path.** The repo's `Dockerfile` is for local `docker run` only --
-production does not execute it. Live deploys run from `hoststack.yaml` with
-`runtime: rust`, which HostStack builds in its own `rust:slim-trixie` image and runs in its
-own `debian:trixie-slim` runner, so the Dockerfile's diagnostic tools, `ENTRYPOINT` and
-`EXPOSE` do not apply there. See `docs/deployment.md` §3 and §5.1 for the boundary.
+**This is a local container smoke test.** Production deployment can use any platform that
+can run the backend container, inject encrypted secrets, and connect to externally managed
+Redis. See `docs/deployment.md` §3 and the platform-specific reference in `docs/reference.md`.
 
 ```sh
 cp .env.example .env           # fill REDIS_URL and CONFIG_ENCRYPTION_KEY

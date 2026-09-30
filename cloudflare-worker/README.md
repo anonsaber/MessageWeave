@@ -36,7 +36,7 @@
 
 ### 路由 safelist（ARCH-LB-WORKER / C-LB-SINGLE-REG-URL）
 - 透传公开 `GET /api/status` 启动状态，以及管理 SPA API：`POST /api/admin/session[/revoke]`、`GET|PUT /api/enabled`（业务总开关，SPA 服务卡片读写）、`GET|PUT /api/config`、`GET|PUT /api/business-config`（读回 + 增量保存）、`POST /api/business-config/preflight`（保存前逐组件连通性预检）。启动状态只包含缺少的环境变量名称；管理 API 的鉴权仍由后端执行。
-- 只透传 `POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/push/disable`、`POST /reconcile`、`POST /worker`、`GET /ready`。
+- 只透传 `POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/telegram/register-webhook`、`POST /api/push/disable`、`POST /reconcile`、`POST /worker`、`GET /ready`。
 - 其它路径 → **404**（不透传，避免 Worker 沦为后端任意路径的跳板）。
 - method 不符 → **405**。
 

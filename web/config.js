@@ -210,6 +210,22 @@
       "login.503": "Redis unavailable or initialization incomplete; unable to create an admin session right now. Retry shortly.",
       "login.status": "Unable to create an admin session (HTTP {status}).",
       "login.fail": "Unable to connect to the admin service; check the network and retry.",
+      "callback.eyebrow": "External callbacks",
+      "callback.title": "Register Telegram and Stalwart callbacks",
+      "callback.copy": "Save the business configuration first. Enter the public HTTPS origin that receives callbacks, then register both services from this page.",
+      "callback.originLabel": "Public HTTPS origin",
+      "callback.originPlaceholder": "https://mail.example.com",
+      "callback.originHint": "Use the Worker URL when enabled; otherwise use the backend URL. Enter only the origin, without a path.",
+      "callback.state": "Registration is an explicit action and can be repeated safely.",
+      "callback.saveFirst": "Save the current business configuration before registering callbacks.",
+      "callback.register": "Register callbacks",
+      "callback.registerBusy": "Registering…",
+      "callback.done": "Telegram and Stalwart callbacks registered.",
+      "callback.partial": "Telegram registration: {telegram}. Stalwart registration: {stalwart}.",
+      "callback.invalidOrigin": "Enter an HTTPS origin without a path, credentials, query, or fragment.",
+      "callback.telegramOk": "registered",
+      "callback.pushOk": "registered",
+      "callback.failed": "failed",
     },
     zh: {
       "app.title": "业务配置 · MessageWeave",
@@ -411,6 +427,22 @@
       "login.fail": "无法连接管理服务，请检查网络后重试。",
       "timezone.title": "通知显示",
       "timezone.desc": "Telegram 通知中的收件时间按此时区渲染。",
+      "callback.eyebrow": "外部回调",
+      "callback.title": "注册 Telegram 和 Stalwart 回调",
+      "callback.copy": "先保存业务配置，再输入接收回调的公开 HTTPS 地址。本页会向两个服务注册回调。",
+      "callback.originLabel": "公开 HTTPS 地址",
+      "callback.originPlaceholder": "https://mail.example.com",
+      "callback.originHint": "启用 Worker 时填写 Worker 地址，否则填写后端地址。只填写站点 origin，不带路径。",
+      "callback.state": "注册需要显式操作，可以安全地重复执行。",
+      "callback.saveFirst": "请先保存当前业务配置，再注册回调。",
+      "callback.register": "注册回调",
+      "callback.registerBusy": "正在注册…",
+      "callback.done": "Telegram 和 Stalwart 回调均已注册。",
+      "callback.partial": "Telegram 注册：{telegram}。Stalwart 注册：{stalwart}。",
+      "callback.invalidOrigin": "请输入不带路径、凭据、查询参数或片段的 HTTPS origin。",
+      "callback.telegramOk": "已注册",
+      "callback.pushOk": "已注册",
+      "callback.failed": "失败",
       "timezone.hint": "仅支持固定偏移时区；不跟踪夏令时。",
     },
   });
@@ -576,6 +608,9 @@
   const logoutButton = document.querySelector("#logout-button");
   const defaultsButton = document.querySelector("#defaults-button");
   const businessSaveButton = document.querySelector("#business-save-button");
+  const callbackOrigin = document.querySelector("#callback-origin");
+  const callbackRegisterButton = document.querySelector("#callback-register-button");
+  const callbackState = document.querySelector("#callback-state");
   const runtimeSaveButton = document.querySelector("#runtime-save-button");
   const businessSaveState = document.querySelector("#business-save-state");
   const runtimeSaveState = document.querySelector("#runtime-save-state");
@@ -629,6 +664,7 @@
     reloadButton.disabled = busy || !adminSession;
     logoutButton.disabled = busy || !adminSession;
     businessSaveButton.disabled = busy || !adminSession;
+    callbackRegisterButton.disabled = busy || !adminSession || businessBaseline === null || businessSaveState.classList.contains("is-dirty");
     preflightButton.disabled = busy || !adminSession;
     runtimeSaveButton.disabled = busy || !runtimeLoaded || !adminSession;
     defaultsButton.disabled = busy || !runtimeLoaded || !adminSession;
@@ -640,6 +676,7 @@
     businessSaveButton.querySelector(".button-label").textContent = busy && busyAction === "business-save" ? t("business.saveBusy") : t("business.save");
     runtimeSaveButton.querySelector(".button-label").textContent = busy && busyAction === "runtime-save" ? t("runtime.saveBusy") : t("runtime.save");
     preflightButton.textContent = busy && busyAction === "business-preflight" ? t("business.preflightBusy") : t("business.preflight");
+    callbackRegisterButton.textContent = busy && busyAction === "callback-register" ? t("callback.registerBusy") : t("callback.register");
   }
 
   function setBusy(action = "") {
@@ -1353,6 +1390,59 @@
   // configuration stays live either way. It reuses readBusinessConfig() so preflight and save
   // can never disagree about whether the form is complete.
   preflightButton.addEventListener("click", runBusinessPreflight);
+
+  callbackRegisterButton.addEventListener("click", async () => {
+    if (!adminSession || busyAction) return;
+    if (businessBaseline === null || businessSaveState.classList.contains("is-dirty")) {
+      callbackState.textContent = t("callback.saveFirst");
+      return;
+    }
+    let origin;
+    try {
+      origin = new URL(callbackOrigin.value.trim());
+      if (origin.protocol !== "https:" || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash) throw new Error();
+    } catch {
+      callbackState.textContent = t("callback.invalidOrigin");
+      callbackOrigin.focus();
+      return;
+    }
+    const base = origin.origin;
+    setBusy("callback-register");
+    const results = { telegram: false, stalwart: false };
+    try {
+      try {
+        await request("/api/telegram/register-webhook", "POST", { callback_url: `${base}/webhook/tg` });
+        results.telegram = true;
+      } catch (error) {
+        if (error.status === 401) {
+          expireSession(t("session.invalidBusiness"));
+          return;
+        }
+      }
+      try {
+        await request("/api/push/register", "POST", { callback_url: `${base}/push/jmap` });
+        results.stalwart = true;
+      } catch (error) {
+        if (error.status === 401) {
+          expireSession(t("session.invalidBusiness"));
+          return;
+        }
+      }
+      if (results.telegram && results.stalwart) {
+        callbackState.textContent = t("callback.done");
+        showNotice("success", t("callback.done"));
+      } else {
+        const text = t("callback.partial", {
+          telegram: results.telegram ? t("callback.telegramOk") : t("callback.failed"),
+          stalwart: results.stalwart ? t("callback.pushOk") : t("callback.failed"),
+        });
+        callbackState.textContent = text;
+        showNotice("error", text);
+      }
+    } finally {
+      setBusy("");
+    }
+  });
 
   async function runBusinessPreflight() {
     if (!adminSession || busyAction) return;

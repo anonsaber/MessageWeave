@@ -46,7 +46,7 @@ test("route safelist forwards /healthz, /reconcile and /worker, blocks unknown p
   for (const r of [
     "/", "/assets/config.js", "/assets/styles.css", "/api/status", "/ready", "/webhook/tg", "/push/jmap", "/reconcile",
     "/worker",
-    "/api/push/register", "/api/push/disable",
+    "/api/push/register", "/api/telegram/register-webhook", "/api/push/disable",
     "/api/config", "/api/business-config", "/api/business-config/preflight",
     "/api/admin/session", "/api/admin/session/revoke",
     "/api/enabled", "/healthz",

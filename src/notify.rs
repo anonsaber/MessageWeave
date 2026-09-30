@@ -1435,6 +1435,72 @@ async fn register_push(State(app): State<AppState>, headers: HeaderMap, body: By
     axum::Json(serde_json::json!({"push_subscription_id": subscription_id})).into_response()
 }
 
+/// Registers Telegram's webhook without exposing the bot token to browser code.
+async fn register_telegram_webhook(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !config_authorized(&app, &headers).await {
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
+    }
+    let Ok(request) = serde_json::from_slice::<PushRegistration>(&body) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
+    };
+    let Ok(url) = url::Url::parse(&request.callback_url) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
+    };
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
+    }
+    refresh_business_config(&app).await;
+    let config = app
+        .business_runtime
+        .read()
+        .ok()
+        .and_then(|value| value.clone());
+    let Some(config) = config else {
+        return error_response(StatusCode::CONFLICT, "conflict", false);
+    };
+    let endpoint = format!(
+        "https://api.telegram.org/bot{}/setWebhook",
+        config.bot_token.expose_secret()
+    );
+    let result = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(15))
+        .build();
+    let Ok(client) = result else {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
+    };
+    let response = client
+        .post(endpoint)
+        .json(&serde_json::json!({
+            "url": request.callback_url,
+            "secret_token": config.telegram_webhook_secret.expose_secret(),
+            "allowed_updates": ["message"]
+        }))
+        .send()
+        .await;
+    let Ok(response) = response else {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
+    };
+    if !response.status().is_success() {
+        return error_response(StatusCode::BAD_GATEWAY, "upstream_error", false);
+    }
+    let Ok(body) = response.json::<serde_json::Value>().await else {
+        return error_response(StatusCode::BAD_GATEWAY, "upstream_error", true);
+    };
+    if !body
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return error_response(StatusCode::BAD_GATEWAY, "upstream_error", false);
+    }
+    axum::Json(serde_json::json!({ "registered": true })).into_response()
+}
+
 /// Disable and remove a persisted push registration. Destruction is attempted
 /// before deleting the callback mapping so a transient JMAP failure is
 /// retryable and cannot silently orphan a live subscription.
@@ -1762,6 +1828,10 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
         .route("/webhook/tg", post(telegram_webhook))
         .route("/push/jmap", post(jmap_push))
         .route("/api/push/register", post(register_push))
+        .route(
+            "/api/telegram/register-webhook",
+            post(register_telegram_webhook),
+        )
         .route("/api/push/disable", post(disable_push))
         .route("/reconcile", post(reconcile))
         .route("/worker", post(worker))
@@ -1980,6 +2050,7 @@ mod tests {
             ("POST", "/webhook/tg"),
             ("POST", "/push/jmap"),
             ("POST", "/api/push/register"),
+            ("POST", "/api/telegram/register-webhook"),
             ("POST", "/api/push/disable"),
             ("POST", "/reconcile"),
             ("POST", "/worker"),
@@ -2976,6 +3047,31 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
+    }
+
+    #[tokio::test]
+    async fn telegram_webhook_registration_requires_auth_and_https_url() {
+        let (router, _state) = push_router(PushMockWorker {
+            create_id: Some("sub-1"),
+            destroy_ok: true,
+        });
+        let path = "/api/telegram/register-webhook";
+        let body = r#"{"callback_url":"https://example.com/webhook/tg"}"#;
+        let unauthorized = router
+            .clone()
+            .oneshot(push_req(path, body, None))
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        let insecure = router
+            .oneshot(push_req(
+                path,
+                r#"{"callback_url":"http://example.com/webhook/tg"}"#,
+                Some("worker-secret"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(insecure.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

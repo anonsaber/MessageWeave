@@ -87,12 +87,12 @@ Telegram 发送。它由双因子开关控制——进程必须带 `--debug` **�
 
 | 文档 | 回答什么 |
 |---|---|
-| [`docs/design.md`](docs/design.md) | 为什么这样设计：数据流、JMAP 语义、Redis streams、AI 授权规则 |
-| [`docs/deployment.md`](docs/deployment.md) | 怎么部署：Dockerfile、secrets、Redis 托管、webhook/push/对账路由、多实例负载均衡 |
-| [`docs/reference.md`](docs/reference.md) | **可核对事实的唯一权威来源**——Redis 键与 TTL、错误码、路由、环境变量分层、预算常量 |
-| [`docs/opengaps.md`](docs/opengaps.md) | 缺口、阻塞项与下一阶段目标 |
-| [`docs/retired.md`](docs/retired.md) | 试过但没用的：废弃路线、未落地的设计与从未存在的名字 |
-| [`docs/charter.md`](docs/charter.md) | 项目章程：项目目标、锁定的技术选型、安全不变量、禁止事项与稳定 ID 注册表 |
+| [`docs/design.zh-CN.md`](docs/design.zh-CN.md) | 为什么这样设计：数据流、JMAP 语义、Redis streams、AI 授权规则 |
+| [`docs/deployment.zh-CN.md`](docs/deployment.zh-CN.md) | 怎么部署：Dockerfile、secrets、Redis 托管、webhook/push/对账路由、多实例负载均衡 |
+| [`docs/reference.zh-CN.md`](docs/reference.zh-CN.md) | **可核对事实的唯一权威来源**——Redis 键与 TTL、错误码、路由、环境变量分层、预算常量 |
+| [`docs/opengaps.zh-CN.md`](docs/opengaps.zh-CN.md) | 缺口、阻塞项与下一阶段目标 |
+| [`docs/retired.zh-CN.md`](docs/retired.zh-CN.md) | 试过但没用的：废弃路线、未落地的设计与从未存在的名字 |
+| [`docs/charter.zh-CN.md`](docs/charter.zh-CN.md) | 项目章程：项目目标、锁定的技术选型、安全不变量、禁止事项与稳定 ID 注册表 |
 | [`AGENTS.md`](AGENTS.md) | 语言无关的工程规范：代码风格、配置与密钥、构建环境、测试门禁、文档治理 |
 
 重要的事实都可追溯。两份文档不一致时，以 `docs/reference.md` 为准。

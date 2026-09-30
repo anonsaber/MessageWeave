@@ -22,6 +22,7 @@ export const SAFE_ROUTES = Object.freeze([
   "/webhook/tg",
   "/push/jmap",
   "/api/push/register",
+  "/api/telegram/register-webhook",
   "/api/push/disable",
   "/reconcile",
   "/worker",

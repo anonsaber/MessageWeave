@@ -18,7 +18,7 @@
  *   → 透传至后端；后端校验 bootstrap 凭据或短期 admin session
  * - GET  /healthz            → 透传到源站（源站自己的健康检查）
  * - GET  /healthz-worker     → LB 聚合健康（MOD-HEALTH-AGG），响应体带 LB_VERSION
- * - POST /webhook/tg|/push/jmap|/api/push/register|/api/push/disable、GET /ready → 透传 + 有界故障转移
+ * - POST /webhook/tg|/push/jmap|/api/push/register|/api/telegram/register-webhook|/api/push/disable、GET /ready → 透传 + 有界故障转移
  * - POST /reconcile|/worker → 外部 cron 触发的同步长任务，长超时 + 单发不故障转移
  * - 其它 → 404 / 405
  *
@@ -65,6 +65,7 @@ const ROUTE_METHODS = Object.freeze({
   "/webhook/tg": ["POST"],
   "/push/jmap": ["POST"],
   "/api/push/register": ["POST"],
+  "/api/telegram/register-webhook": ["POST"],
   "/api/push/disable": ["POST"],
   "/reconcile": ["POST"],
   "/worker": ["POST"],

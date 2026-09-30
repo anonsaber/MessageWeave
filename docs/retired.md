@@ -1,159 +1,161 @@
-# 废弃与未采用路线（Retired Routes）
+# Abandoned and unused routes (Retired Routes)
 
-> 本文只记录**三类**东西：①评估过但没采纳的路线；②真实存在过、后来被删掉的文档；③曾经写进文档、实际上从未存在或从未实现的名字。
-> 目的是**留原因、防复发**——以后看到这些名字，能立刻知道该用什么。
-> 当前真实实现与可核对事实见 `docs/reference.md`；缺口与阻塞见 `docs/opengaps.md`；当前设计见 `docs/design.md`。
-> 本文**没有行动项**。若某条变成要做的事，去 `docs/opengaps.md` 登记，本文条目保留为决策依据。
-> 本文**不引用任何不存在的路径**：凡路径，一律指向仓库中真实存在的文件；曾被写进文档但从未落地的路径只以文字描述其形态、不逐字复述，以免又被抄回正文或被人当成真实文件去查阅。
-> 验证基线：`b2dbe7c`。
+> [中文版本 / Chinese version → retired.zh-CN.md](retired.zh-CN.md)
+
+> This article only records **three categories** of things: ① routes that were evaluated but not adopted; ② documents that actually existed but were later deleted; ③ names that were once written into documents but never actually existed or were never implemented.
+> The purpose is to retain the cause and prevent recurrence** - when you see these names in the future, you can immediately know what to use.
+> See `docs/reference.md` for the current real implementation and verifiable facts; `docs/opengaps.md` for gaps and blocking; see `docs/design.md` for the current design.
+> This article has **no action items**. If something becomes something to do, go to `docs/opengaps.md` to register, and the entries in this article will be retained as a basis for decision-making.
+> This article **does not cite any non-existent paths**: all paths point to files that actually exist in the warehouse; paths that have been written into documents but have never been implemented will only describe their form in text and will not be repeated verbatim to avoid being copied back into the text or viewed as real files.
+> Verify baseline: `b2dbe7c`.
 
 ---
 
-## 1. 未采用的路线
+## 1. Route not taken
 
-| 条目 | 类型 | 原因 | 替代或现状 |
+| Entry | Type | Reason | Alternative or Current Status |
 |---|---|---|---|
-| `teloxide`（Telegram Bot 框架） | 未采用 | Telegram 只需少量 API 调用，不引入重框架（dptree / 会话中间件），减少依赖面与抽象层；`reqwest` 已按 `ARCH-DEPS-STAGE4` 引入 | `src/channel.rs` 用 `reqwest` 自研实现 |
-| teloxide 计划 feature 集（`macros` / `rustls` / `redis-session` / `throttle` / `webhooks-axum`） | 未实施 | 随 teloxide 未采用而失效 | — |
-| `teloxide-core` 降级方案 | 未采用 | 降级前提是「用 teloxide 太重」；既然整体不引入，降级前提不成立 | — |
-| `grammers` / 旧 `telegram-bot` crate | 未采用 | 直接封 Bot API + 自研即可满足需求 | `src/channel.rs` |
-| `BotError::Telegram(#[from] teloxide::errors::RequestError)` | 目标形态变体，未落地 | 依附 teloxide，随其废弃 | 无 |
-| `BotError::Jmap` / `Storage` / `RateLimited` / `Unauthorized` / `Llm` | 目标形态变体，未落地 | 当时为统一承接 JMAP/Redis/限流/授权/LLM 五类错误而设计；现已由各模块自行处理 | 当前 `BotError` 仅 `Config` / `Io` / `Json` / `State` 四变体（`src/error.rs` 全文） |
-| Telegram 服务端 30 msg/s 限流桶 | 目标设计，未实现 | 无真实 Bot 压测数据，不预设实现；服务端分桶由 TG API 自身承担，bot 侧只做退避 | 429 专用分支**已实现**（`src/channel.rs`：解析响应体 `parameters.retry_after` 并钳 ≤60s，优先用服务器指定值否则指数退避），因此本行不构成缺口；服务端限流桶的当前处置仍是 `max_retries`（默认 3，硬上限 5）通用重试 |
-| 多步对话 FSM（`Idle` / `AwaitClarify` / `AwaitConfirm` / `Analyzing` / `AwaitFallback`） | 目标设计，未落地 | 当前 AI 授权只需一个布尔+过期时间，多步态属过度设计 | Redis TTL 授权态，键与 TTL 见 `docs/reference.md` 的 AI 授权态一节 |
-| 把领域 / 渠道 / 通知 / util 各层拆成独立目录（子模块拆分方案） | 目标形态目录，未落地 | 代码量未到需要拆分的规模 | 实际结构见 `docs/design.md` 的工程结构一节：领域层是 `src/domain.rs` + `src/domain/jmap/`（仅 `client.rs`）；LLM 在 `src/ai.rs`；通知在 `src/notify.rs`；加密与工具逻辑内联在 `src/state.rs` / `src/config.rs`，没有独立的 util 层，也没有集成测试目录 |
-| teloxide 风格的出站消息派发集成测试 | 目标形态测试，未落地 | 依附 teloxide 测试模式 | `src/channel.rs` 的单元测试（`#[test]`） |
-| docker-compose `healthcheck` 示例（`message-weave health --addr ...`） | 已删除的示例 | `src/main.rs` 无 CLI 子命令解析，该子命令不存在，照抄必失败（早期还叠加了镜像内无 `curl` 的问题，现已内置 `curl`） | 由平台 ingress 探测 `/ready`；说明见 `docs/deployment.md` 的就绪探测一节 |
+| `teloxide` (Telegram Bot framework) | Not adopted | Telegram requires only a few API calls, does not introduce heavy frameworks (dptree/session middleware), and reduces dependencies and abstraction layers; `reqwest` has been introduced according to `ARCH-DEPS-STAGE4` | `src/channel.rs` is self-developed and implemented with `reqwest` |
+| teloxide planned feature set (`macros` / `rustls` / `redis-session` / `throttle` / `webhooks-axum`) | Not implemented | Dead when teloxide is not adopted | — |
+| `teloxide-core` downgrade plan | Not adopted | The premise for downgrading is "the use of teloxide is too heavy"; since the whole is not introduced, the premise for downgrading is not valid | — |
+| `grammers` / old `telegram-bot` crate | Not adopted | Directly seal the Bot API + self-research to meet the needs | `src/channel.rs` |
+| `BotError::Telegram(#[from] teloxide::errors::RequestError)` | Target form variant, not landed | Attached to teloxide, discarded with it | None |
+| `BotError::Jmap` / `Storage` / `RateLimited` / `Unauthorized` / `Llm` | Target form variant, not yet implemented | It was designed to uniformly handle the five types of errors of JMAP/Redis/current limiting/authorization/LLM; now each module handles it by itself | Currently `BotError` only has `Config` / `Io` / `Json` / `State` Four variants (full text of `src/error.rs`) |
+| Telegram server 30 msg/s current limit bucket | Target design, not implemented | No real Bot stress test data, no preset implementation; server bucketing is undertaken by TG API itself, and the bot side only performs backoff | 429 dedicated branch **implemented** (`src/channel.rs`: parse the response body `parameters.retry_after` and clamp ≤60s, the server-specified value will be used first, otherwise exponential backoff), so this line does not constitute a gap; the current processing of the server-side current limit bucket is still `max_retries` (default 3, hard upper limit 5) Universal retry |
+| Multi-step dialogue FSM (`Idle` / `AwaitClarify` / `AwaitConfirm` / `Analyzing` / `AwaitFallback`) | Target design, not implemented | Current AI authorization only needs a Boolean + expiration time, multi-step is over-design | Redis TTL authorization state, key and TTL, see the AI authorization state section of `docs/reference.md` |
+| Split each layer of domain / channel / notification / util into independent directories (sub-module split plan) | Target form directory, not implemented | The amount of code has not reached the scale that needs to be split | For the actual structure, see the project structure section of `docs/design.md`: the domain layer is `src/domain.rs` + `src/domain/jmap/` (only `client.rs`); LLM is in `src/ai.rs`; notifications are in `src/notify.rs`; encryption and tool logic are inline in `src/state.rs` / `src/config.rs`, there is no independent util layer and no integration test directory |
+| Teloxide style outbound message delivery integration test | Target form test, not yet implemented | Dependent on teloxide test mode | Unit test of `src/channel.rs` (`#[test]`) |
+| docker-compose `healthcheck` example (`message-weave health --addr ...`) | Deleted example | `src/main.rs` has no CLI subcommand resolution, the subcommand does not exist, and copying will fail (in the early days, there was also a problem of not having `curl` in the image, and now `curl` is built in) | `/ready` is detected by the platform ingress; for instructions, see `docs/deployment.md` Readiness Detection section |
 
-| SPA 管理凭据 = `REDIS_URL` 的 Redis ACL 密码 | 未采用路线 | 混淆基础设施凭据与 UI 管理密码；Redis 无 ACL 密码（TLS-only 托管 Redis）时 `bootstrap_token` 的 `.is_empty()` 守卫让 SPA 永久 401 | 改用 `CONFIG_ENCRYPTION_KEY`（启动必填的 32 字节高熵 hex，常数时间比较） |
+| Redis ACL password for SPA admin credentials = `REDIS_URL` | Route not taken | Obfuscating infrastructure credentials with UI admin password; `.is_empty()` guard for `bootstrap_token` when Redis has no ACL password (TLS-only managed Redis) makes SPA permanent 401 | Use instead `CONFIG_ENCRYPTION_KEY` (32-byte high-entropy hex required for startup, constant time comparison) |
 
-### 1.1 teloxide 候选对比（评估记录）
+### 1.1 Teloxide candidate comparison (evaluation record)
 
-下表与下列理由为**当初的评估结论，保留它是决策依据，不是当前技术事实**——「活跃，最新 0.17，下载量大」等框架属性未经本轮复核，不代表这些 crate 的当前版本状态。
+The following table and the following reasons are **original evaluation conclusions, and retaining them is the basis for decision-making, not the current technical facts** - "Active, latest 0.17, large download volume" and other framework attributes have not been reviewed in this round and do not represent the current version status of these crates.
 
-| 框架 | crate | 维护状态 | 特性 | 适配度 | 结论 |
+| Framework | crate | maintenance status | features | fitness | conclusion |
 |---|---|---|---|---|---|
-| **teloxide** | `teloxide` | 活跃，最新 0.17，下载量大 | dptree 分发、对话 FSM、webhooks+webhooks-axum、Redis 会话存储、throttle、macros、tracing、rustls | ★★★★★ | **首选** |
-| grammers | `grammers` / `grammerslib` | 维护一般 | MTProto（非 Bot API），无需 Telegram Bot Token | ★★ | 仅在不能用 Bot API 时 |
-| telegram-bot (旧) | `telegram-bot` | 基本停更 | reqwest + futures | ★ | 不推荐 |
+| **teloxide** | `teloxide` | Active, latest 0.17, large downloads | dptree distribution, conversational FSM, webhooks+webhooks-axum, Redis session storage, throttle, macros, tracing, rustls | ★★★★★ | **Preferred** |
+| grammers | `grammers` / `grammerslib` | General maintenance | MTProto (not Bot API), no Telegram Bot Token required | ★★ | Only if Bot API is not available |
+| telegram-bot (old) | `telegram-bot` | Basically discontinued | reqwest + futures | ★ | Not recommended |
 
-**当初倾向 teloxide 的 6 条理由**：
-1. 与 `jmap-client` 同为 tokio + reqwest 生态，运行时与 TLS 栈（rustls）可复用。
-2. 内建 Dispatcher + `UpdateKind` 枚举匹配命令，与命令路由天然契合。
-3. 支持 `webhooks-axum`（生产 Webhook 形态；不使用长轮询 `NG-LONG-POLLING`）与 Redis 会话存储（记住当前文件夹/分页游标，不用 SQLite）。
-4. `throttle` feature 天然契合 Telegram 的 30 msg/s 速率限制。
-5. `tracing` feature 与本项目观测性统一。
-6. `macros` feature 可用 `#[teloxide::command]` 自动解析命令参数，减少样板。
+**6 reasons why I originally preferred teloxide**:
+1. It is the same tokio + reqwest ecosystem as `jmap-client`, and the runtime and TLS stack (rustls) can be reused.
+2. Built-in Dispatcher + `UpdateKind` enumeration matching commands, which is naturally compatible with command routing.
+3. Support `webhooks-axum` (production Webhook form; do not use long polling `NG-LONG-POLLING`) and Redis session storage (remember the current folder/pagination cursor, without SQLite).
+4. The `throttle` feature naturally fits Telegram’s 30 msg/s rate limit.
+5. The `tracing` feature is consistent with the observation of this project.
+6. The `macros` feature can use `#[teloxide::command]` to automatically parse command parameters and reduce boilerplate.
 
-**当时的 feature 集计划**（阶段2 引入时）：`macros`、`redis-session`、`throttle`、`tracing`，按需启用 `webhooks-axum`；TLS 侧 `rustls` 与 `rustls-native-roots` **按需二选一**（后者为前者补 OS 根证书，本机测试方便但生产多此一举）。
+**Feature set plan at that time** (when introduced in Phase 2): `macros`, `redis-session`, `throttle`, `tracing`, enable `webhooks-axum` on demand; `rustls` and `rustls-native-roots` on the TLS side **Choose one of the two on demand** (the latter supplements the OS root certificate for the former, which is convenient for local testing but unnecessary for production).
 
-**替代/降级**：若 teloxide 升级或破坏性改动，可退到更薄的 `teloxide-core`（保留核心与 types，去掉 dispatcher 抽象）；若需多账户高吞吐，用 `webhooks-axum` + 共享 `axum::Router`。以上两条均随 teloxide 未采用而不再成立。
+**Replacement/Downgrade**: If teloxide is upgraded or destructively changed, you can retreat to the thinner `teloxide-core` (retaining the core and types, removing the dispatcher abstraction); if you need multi-account high throughput, use `webhooks-axum` + shared `axum::Router`. Both of the above are no longer valid when teloxide is not adopted.
 
-### 1.2 对话 FSM 状态转移表（目标设计，未落地）
+### 1.2 Dialogue FSM state transition table (target design, not yet implemented)
 
-当前没有 FSM：`src/worker.rs` 的 `parse_intent` 直接解析为 `Intent`，AI 授权是 Redis 里的一个布尔加过期时间。曾设计过下面 5 个状态：
+There is currently no FSM: `parse_intent` of `src/worker.rs` is directly parsed into `Intent`, and AI authorization is a Boolean expiration time in Redis. The following 5 states have been designed:
 
-| 状态 | 含义 | 进入 | 离开 |
+| Status | Meaning | Entering | Leaving |
 |---|---|---|---|
-| `Idle` | 空闲 | 任意完成态 | 收到消息 |
-| `AwaitClarify` | 目标/意图不明，等用户选择 | 意图或邮件目标不唯一 | 用户给出明确选择 |
-| `AwaitConfirm` | 等确认（AI 分析 / 附件下载） | 用户发起分析/下载但未确认 | 确认 / 取消 |
-| `Analyzing` | AI 请求 in-flight | 用户确认分析 | 成功 / 失败 |
-| `AwaitFallback` | AI 失败，等确认回退 | 连续 3 次失败熔断 | 用户确认 / 取消 |
+| `Idle` | idle | any completion state | message received |
+| `AwaitClarify` | The goal/intent is unknown, waiting for the user to choose | The intent or email target is not unique | The user gives a clear choice |
+| `AwaitConfirm` | Wait for confirmation (AI analysis/attachment download) | User initiated analysis/download but not confirmed | Confirm/Cancel |
+| `Analyzing` | AI request in-flight | User confirmation analysis | Success/Failure |
+| `AwaitFallback` | AI failed, waiting for confirmation to fallback | 3 consecutive failed circuit breakers | User confirmation/cancel |
 
-当时设定的不变量：`AwaitConfirm` / `Analyzing` / `AwaitFallback` 涉及 AI 或附件下载，**未到确认态不得调用 LLM 或拉取附件**；会话状态为短期状态，统一走外部 Redis 短期 TTL（不使用 SQLite，丢失可接受）。渠道中立要求 FSM 状态与事件用领域类型，不依赖任何渠道 SDK。
+The invariants set at that time: `AwaitConfirm` / `Analyzing` / `AwaitFallback` involve AI or attachment downloading, ** LLM is not allowed to be called or attachments are not pulled until the confirmation state is reached **; the session state is short-term, and the external Redis short-term TTL is unified (SQLite is not used, and loss is acceptable). Channel neutrality requires that FSM status and events use domain types and do not rely on any channel SDK.
 
-该不变量中「AI 分析必须先有用户显式授权」这一条**仍然有效**，已保留在 `docs/design.md` 的会话状态机一节；状态机本身未实现。
+The invariant "AI analysis must first be explicitly authorized by the user" is still valid and has been retained in the session state machine section of `docs/design.md`; the state machine itself is not implemented.
 
 ---
 
-## 2. 虚构条目（文档曾写、代码从未有）
+## 2. Fictional entries (documentation has been written, code has never existed)
 
-这些名字**从未在代码里存在**。它们有的出现在目标形态的目录树里，有的出现在未提交的草稿与讨论记录里，共同风险是让人误以为"这个功能已经实现"，故在此登记防止再次出现。
+These names never exist in the code. Some of them appear in the directory tree of the target form, and some appear in unsubmitted drafts and discussion records. The common risk is that people mistakenly think that "this function has been implemented", so register them here to prevent their recurrence.
 
-| 条目 | 类型 | 原因 | 替代或现状 |
+| Entry | Type | Reason | Alternative or Current Status |
 |---|---|---|---|
-| 把 Telegram 接入拆成「模块入口 / 命令解析 / 会话状态 / 回复渲染」四个文件的目录方案 | 虚构目录方案 | 目标目录树里画出，从未创建 | 命令解析在 `parse_intent`（`src/worker.rs`）；会话/授权态走 Redis TTL（`docs/reference.md` 的 AI 授权态一节）；渲染函数在 `src/channel.rs` 内 |
-| `delivery:pending:{stream}` | 虚构键 | 与 Redis Streams 的 pending-entries list（PEL）混淆——PEL 由 Redis 内部维护，不是可写键 | 真实键：`delivery:inflight:{stream}:{id}`（EX 60）与 `delivery:committed:{stream}:{id}`（EX 604_800），见 `docs/reference.md` 的投递流水线键一节 |
-| `check_config_reload` | 虚构函数 | 未提交草稿中的名字，从未进入代码 | 热更新为 `refresh_business_config`（`src/notify.rs:1130`） |
-| `push:registration:{sha256(callback_url)}` 曾被写成「360s 注册单飞锁」 | 事实误标 | 该键是 7d 回调→订阅 ID 映射 | 真正的 360s 单飞锁是 `lock:push-register:{sha256(callback_url)}`（`src/notify.rs:1328-1330`） |
-| `MESSAGWEAVE_DOMAIN` 曾被写成「生产未配置时 Worker 白名单失效」 | 虚构断言（未提交草稿/讨论中出现，未进文档） | 该环境变量全仓零命中；Worker 白名单是**无条件 fail-closed**：未知路径 404、method 不符 405、后端缺失或解析失败 503（`cloudflare-worker/src/index.js:77-92`） | 无需配置开关，白名单恒生效 |
-| `read_batch` / `retry_or_dlq`「Redis 出错时仍可能返回 `Ok(())`，消费循环因此不会因单次失败退出」 | 虚构断言 | 消费入口是 HTTP handler `worker`（`notify.rs:390`），**不是后台循环**：全仓 `src/` 零命中 `select!`，无信号处理、无常驻 worker 进程。`read_batch`（`state.rs:491`）经 `?` 把 Redis 错误原样上抛（`state.rs:531`），唯一被丢弃的结果是 XGROUP `CREATE` 的 `BUSYGROUP` 幂等保护（`state.rs:499-507`）；`retry_or_dlq` 同样经 `?` 上抛。调用方对每一处 `Err` 都返回 `503 service_unavailable` + `retryable=true`，故「循环不因单次失败退出」这一语义前提本身不成立 | 无——不存在该缺口；`docs/opengaps.md`（原名 `docs/roadmap.md`）「代码缺口」4 → 3，`docs/design.md`「已知边界」同句已删 |
+| Directory scheme that splits Telegram access into four files "module entry/command parsing/session state/reply rendering" | Fictitious directory scheme | Drawn in the target directory tree, never created | Command parsing is in `parse_intent` (`src/worker.rs`); the session/authorization state is Redis TTL (the AI authorization state section of `docs/reference.md`); the rendering function is in `src/channel.rs` |
+| `delivery:pending:{stream}` | Fictional key | Confused with Redis Streams' pending-entries list (PEL) - PEL is maintained internally by Redis and is not a writable key | Real key: `delivery:inflight:{stream}:{id}` (EX 60) and `delivery:committed:{stream}:{id}` (EX 604_800), see Delivery pipeline keys section of `docs/reference.md` |
+| `check_config_reload` | Fictional function | Uncommitted name in draft, never made it into code | Hot updated to `refresh_business_config` (`src/notify.rs:1130`) |
+| `push:registration:{sha256(callback_url)}` was once written as "360s registration solo lock" | Fact mislabeling | The key is 7d callback → subscription ID mapping | The real 360s solo lock is `lock:push-register:{sha256(callback_url)}` (`src/notify.rs:1328-1330`) |
+| `MESSAGWEAVE_DOMAIN` was once written as "Worker whitelist is invalid when production is not configured" | Fictional assertion (unsubmitted draft/appeared in discussion, not documented) | This environment variable has zero hits in all positions; Worker whitelist is **unconditional fail-closed**: unknown path 404, method does not match 405, backend is missing or parsing failure 503 (`cloudflare-worker/src/index.js:77-92`) | No need to configure switches, the whitelist will always take effect |
+| `read_batch` / `retry_or_dlq` "Redis may still return `Ok(())` when an error occurs, so the consumption loop will not exit due to a single failure" | Fictional assertion | The consumption entry is HTTP handler `worker` (`notify.rs:390`), **not a background loop**: full position `src/` zero hit `select!`, no signal processing, no resident worker process. `read_batch` (`state.rs:491`) throws the Redis error as it is (`state.rs:531`) via `?`, and the only discarded result is the `BUSYGROUP` idempotent protection of XGROUP `CREATE` (`state.rs:499-507`); `retry_or_dlq` is also thrown up via `?`. The caller returns `503 service_unavailable` + `retryable=true` for every `Err`, so the semantic premise of "the loop does not exit due to a single failure" itself is not true | None - the gap does not exist; `docs/opengaps.md` (original name `docs/roadmap.md`) "Code Gap" 4 → 3, `docs/design.md` "Known Boundary" same sentence has been deleted |
 
 ---
 
-| 把 LLM 能力建成领域子模块族（配置 / 回退 / 策略 / 审计分层） | 虚构模块树 | `domain/` 下只有 `jmap.rs` 与 `jmap/client.rs`；LLM 只有 `src/ai.rs` 一个文件（`LlmClient`） | 无 |
-| `ai::config` / `ai::fallback` / `ai::policy` / `ai::audit` | 虚构模块 | LLM 配置在 `config.rs::LlmConfig`，运行时参数在 `state.rs::OutboundConfig`（经 `RuntimeConfigProvider` 下发），无 policy/audit 概念 | 无 |
-| 把渠道层建成目录模块（含模块入口文件） | 虚构目录 | 渠道层就是 `src/channel.rs` 一个文件 | 无 |
-| `notify::push_handler` / `notify::worker` / `notify::reconcile` 作为模块路径 | 虚构模块路径 | 这些是 `src/notify.rs` 内的自由函数（`jmap_push` / `worker` / `reconcile`），不是模块路径 | 无 |
-| `mod_dedup` / `mod_streams` / `mod_sincestate` | 虚构模块名 | `state.rs` / `notify.rs` 都是平铺文件，无子模块；去重与 Streams 逻辑以自由函数存在 | 无 |
-| `PushVerification` 类型 | 虚构类型 | 未定义；`register_push`（`notify.rs:1315`）内联处理回调 URL 与验证码回写 | 无 |
-| `CancellationToken` | 虚构类型 | 未使用；无优雅关闭、无信号处理（`src/` 零命中 `tokio::signal` / `ctrl_c`） | 无 |
-| `Preview` 类型 / 4000 字符长邮件保护 / `[继续查看原文]` 按钮 / `/llm-fallback` 按钮 | 虚构类型与 UI | 全部未实现；授权后把全文交给 LLM，失败即回退前 300 字符，无任何截断标注或按钮 | 无 |
-| `LlmErr`（5 变体） | 虚构枚举 | 真实是 `AiError`，仅 3 个变体（`InvalidEndpoint` / `Request` / `Response`） | 无 |
-| `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` / `LLM_TIMEOUT_SECS` / `LLM_MAX_RETRIES` 环境变量 | 虚构环境变量 | `src/` 零命中（`LLM_MAX_RETRIES` 是 Redis 运行参数 `max_retries`，非环境变量）；真实业务配置字段有 6 个：`LLM_ENABLED` / `LLM_ALLOW_NET` / `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` / `LLM_SUMMARY_TARGET_CHARS`（后者的值在构造器内硬编码，未进入 wire），另有 `llm_timeout_ms` / `max_retries` 两个运行时参数 | 见 `docs/reference.md` AI 授权态一节 |
-| `llm.call` tracing span | 虚构观测点 | `src/` 中除 `main.rs`（5 个事件）外**零 tracing 事件、零 span**；LLM 调用无任何日志 | 无 |
-| 熔断器 / 半开态 / 熔断后 60s 冷却 / 规则兜底（Redis 共享计数） | 未实施设计 | 只有超时 + 重试；LLM 失败静默降级为前 300 字回退，无用户侧提示、无状态记录 | 无 |
-| 定时摘要 / 每日邮件摘要推送 | 未实施 | 未实现 | 无 |
-| 附件下载（`send_document` / `Blob/get` / 下载按钮） | 未实施 | JMAP 侧只读；邮件附件仅以 `has_attachment: bool` 形式出现 | 无 |
-| `/flag` / `/unseen` / 发信命令 | 未实施 | 当前识别 6 个意图（帮助 / 同意 / 摘要 / 搜索 / 普通消息 / 未识别）；其中 `/search` 已实现（`worker.rs:680`） | 无 |
-| `Identity` 概念 | 未实施 | 账号识别只依赖 `ACCOUNT_ID`，无身份层抽象 | 无 |
-| 把 `RUN_MODE` 抽成独立配置文件 | 虚构拆分方案 | `RUN_MODE` 曾由 `config.rs` 读取并在 `src/main.rs` 校验取值，**该变量与校验块现已一并删除**（见 §4）；从未存在 `validate_env_or_exit` 这类函数 | 无 |
-| docker-compose `message-weave health --addr` 示例 | 虚构命令 | 应用无 CLI 子命令；健康检查端点是 `GET /healthz` 与 `GET /ready` | 见 `docs/deployment.md` 的 Health-check 表 |
-| 早期设计辩论问题（消息格式 / 长邮件阈值 / 附件策略 / Identity / 监控 / LLM 供应商 / 熔断等 17 条） | 已由代码回答 | 均已被实现的代码给出答案，不再属于待确认项 | 见 `docs/design.md` 的「已由代码回答的早期问题」一节 |
+| Build LLM capabilities into domain sub-module families (configuration/fallback/policy/audit layering) | Fictitious module tree | There are only `jmap.rs` and `jmap/client.rs` under `domain/`; LLM only has one file `src/ai.rs` (`LlmClient`) | None |
+| `ai::config` / `ai::fallback` / `ai::policy` / `ai::audit` | Fictional module | LLM is configured in `config.rs::LlmConfig`, runtime parameters are in `state.rs::OutboundConfig` (delivered by `RuntimeConfigProvider`), no policy/audit concept | None |
+| Build the channel layer into a directory module (including module entry file) | Fictitious directory | The channel layer is a file called `src/channel.rs` | None |
+| `notify::push_handler` / `notify::worker` / `notify::reconcile` as module paths | Fictitious module paths | These are free functions within `src/notify.rs` (`jmap_push` / `worker` / `reconcile`), not module paths | None |
+| `mod_dedup` / `mod_streams` / `mod_sincestate` | Fictional module name | `state.rs` / `notify.rs` are tile files, no submodules; deduplication and Streams logic exist as free functions | None |
+| `PushVerification` type | Fictitious type | Undefined; `register_push` (`notify.rs:1315`) handles callback URL and verification code writeback inline | None |
+| `CancellationToken` | fictitious type | unused; no graceful shutdown, no signal handling (`src/` zero hits `tokio::signal` / `ctrl_c`) | None |
+| `Preview` type / 4000 character long email protection / `[Continue to view original text]` button / `/llm-fallback` button | Fictional type and UI | All not implemented; after authorization, the full text will be handed over to LLM, and if it fails, the first 300 characters will be returned, without any truncation mark or button | None |
+| `LlmErr` (5 variants) | Fictional enum | Real is `AiError`, only 3 variants (`InvalidEndpoint` / `Request` / `Response`) | None |
+| `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` / `LLM_TIMEOUT_SECS` / `LLM_MAX_RETRIES` environment variables | fictitious environment variables | `src/` zero hits (`LLM_MAX_RETRIES` is the Redis running parameter `max_retries`, non-environment variable); there are 6 real business configuration fields: `LLM_ENABLED` / `LLM_ALLOW_NET` / `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` / `LLM_SUMMARY_TARGET_CHARS` (the latter value is hard-coded in the constructor and not entered into the wire), and there are two runtime parameters `llm_timeout_ms` / `max_retries` | See `docs/reference.md` AI Authorization section |
+| `llm.call` tracing span | Fictitious observation point | **Zero tracing events, zero span** in `src/` except `main.rs` (5 events); no logs for LLM calls | None |
+| Circuit breaker / half-open state / 60s cooling after blowing / rule clearance (Redis share count) | No design implemented | Only timeout + retry; LLM failure will be silently downgraded to the first 300 words of fallback, no user-side prompts, no status records | None |
+| Scheduled summary/daily email summary push | Not implemented | Not implemented | None |
+| Attachment download (`send_document` / `Blob/get` / download button) | Not implemented | JMAP side read-only; email attachments only appear as `has_attachment: bool` | None |
+| `/flag` / `/unseen` / Send command | Not implemented | Currently 6 intents recognized (Help/Consent/Summary/Search/General Messages/Unrecognized); of which `/search` is implemented (`worker.rs:680`) | None |
+| `Identity` concept | Not implemented | Account identification only relies on `ACCOUNT_ID`, no identity layer abstraction | None |
+| Extract `RUN_MODE` into a separate configuration file | Fictitious splitting scheme | `RUN_MODE` was once read by `config.rs` and verified in `src/main.rs`. **This variable and the verification block have been deleted together** (see §4); there has never been such a function as `validate_env_or_exit` | None |
+| docker-compose `message-weave health --addr` example | fictitious command | Applies no CLI subcommand; health check endpoints are `GET /healthz` and `GET /ready` | See the Health-check table in `docs/deployment.md` |
+| Early design debate questions (message format/long message threshold/attachment policy/Identity/monitoring/LLM provider/circuit breaker, etc. 17 items) | Answered by code | The answer is given by the code that has been implemented and is no longer a pending item | See the "Early questions answered by code" section of `docs/design.md` |
 
-## 3. 已删除的文档
+## 3. Deleted documents
 
-| 条目 | 类型 | 原因 | 替代或现状 |
+| Entry | Type | Reason | Alternative or Current Status |
 |---|---|---|---|
-| `docs/todo.md` | 已取代（已删除） | 结构不清，与 design/deployment 重叠，且曾承载「本轮已收口」这类历史叙述 | 先由 `docs/roadmap.md` 取代，后者于 2026-09-29 更名并收窄为 `docs/opengaps.md`（只放仍未完成/未验证的缺口、阻塞与下一阶段目标） |
-| 根目录临时交接件（不留此类文件） | 临时交接件，**从未进入 git 历史** | 交接内容应归位到常驻文档，不留根目录临时件 | 内容并入 `docs/design.md`、`docs/deployment.md`、`docs/reference.md`、`docs/opengaps.md` |
+| `docs/todo.md` | Superseded (deleted) | Unclear structure, overlapping with design/deployment, and once carrying historical narratives such as "this round has been closed" | First replaced by `docs/roadmap.md`, which was renamed and narrowed to `docs/opengaps.md` on 2026-09-29 (only unfinished/unverified gaps, blockages and next-stage goals are included) |
+| Temporary handover files in the root directory (no such files are left) | Temporary handover files, **never entered the git history** | Handover content should be returned to the permanent document, no temporary files in the root directory are left | Contents are merged into `docs/design.md`, `docs/deployment.md`, `docs/reference.md`, `docs/opengaps.md` |
 
 ---
 
-## 4. 已删除的兼容路径（代码曾存在、现已删除）
+## 4. Deleted compatibility path (code used to exist, now deleted)
 
-与前两节不同：下列条目**曾经真实存在于代码**，既非虚构也非"未采用"。它们属于早期为兼容
-环境变量部署形态而保留的解析层，现已整体删除——项目早期无需任何兼容性承诺，删除比保留更便宜。
-删除后 `src/config.rs` 不含任何 `std::env` 读取：进程启动只读 2 个凭据加监听端口，其余业务字段
-全部走 Redis 业务配置（`/api/bootstrap` 或管理员 PUT → `validate_nonblank` fail-closed）。
+Unlike the previous two sections: the following items **actually existed in the code** and are neither fictional nor "unadopted". They are compatible with early
+The parsing layer retained by the environment variable deployment form has been deleted entirely - no compatibility commitment is required in the early stages of the project, and deletion is cheaper than retaining.
+After deletion, `src/config.rs` does not contain any `std::env`. Read: process startup only reads 2 credentials plus listening port, and other business fields
+All use Redis business configuration (`/api/bootstrap` or administrator PUT → `validate_nonblank` fail-closed).
 
-| 条目 | 类型 | 删除原因 | 现状 |
+| Entry | Type | Reason for deletion | Current status |
 |---|---|---|---|
-| 原 `src/config.rs` 的 `Config::from_env()`（第 311 行） | 已删除函数 | 完整的 20 项环境变量解析器。凭据迁移到 Redis 业务配置后它成为唯一的兼容层，且已无任何调用方 | 启动期改由 `main.rs` 直读：`PORT`(:31)、`REDIS_URL`(:40)、`CONFIG_ENCRYPTION_KEY`(:49)、`DEBUG_TOKEN`(:83)；业务字段由 `BusinessConfigWire` 承载 |
-| `required_secret` / `required_nonblank` / `env_bool` | 已删除助手函数 | 仅被上述解析器调用，随其一并删除 | 必填语义改由 `validate_nonblank` 在 Redis 业务配置路径承担（8 处调用） |
-| `RUN_MODE` 变量 + `Config.run_mode` 字段 + 启动校验块 | 已删除标识符 | 两种取值从未改变任何运行时行为：webhook 与 reconcile 共享同一套路由表，`POST /reconcile` 是独立端点。该变量只额外制造了一个必须被文档解释的分支 | 全仓零命中；`NG-SERVER-MODE` 作为设计非目标保留在 `docs/charter.md` |
-| `jmap_password()` 安全访问器 | 已删除方法 | 为 `SecretString` 字段提供不泄密的读取入口，仅在 env 解析路径中有意义 | `jmap_password` 作为业务配置**字段名**保留（`BusinessConfigWire` / `BusinessConfig`），字段本身即 `SecretString` |
-| `Config.port` / `Config.redis_url` 字段 | 已删除字段 | `port` 在两个构造器里硬编码 `8080`，而监听绑定直接从环境变量取值——字段值可与真实监听端口静默不一致，且全仓零读取方；`redis_url` 同样零读取 | `Config` 收窄为 7 字段：`telegram` / `jmap` / `account_id` / `llm` / `auth` / `worker_token` / `timezone`（末项镜像自 `BusinessConfig`，供 worker 渲染时间戳） |
-| 两个构造器的 `redis_url` 参数 | 已删除参数 | 唯一读者（原 main.rs 第 72 行）在上一轮改造中被移除 | `redis_only()` 与 `from_business(value)`；包装器 `from_business_json` / `from_business_value` 同步去掉首参 |
-| 19 个遗留环境变量名 | 已删除读取 | 见上；这些名字在代码中已无任何读取方 | 名单见 `docs/reference.md` §5.3；语义见 `docs/design.md` §7.1 |
-| `Channel` / `Notifier` / `MessageAdapter`（`src/channel.rs`）+ `UserCommand`（`src/domain.rs`） | 已删除占位 trait 与类型 | 三者**无实现、无调用方、无 dyn 绑定**，`#[expect(dead_code)]` 属性是仅有的引用来源；实际 Telegram 出站走 `channel::telegram::TelegramClient`，由 `worker.rs` 的 `MetadataWorker` 与 `notify.rs` 直接持有，从未经过它们。`UserCommand` 的唯一使用者是被删的 `Channel` | `channel.rs` 只留 `pub mod telegram`（`TelegramClient`，`reqwest` 自研）；`domain.rs` 只留领域 `Notification` 与 `pub mod jmap` 模块声明（`Notification` 在 worker.rs:330 在用）；src/ 里只剩 `reload_async` 那 1 个 `expect(dead_code)`（测试用的重载 API） |
+| `Config::from_env()` (line 311) of old `src/config.rs` | Removed function | Full 20-item environment variable parser. After the credentials are migrated to the Redis business configuration, it becomes the only compatibility layer and there is no longer any caller | The startup period is changed to `main.rs` for direct reading: `PORT`(:31), `REDIS_URL`(:40), `CONFIG_ENCRYPTION_KEY`(:49), `DEBUG_TOKEN`(:83); business fields are carried by `BusinessConfigWire` |
+| `required_secret` / `required_nonblank` / `env_bool` | Deleted helper function | Only called by the above parser, deleted together with it | Required semantics changed to `validate_nonblank` in the Redis business configuration path (called at 8 places) |
+| `RUN_MODE` variable + `Config.run_mode` field + startup verification block | Deleted identifier | The two values never change any runtime behavior: webhook and reconcile share the same set of routing tables, `POST /reconcile` is an independent endpoint. This variable only creates an additional branch that must be interpreted by the documentation | Zero hit across the board; `NG-SERVER-MODE` remains in `docs/charter.md` as a design non-target |
+| `jmap_password()` secure accessor | Deleted method | Provides a non-disclosure read entry for the `SecretString` field, only meaningful in the env parsing path | `jmap_password` is reserved as a business configuration **field name** (`BusinessConfigWire` / `BusinessConfig`), the field itself is `SecretString` |
+| `Config.port` / `Config.redis_url` field | Deleted field | `port` is hard-coded `8080` in the two constructors, and the listening binding takes the value directly from the environment variable - the field value can be silently inconsistent with the real listening port, and the full position is zero-read; `redis_url` is also zero-read | `Config` is narrowed to 7 fields: `telegram` / `jmap` / `account_id` / `llm` / `auth` / `worker_token` / `timezone` (the last item is mirrored from `BusinessConfig` for worker to render timestamp) |
+| `redis_url` parameters of two constructors | Deleted parameters | The only reader (original line 72 of main.rs) was removed in the previous round of transformation | `redis_only()` and `from_business(value)`; the wrappers `from_business_json` / `from_business_value` remove the first parameter synchronously |
+| 19 legacy environment variable names | Read removed | See above; these names no longer have any readers in the code | See `docs/reference.md` §5.3 for list; see `docs/design.md` §7.1 for semantics |
+| `Channel` / `Notifier` / `MessageAdapter` (`src/channel.rs`) + `UserCommand` (`src/domain.rs`) | Removed placeholder traits and types | The three **no implementation, no caller, no dyn binding**, the `#[expect(dead_code)]` attribute is the only source of reference; the actual Telegram outbound `channel::telegram::TelegramClient` is held directly by `MetadataWorker` and `notify.rs` of `worker.rs` and never passes through them. The only user of `UserCommand` is the deleted `Channel` | `channel.rs` leaves only `pub mod telegram` (`TelegramClient`, `reqwest` self-developed); `domain.rs` leaves only the domain `Notification` and `pub mod jmap` module declaration (`Notification` is used in worker.rs:330); only `reload_async` remains in src/ 1 `expect(dead_code)` (overloaded API for testing) |
 
-> 注意 `LLM_MAX_RETRIES` 与 `LLM_SUMMARY_TARGET_CHARS` 的区别：前者从来不是环境变量
-> （Redis 运行参数 `max_retries`，回落默认见 `docs/reference.md` §6.1），后者是常量
-> （两个构造器内硬编码 300，未进入业务配置 wire）。
+> Note the difference between `LLM_MAX_RETRIES` and `LLM_SUMMARY_TARGET_CHARS`: the former is never an environment variable
+> (Redis running parameter `max_retries`, fallback to default, see `docs/reference.md` §6.1), the latter is a constant
+> (300 is hard-coded in the two constructors and has not entered the business configuration wire).
 
-### 4.1 引导模式挂载的业务/管理路由
+### 4.1 Business/management routes mounted in boot mode
 
-`router_configuration_setup` 原先直接委托全量工厂 `router_with_worker_state_runtime_bootstrap_config`，
-因此 12 条业务与管理路由在引导模式下全部被注册，却**一条也走不通**：引导模式的 `admin_token` 是空值，
-而 `constant_time_eq` 带 `!expected.is_empty()` 守卫，空的期望值会永久拒绝任何候选凭据；即便鉴权通过，
-`MemoryState` 也无法持久化一次 bootstrap 写入。
+`router_configuration_setup` originally directly entrusted the full factory `router_with_worker_state_runtime_bootstrap_config`,
+Therefore, all 12 business and management routes are registered in the boot mode, but none of them work: the `admin_token` in the boot mode is empty,
+And `constant_time_eq` is guarded with `!expected.is_empty()`. An empty expected value will permanently reject any candidate credentials; even if the authentication passes,
+`MemoryState` also cannot persist a bootstrap write.
 
-| 条目 | 类型 | 删除原因 | 现状 |
+| Entry | Type | Reason for deletion | Current status |
 |---|---|---|---|
-| `/api/bootstrap`、`/api/admin/session`、`/api/admin/session/revoke`、`/api/config`、`/api/enabled`、`/api/business-config`、`/webhook/tg`、`/push/jmap`、`/api/push/register`、`/api/push/disable`、`/reconcile`、`/worker` | 已删除路由注册 | 永久 401 的路由读起来像"凭据写错了" | 引导模式自建 `AppState`，只挂 `/api/status`、`/ready`、`/healthz`；上述路径返回 `404` |
+| `/api/bootstrap`, `/api/admin/session`, `/api/admin/session/revoke`, `/api/config`, `/api/enabled`, `/api/bus iness-config`, `/webhook/tg`, `/push/jmap`, `/api/push/register`, `/api/push/disable`, `/reconcile`, `/worker` | Deleted route registration | Permanent 401 route reads like "wrong credentials" | Self-built `AppState` in boot mode, only `/api/status`, `/ready`, `/healthz`; the above path returns `404` |
 
-`401` 与 `404` 的差别不是洁癖：`{"error":"unauthorized"}` 与"凭据填错"完全同形，操作员和探针会把
-"这些端点在此模式下根本不存在"误读成"再换个凭据试试"。现在两者可区分——`/api/status` 仍返回
-`{"missing":[...],"mode":"configuration-setup","ready":false}`（HTTP 200），业务与管理面直接 404。
-回归由 `configuration_setup_mounts_only_status_and_probes` 守护：逐一断言 12 条路径 404，并断言
-`/healthz` 200、`/api/status` 200、`/ready` 503。
+The difference between `401` and `404` is not mysophobia: `{"error":"unauthorized"}` is completely the same as "wrong credentials". Operators and probes will
+"These endpoints do not exist at all in this mode" was misread as "try again with different credentials". Now the two are distinguishable - `/api/status` still returns
+`{"missing":[...],"mode":"configuration-setup","ready":false}` (HTTP 200), business and management planes directly 404.
+Regression guarded by `configuration_setup_mounts_only_status_and_probes`: assert 12 paths 404 one by one, and assert
+`/healthz` 200, `/api/status` 200, `/ready` 503.
 
 ---
 
-## 5. 如何重启其中一条
+## 5. How to restart one of them
 
-1. 先在 `docs/opengaps.md` 登记为缺口并归属阶段。
-2. 若涉及 Redis 键、TTL、HTTP 路由或默认值，同轮更新 `docs/reference.md`。
-3. 本文对应条目**保留**为决策依据——它记录的是当初为什么不这么做，不要删。
+1. First register as a gap in `docs/opengaps.md` and attribute it to the stage.
+2. If it involves Redis keys, TTL, HTTP routing or default values, update `docs/reference.md` in the same round.
+3. The corresponding entry in this article is **retained** as the basis for decision-making - it records why we did not do this in the first place and do not delete it.

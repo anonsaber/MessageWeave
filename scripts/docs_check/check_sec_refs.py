@@ -14,16 +14,18 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DOCS = ["AGENTS.md", "README.md", "README.zh-CN.md", "docs/design.md",
-        "docs/deployment.md", "docs/reference.md", "docs/retired.md",
-        "docs/opengaps.md", "docs/charter.md", "cloudflare-worker/README.md"]
+        "docs/design.zh-CN.md", "docs/deployment.md", "docs/deployment.zh-CN.md",
+        "docs/reference.md", "docs/reference.zh-CN.md", "docs/retired.md",
+        "docs/retired.zh-CN.md", "docs/opengaps.md", "docs/opengaps.zh-CN.md",
+        "docs/charter.md", "docs/charter.zh-CN.md", "cloudflare-worker/README.md"]
 
 HEADING = re.compile(r"^(#{2,4})\s+(\d+(?:\.\d+)?\.?)\s")
 # §2.3, §5.7, §3 (bare), also `§2.3/§3.4` chains handled by finditer
 SEC = re.compile(r"§(\d+(?:\.\d+)?)")
 # an explicit target file sitting immediately before the §ref
 TARGET_BEFORE = re.compile(
-    r"(?:docs/)?(AGENTS\.md|README\.md|README\.zh-CN\.md|design\.md|"
-    r"deployment\.md|reference\.md|retired\.md|opengaps\.md|charter\.md)\s*[`\s]*"
+    r"(?:docs/)?(AGENTS\.md|README\.md|README\.zh-CN\.md|design(?:\.zh-CN)?\.md|"
+    r"deployment(?:\.zh-CN)?\.md|reference(?:\.zh-CN)?\.md|retired(?:\.zh-CN)?\.md|opengaps(?:\.zh-CN)?\.md|charter(?:\.zh-CN)?\.md)\s*[`\s]*"
     r"§(\d+(?:\.\d+)?)")
 
 

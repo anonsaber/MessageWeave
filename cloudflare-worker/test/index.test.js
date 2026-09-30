@@ -228,7 +228,7 @@ test("Worker: valid env, GET /ready forwarded to backend with auth header intact
   }
 });
 
-test("Worker: POST /api/push/register and /api/push/disable are forwarded", async () => {
+test("Worker: callback registration and disable endpoints are forwarded", async () => {
   const seen = [];
   const restore = stubFetch(async (url, init) => {
     seen.push([url, init.method]);
@@ -238,7 +238,7 @@ test("Worker: POST /api/push/register and /api/push/disable are forwarded", asyn
     });
   });
   try {
-    for (const path of ["/api/push/register", "/api/push/disable"]) {
+    for (const path of ["/api/push/register", "/api/telegram/register-webhook", "/api/push/disable"]) {
       const res = await handleFetch(
         new Request(`https://lb.example${path}`, { method: "POST", body: "{}" }),
         makeEnv(),
@@ -246,7 +246,7 @@ test("Worker: POST /api/push/register and /api/push/disable are forwarded", asyn
       assert.equal(res.status, 400);
       assert.deepEqual(await res.json(), { error: "invalid_request", request_id: "x" });
     }
-    assert.equal(seen.length, 2);
+    assert.equal(seen.length, 3);
     assert.ok(seen.every(([url, method]) => method === "POST"));
   } finally {
     restore();
