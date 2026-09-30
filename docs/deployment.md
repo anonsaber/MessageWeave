@@ -199,8 +199,8 @@ curl -fsS -X POST "https://<你的平台URL>/api/push/register" \
 **第三步：排空（`POST /worker`）**
 
 前两步只负责把事件送进队列。把邮件从队列取出来并发成 Telegram 消息，靠外部 cron 周期性
-调用 `POST /worker` 完成——见 §6.3.1。**缺这一步，邮件会持续积压在 `stalwart:jmap`，
-一行通知都不会发出来。**
+调用 `POST /worker` 完成——见 §6.3.1（仓库内有现成脚本 `scripts/cron-drain.sh`，参数全走
+环境变量）。**缺这一步，邮件会持续积压在 `stalwart:jmap`，一行通知都不会发出来。**
 
 **验证**：群内发 `/help`，`/worker` 排空后应收到自动回复（入站方向）；给自己发一封新邮件，
 排空后应收到该邮件通知（出站方向）。
@@ -422,6 +422,18 @@ token 轮换后**无需重启**——worker 处理函数开头先 `refresh_busin
 
 `/worker` 不在 Worker 转发白名单里（`SAFE_ROUTES`：`/reconcile` 在内、`/worker` 不在），
 走 Worker 会被 404 `route not forwarded` 挡掉，必须打后端 origin。见 §10.4。
+
+不想自己拼 curl 的话，仓库里有现成脚本 `scripts/cron-drain.sh`：两步都做了，参数全部走
+环境变量（`MW_APP_URL` / `MW_WORKER_URL` / `MW_RECONCILE_TOKEN` / `MW_WORKER_TOKEN`
+等），凭据不写任何文件。两个额外开关专门用来回答「为什么没收到 Telegram」：
+
+- `--diagnose`：依次查 `/api/status`、`/debug/config`（配置是否保存、chat_id 是否为占位值、
+  webhook secret 是否配置）、`/debug/redis`、`/debug/telegram`（bot token 是否有效）、
+  `/debug/jmap`、`/debug/worker`（游标是否还停在 null）。配置问题会直接点出来，不用猜。
+- `--test-notify`：绕过队列直接走生产出站路径发一条测试消息。这条能收到，说明
+  token/chat_id/allowlist 全对，问题一定在调度；收不到，问题就在这一层，跟 cron 无关。
+
+诊断端点需要后端以 `--debug` 启动并设置 `MW_DEBUG_TOKEN`，且必须直连 origin。
 
 最小示例（手动烟测，打印状态码；`/reconcile` **不接受请求体**，游标存在服务端 Redis 里）：
 
