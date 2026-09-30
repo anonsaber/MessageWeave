@@ -55,15 +55,27 @@ pub struct EmailContent {
     pub is_long: bool,
 }
 
-/// A channel-neutral page of JMAP Email/changes. Only `created` and `updated`
-/// drive notification: deletions have no metadata to notify about and are
-/// therefore dropped at the boundary rather than plumbed through.
+/// One page of JMAP `Email/changes` (RFC 8620 §4.1.2), narrowed to what a
+/// notifier can act on.
+///
+/// The response also carries `oldState` and `destroyed`, and both are dropped
+/// here on purpose. `oldState` echoes the `sinceState` the server accepted,
+/// which the caller already holds. `destroyed` lists ids that disappeared, and
+/// a deleted email has nothing left to look up, so it can drive neither a
+/// notification nor the cursor. The cursor is `newState` alone, which means
+/// both fields would have been values written and never read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmailChanges {
+    /// `newState`: the state after this page. Persist it and the next
+    /// `/changes` replays nothing already seen.
     pub new_state: String,
+    /// `created`: ids that appeared since `sinceState`.
     pub created: Vec<String>,
+    /// `updated`: ids whose content changed since `sinceState`.
     pub updated: Vec<String>,
-    pub has_more: bool,
+    /// `hasMoreChanges`: more exist. Callers may widen the next window instead
+    /// of advancing the cursor, because the page returned was not truncated.
+    pub has_more_changes: bool,
 }
 
 /// Highlighted RFC 8621 `SearchSnippet/get` fragment for one email. Values
@@ -94,7 +106,28 @@ pub trait JmapBackend: Send + Sync {
         subscription_id: &str,
         verification_code: &str,
     ) -> Result<(), JmapError>;
-    async fn current_state(&self) -> Result<String, JmapError>;
+    /// RFC 8620 §2.1 `Session.state`: the token the server minted when the
+    /// session was built.
+    ///
+    /// This is **not** an `Email`-collection state token, which is what
+    /// `Email/changes` wants as `sinceState` (RFC 8620 §4.1.1). A collection
+    /// token only comes back out of a `Changes` response itself (`newState`),
+    /// so before the first successful call the session token is the only
+    /// candidate we have, and it is the one we hand over. A strictly conforming
+    /// server may therefore answer a `sinceState` error to the very first
+    /// `/changes` after a re-baseline; `MetadataWorker::replay_changes` absorbs
+    /// that by re-baselining to a fresh token and returning, so the next pass
+    /// starts the walk over instead of retrying a token the server will keep
+    /// rejecting. Once the walk finishes, the persisted cursor is a real
+    /// collection token (`newState`), so the mismatch can only ever bite the
+    /// first call after a re-baseline. The 24h dedup key bounds the replay it
+    /// causes to at most one duplicate.
+    async fn session_state(&self) -> Result<String, JmapError>;
+    /// RFC 8620 §4.1 `Email/changes`: the events recorded since `since_state`,
+    /// capped at `max_changes`. A server may return fewer and set
+    /// `hasMoreChanges` instead of replaying everything at once; the
+    /// window-widening loop that answers it lives in
+    /// `MetadataWorker::replay_changes`.
     async fn email_changes(
         &self,
         account_id: &str,
@@ -206,8 +239,8 @@ impl<B: JmapBackend> JmapService<B> {
             .verify_push_subscription(subscription_id, verification_code)
             .await
     }
-    pub async fn current_state(&self) -> Result<String, JmapError> {
-        self.backend.current_state().await
+    pub async fn session_state(&self) -> Result<String, JmapError> {
+        self.backend.session_state().await
     }
 
     pub async fn email_changes(
@@ -303,7 +336,7 @@ mod tests {
             assert_eq!((subscription_id, verification_code), ("push-1", "code"));
             Ok(())
         }
-        async fn current_state(&self) -> Result<String, JmapError> {
+        async fn session_state(&self) -> Result<String, JmapError> {
             Ok("state-1".into())
         }
         async fn email_changes(
@@ -320,7 +353,7 @@ mod tests {
                 new_state: "new".into(),
                 created: vec!["email-1".into()],
                 updated: vec![],
-                has_more: false,
+                has_more_changes: false,
             })
         }
         async fn list_folders(&self, account_id: &str) -> Result<Vec<Folder>, JmapError> {

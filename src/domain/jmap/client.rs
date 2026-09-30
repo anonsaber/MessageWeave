@@ -150,7 +150,7 @@ impl JmapBackend for JmapClientBackend {
         }
     }
 
-    async fn current_state(&self) -> Result<String, JmapError> {
+    async fn session_state(&self) -> Result<String, JmapError> {
         Ok(self.client.session().state().to_owned())
     }
 
@@ -172,7 +172,7 @@ impl JmapBackend for JmapClientBackend {
             new_state: response.new_state().to_owned(),
             created: response.created().to_owned(),
             updated: response.updated().to_owned(),
-            has_more: response.has_more_changes(),
+            has_more_changes: response.has_more_changes(),
         })
     }
 

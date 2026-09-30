@@ -12,6 +12,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, RwLock},
+    time::Duration,
 };
 
 #[async_trait]
@@ -36,10 +37,13 @@ pub trait WorkerHandler: Send + Sync {
 
     /// Performs one bounded JMAP reconciliation pass. Implementations must not
     /// persist the cursor; the HTTP coordinator commits it after enqueueing.
+    ///
+    /// `initial_changes` sizes the first `/changes` call only. The pass may
+    /// widen the window afterwards, which is why it is not called `max_changes`.
     async fn reconcile(
         &self,
         _since_state: Option<&str>,
-        _max_changes: usize,
+        _initial_changes: usize,
     ) -> Result<String, ()> {
         Err(())
     }
@@ -135,9 +139,13 @@ impl WorkerHandler for WorkerHandle {
         worker.process(stream, payload).await
     }
 
-    async fn reconcile(&self, since_state: Option<&str>, max_changes: usize) -> Result<String, ()> {
+    async fn reconcile(
+        &self,
+        since_state: Option<&str>,
+        initial_changes: usize,
+    ) -> Result<String, ()> {
         let worker = self.current.read().map_err(|_| ())?.clone();
-        worker.reconcile(since_state, max_changes).await
+        worker.reconcile(since_state, initial_changes).await
     }
 }
 
@@ -147,6 +155,73 @@ impl WorkerHandler for NoopWorker {
     async fn process(&self, _stream: &str, _payload: &str) -> Result<(), ()> {
         Err(())
     }
+}
+
+/// One page of the position walk.
+const BASELINE_PAGE_SIZE: usize = 100;
+/// Hard stop on walk pages so a large mailbox cannot stretch a single pass.
+const BASELINE_MAX_PAGES: usize = 100;
+/// Hard stop on walk emails. Redundant with `BASELINE_MAX_PAGES` at the current
+/// page size, but independent of it, so shrinking the page cannot widen it.
+const BASELINE_MAX_EMAILS: usize = 10_000;
+/// Upper bound the `/changes` window may widen to before we accept advancing
+/// the cursor instead (see `MetadataWorker::replay_changes`).
+const CHANGE_WINDOW_CAP: usize = 4_096;
+/// Page ceiling for either phase, so one invocation is always one bounded pass.
+const RECONCILE_MAX_PAGES: usize = 100;
+/// Wall-clock ceiling for the whole invocation, walk phase included.
+const RECONCILE_BUDGET: Duration = Duration::from_secs(20);
+
+/// `reconcile:state` is bimodal, and the two modes need different handling.
+///
+/// Encoding this as an enum instead of a `(String, usize)` pair plus a magic
+/// `usize::MAX` sentinel means no position value is silently reserved with a
+/// second meaning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReconcileCursor {
+    /// Resume the position walk from `position`. It was captured at `state`,
+    /// which must stay fixed for the whole walk or the ids would drift. The
+    /// walk is the only path that can see email the changelog no longer retains.
+    Walk { state: String, position: usize },
+    /// Resume `Email/changes` from this collection state token.
+    Replay(String),
+}
+
+impl ReconcileCursor {
+    /// A walk that starts at position 0 from a freshly captured state. Used
+    /// for the very first reconcile and after re-baselining a dead cursor.
+    fn walk_from(state: String) -> Self {
+        Self::Walk { state, position: 0 }
+    }
+
+    /// Decode a persisted cursor: `baseline:{hex-state}:{position}` is a walk
+    /// in flight, a bare state string is a replay point.
+    fn from_persisted(value: &str) -> Self {
+        match decode_baseline_cursor(value) {
+            Some((state, position)) => Self::Walk { state, position },
+            None => Self::Replay(value.to_owned()),
+        }
+    }
+
+    fn to_persisted(&self) -> String {
+        match self {
+            Self::Walk { state, position } => encode_baseline_cursor(state, *position),
+            Self::Replay(state) => state.clone(),
+        }
+    }
+}
+
+/// How the position walk ended, which decides what the pass may return.
+enum WalkOutcome {
+    /// The listing is exhausted: every email is enqueued, so `/changes` may be
+    /// replayed from the state captured before the walk started.
+    ReplayFrom(String),
+    /// The budget cut the walk short after at least one complete page. Persist
+    /// the walk cursor so the next invocation resumes instead of restarting.
+    Persist(ReconcileCursor),
+    /// The budget cut the walk before a single page completed. The pass made no
+    /// progress and must be reported as failed.
+    NoProgress,
 }
 
 /// JMAP bodies are read only to obtain metadata; body text never reaches Telegram.
@@ -265,78 +340,114 @@ impl<B: JmapBackend> WorkerHandler for MetadataWorker<B> {
             .map_err(|_| ())
     }
 
-    async fn reconcile(&self, since_state: Option<&str>, max_changes: usize) -> Result<String, ()> {
-        let max_changes = max_changes.max(1);
-        const MAX_BASELINE_PAGES: usize = 100;
-        const MAX_BASELINE_EMAILS: usize = 10_000;
-        const RECONCILE_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+    async fn reconcile(
+        &self,
+        since_state: Option<&str>,
+        initial_changes: usize,
+    ) -> Result<String, ()> {
+        // `maxChanges` must be at least 1: a zero window is not a valid
+        // `/changes` request, and rejecting it would waste the pass.
+        let window = initial_changes.max(1);
         let started = tokio::time::Instant::now();
-        let (mut cursor, mut baseline_position) = if let Some(state) = since_state {
-            if let Some((baseline, position)) = decode_baseline_cursor(state) {
-                (baseline, position)
-            } else {
-                (state.to_owned(), usize::MAX)
-            }
+
+        let cursor = if let Some(state) = since_state {
+            ReconcileCursor::from_persisted(state)
         } else {
             // Capture a stable baseline before paging. Changes occurring while
-            // the listing is in flight are consumed below before committing.
-            (self.jmap.current_state().await.map_err(|_| ())?, 0)
+            // the listing is in flight are replayed from it before committing.
+            ReconcileCursor::walk_from(self.jmap.session_state().await.map_err(|_| ())?)
         };
 
-        if baseline_position != usize::MAX {
-            let mut pages = 0_usize;
-            let mut emails = 0_usize;
-            loop {
-                if pages >= MAX_BASELINE_PAGES
-                    || emails >= MAX_BASELINE_EMAILS
-                    || started.elapsed() >= RECONCILE_BUDGET
-                {
-                    return if pages == 0 {
-                        Err(())
-                    } else {
-                        Ok(encode_baseline_cursor(&cursor, baseline_position))
-                    };
-                }
-                let page = self
-                    .jmap
-                    .list_emails_page(None, baseline_position, 100)
-                    .await
-                    .map_err(|_| ())?;
-                if page.is_empty() {
-                    break;
-                }
-                pages += 1;
-                emails = emails.saturating_add(page.len());
-                baseline_position = baseline_position.saturating_add(page.len());
-                for email in page {
-                    self.enqueue_reconcile_event(&email.id).await?;
-                }
+        // Phase 1: drain the position walk, the only path that can see email
+        // the server-side changelog no longer retains. It must finish before
+        // `/changes` is replayed.
+        match self.walk_baseline(cursor, started).await? {
+            WalkOutcome::ReplayFrom(state) => self.replay_changes(state, window, started).await,
+            WalkOutcome::Persist(cursor) => Ok(cursor.to_persisted()),
+            WalkOutcome::NoProgress => Err(()),
+        }
+    }
+}
+
+impl<B: JmapBackend> MetadataWorker<B> {
+    /// Drains the position walk `cursor` points at. The outcome decides what
+    /// the pass may do next: replay `/changes` from a captured state, persist
+    /// a walk cursor to resume later, or report that nothing was done.
+    async fn walk_baseline(
+        &self,
+        cursor: ReconcileCursor,
+        started: tokio::time::Instant,
+    ) -> Result<WalkOutcome, ()> {
+        // A cursor in replay mode has nothing to walk: nothing was appended to
+        // the collection since it was committed.
+        let (state, mut position) = match cursor {
+            ReconcileCursor::Walk { state, position } => (state, position),
+            ReconcileCursor::Replay(state) => return Ok(WalkOutcome::ReplayFrom(state)),
+        };
+
+        let mut pages = 0_usize;
+        let mut emails = 0_usize;
+        loop {
+            if pages >= BASELINE_MAX_PAGES
+                || emails >= BASELINE_MAX_EMAILS
+                || started.elapsed() >= RECONCILE_BUDGET
+            {
+                return if pages == 0 {
+                    Ok(WalkOutcome::NoProgress)
+                } else {
+                    Ok(WalkOutcome::Persist(ReconcileCursor::Walk {
+                        state,
+                        position,
+                    }))
+                };
+            }
+            let page = self
+                .jmap
+                .list_emails_page(None, position, BASELINE_PAGE_SIZE)
+                .await
+                .map_err(|_| ())?;
+            if page.is_empty() {
+                return Ok(WalkOutcome::ReplayFrom(state));
+            }
+            pages += 1;
+            emails = emails.saturating_add(page.len());
+            position = position.saturating_add(page.len());
+            for email in page {
+                self.enqueue_reconcile_event(&email.id).await?;
             }
         }
+    }
 
-        // RFC 8620 lets a server answer `/changes` with `hasMoreChanges=true`
-        // when more events remain than `maxChanges` allowed. The spec-blessed
-        // continuation is `sinceState = newState`; but a server that resolves
-        // `newState` to "after *all* pending changes" would then hand us a
-        // cursor that silently skips the unreturned batch. We cannot pass
-        // `upToId` here (jmap-client 0.4.2 does not expose it), so while more
-        // changes remain we keep the *same* sinceState and widen the window
-        // instead. The 24h dedup key makes re-reading the superset idempotent,
-        // so this is at-most-duplicate, never-loss. Only when the window stops
-        // growing (server-side cap) do we fall back to advancing to `new_state`
-        // to guarantee forward progress.
-        const CHANGE_WINDOW_CAP: usize = 4_096;
-        let mut window = max_changes;
+    /// Replays `Email/changes` from `state` and returns the cursor to persist.
+    ///
+    /// RFC 8620 lets a server answer `/changes` with `hasMoreChanges=true`
+    /// when more events remain than `maxChanges` allowed. The spec-blessed
+    /// continuation is `sinceState = newState`; but a server that resolves
+    /// `newState` to "after *all* pending changes" would then hand us a
+    /// cursor that silently skips the unreturned batch. We cannot pass
+    /// `upToId` here (jmap-client 0.4.2 does not expose it), so while more
+    /// changes remain we keep the *same* sinceState and widen the window
+    /// instead. The 24h dedup key makes re-reading the superset idempotent,
+    /// so this is at-most-duplicate, never-loss. Only when the window stops
+    /// growing (server-side cap) do we fall back to advancing to `new_state`
+    /// to guarantee forward progress.
+    async fn replay_changes(
+        &self,
+        mut state: String,
+        initial_window: usize,
+        started: tokio::time::Instant,
+    ) -> Result<String, ()> {
+        let mut window = initial_window;
         let mut pages = 0_usize;
         loop {
-            if pages >= 100 || started.elapsed() >= RECONCILE_BUDGET {
+            if pages >= RECONCILE_MAX_PAGES || started.elapsed() >= RECONCILE_BUDGET {
                 // Every event from the last completed page is already enqueued.
                 // Returning that cursor lets the next invocation continue from
                 // it instead of retrying the same bounded window forever.
-                return if pages == 0 { Err(()) } else { Ok(cursor) };
+                return if pages == 0 { Err(()) } else { Ok(state) };
             }
             pages += 1;
-            let changes = match self.jmap.email_changes(&cursor, window).await {
+            let changes = match self.jmap.email_changes(&state, window).await {
                 Ok(changes) => changes,
                 Err(_) => {
                     // Re-baseline instead of failing the invocation. jmap-client
@@ -348,30 +459,30 @@ impl<B: JmapBackend> WorkerHandler for MetadataWorker<B> {
                     // untouched, so every later invocation retries the same dead
                     // state and `reconcile:state` freezes forever (a persistent
                     // 503 `reconcile_retry` with no forward progress). The
-                    // position walk above does not depend on server-side
+                    // position walk does not depend on server-side
                     // changelog retention at all, so re-baselining to a fresh
                     // state at position 0 recovers on the next run. The 24h
                     // dedup key makes the resulting re-read at-most-duplicate,
                     // never-loss.
-                    return Ok(encode_baseline_cursor(
-                        &self.jmap.current_state().await.map_err(|_| ())?,
-                        0,
-                    ));
+                    let rebaselined = ReconcileCursor::walk_from(
+                        self.jmap.session_state().await.map_err(|_| ())?,
+                    );
+                    return Ok(rebaselined.to_persisted());
                 }
             };
             for email_id in changes.created.iter().chain(changes.updated.iter()) {
                 self.enqueue_reconcile_event(email_id).await?;
             }
-            if !changes.has_more {
+            if !changes.has_more_changes {
                 return Ok(changes.new_state);
             }
             if window < CHANGE_WINDOW_CAP {
                 window = window.saturating_mul(2).min(CHANGE_WINDOW_CAP);
                 continue;
             }
-            // Window is already at the cap and the server still reports more:
+            // The window is at its cap and the server still reports more:
             // advancing is the only way to make progress.
-            cursor = changes.new_state;
+            state = changes.new_state;
         }
     }
 }
@@ -406,9 +517,7 @@ impl<B: JmapBackend> MetadataWorker<B> {
         // Claim the dedup key and XADD in a single atomic step: a Redis hiccup
         // mid-way must not leave the dedup key claimed while the payload is
         // absent from the stream (which would drop the event for the whole
-        // 24h dedup window). Returning false means another worker owns it.
-        // `false` means another worker already owns the dedup entry for this
-        // email in the current window; either way the event is handled here.
+        // 24h dedup window).
         self.state
             .claim_dedup_and_enqueue(&key, ttl::DEDUP_JMAP_SECONDS, "stalwart:jmap", &payload)
             .await
@@ -1075,6 +1184,40 @@ mod reload_tests {
         assert!(decode_baseline_cursor("baseline:odd:hex").is_none());
     }
 
+    #[test]
+    fn a_walk_cursor_roundtrips_as_a_walk() {
+        let cursor = ReconcileCursor::Walk {
+            state: "state:with:punctuation".to_string(),
+            position: 1234,
+        };
+        assert_eq!(
+            ReconcileCursor::from_persisted(&cursor.to_persisted()),
+            cursor
+        );
+    }
+
+    #[test]
+    fn a_replay_cursor_roundtrips_as_a_bare_state() {
+        let cursor = ReconcileCursor::Replay("state:with:punctuation".to_string());
+        let persisted = cursor.to_persisted();
+        assert_eq!(persisted, "state:with:punctuation");
+        assert_eq!(ReconcileCursor::from_persisted(&persisted), cursor);
+    }
+
+    /// The walk used to be told apart from replay by a position of
+    /// `usize::MAX`, so a legitimately stored max position would have decoded
+    /// as a bare state token and its walk would have been skipped silently.
+    #[test]
+    fn a_max_position_is_not_misread_as_replay_mode() {
+        let cursor = ReconcileCursor::Walk {
+            state: "state".to_string(),
+            position: usize::MAX,
+        };
+        let persisted = cursor.to_persisted();
+        assert!(persisted.starts_with("baseline:"), "{persisted}");
+        assert_eq!(ReconcileCursor::from_persisted(&persisted), cursor);
+    }
+
     struct OkWorker;
     #[async_trait]
     impl WorkerHandler for OkWorker {
@@ -1133,7 +1276,7 @@ mod reconcile_rebaseline_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A backend whose `Email/changes` replay is already invalid while position
-    /// paging still works: `current_state()` succeeds, `list_emails_page`
+    /// paging still works: `session_state()` succeeds, `list_emails_page`
     /// succeeds, `/changes` fails.
     struct StaleChangesBackend {
         changes_calls: Arc<AtomicUsize>,
@@ -1154,7 +1297,7 @@ mod reconcile_rebaseline_tests {
         ) -> Result<(), JmapError> {
             unreachable!("not exercised")
         }
-        async fn current_state(&self) -> Result<String, JmapError> {
+        async fn session_state(&self) -> Result<String, JmapError> {
             Ok("state-fresh".to_string())
         }
         async fn email_changes(
@@ -1228,8 +1371,11 @@ mod reconcile_rebaseline_tests {
 
         let cursor = result.expect("a stale replay must re-baseline instead of failing the run");
         assert_eq!(
-            decode_baseline_cursor(&cursor),
-            Some(("state-fresh".to_string(), 0)),
+            ReconcileCursor::from_persisted(&cursor),
+            ReconcileCursor::Walk {
+                state: "state-fresh".to_string(),
+                position: 0,
+            },
             "the cursor must hold a freshly fetched state at position 0"
         );
         assert_ne!(&cursor, stale);
@@ -1237,6 +1383,127 @@ mod reconcile_rebaseline_tests {
             changes_calls.load(Ordering::SeqCst),
             1,
             "the stale state is attempted exactly once before re-baselining"
+        );
+    }
+
+    /// A listing that never exhausts: every page returns one email, so the walk
+    /// can only stop at the page cap.
+    struct UnboundedListBackend {
+        changes_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl JmapBackend for UnboundedListBackend {
+        async fn create_push_subscription(&self, _callback_url: &str) -> Result<String, JmapError> {
+            unreachable!("not exercised")
+        }
+        async fn destroy_push_subscription(&self, _subscription_id: &str) -> Result<(), JmapError> {
+            unreachable!("not exercised")
+        }
+        async fn verify_push_subscription(
+            &self,
+            _subscription_id: &str,
+            _verification_code: &str,
+        ) -> Result<(), JmapError> {
+            unreachable!("not exercised")
+        }
+        async fn session_state(&self) -> Result<String, JmapError> {
+            Ok("state-fresh".to_string())
+        }
+        async fn email_changes(
+            &self,
+            _account_id: &str,
+            _since_state: &str,
+            _max_changes: usize,
+        ) -> Result<EmailChanges, JmapError> {
+            self.changes_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(EmailChanges {
+                new_state: "state-listed".to_string(),
+                created: vec![],
+                updated: vec![],
+                has_more_changes: false,
+            })
+        }
+        async fn list_folders(&self, _account_id: &str) -> Result<Vec<Folder>, JmapError> {
+            unreachable!("not exercised")
+        }
+        async fn list_emails(
+            &self,
+            _account_id: &str,
+            _folder_id: Option<&str>,
+            _limit: usize,
+        ) -> Result<Vec<EmailMetadata>, JmapError> {
+            unreachable!("not exercised")
+        }
+        async fn list_emails_page(
+            &self,
+            _account_id: &str,
+            _folder_id: Option<&str>,
+            _position: usize,
+            _limit: usize,
+        ) -> Result<Vec<EmailMetadata>, JmapError> {
+            Ok(vec![EmailMetadata {
+                id: "m1".to_string(),
+                subject: None,
+                sender: None,
+                received_at: None,
+                preview: None,
+                size: None,
+                has_attachment: false,
+            }])
+        }
+        async fn read_email(
+            &self,
+            _account_id: &str,
+            _email_id: &str,
+        ) -> Result<Option<EmailContent>, JmapError> {
+            unreachable!("not exercised")
+        }
+        async fn search_emails(
+            &self,
+            _account_id: &str,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<SearchResult, JmapError> {
+            unreachable!("not exercised")
+        }
+    }
+
+    /// A walk cut off at the page cap must hand back a walk cursor, not a
+    /// replay one: replay mode asserts the listing is exhausted, and replaying
+    /// `/changes` from a half-listed state would skip whatever still remains.
+    #[tokio::test]
+    async fn a_walk_cut_by_the_page_cap_persists_its_position() {
+        let changes_calls = Arc::new(AtomicUsize::new(0));
+        let backend = UnboundedListBackend {
+            changes_calls: changes_calls.clone(),
+        };
+        let jmap = JmapService::new(backend, "account-x").expect("account id");
+        let telegram = TelegramClient::with_endpoint(
+            SecretString::from("token".to_string()),
+            runtime_provider(OutboundConfig::default()),
+            "http://127.0.0.1:1/".to_string(),
+        );
+        let state: Arc<dyn ReliableState> = Arc::new(MemoryState::enabled_for_tests());
+        let worker = MetadataWorker::new(jmap, telegram, 42, state, None, 0);
+
+        let cursor = worker
+            .reconcile(None, 100)
+            .await
+            .expect("a capped walk reports progress instead of failing the run");
+
+        assert_eq!(
+            ReconcileCursor::from_persisted(&cursor),
+            ReconcileCursor::Walk {
+                state: "state-fresh".to_string(),
+                position: BASELINE_MAX_PAGES,
+            },
+            "a truncated walk must stay a walk at the position it stopped at"
+        );
+        assert_eq!(
+            changes_calls.load(Ordering::SeqCst),
+            0,
+            "a truncated walk must not replay /changes from a half-listed state"
         );
     }
 }

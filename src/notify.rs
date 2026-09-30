@@ -292,7 +292,8 @@ async fn reconcile(State(app): State<AppState>, headers: HeaderMap) -> Response 
         .await
     {
         Ok(true) => {
-            const MAX_CHANGES: usize = 100;
+            // Sizes only the first `/changes` call: the pass widens it afterwards.
+            const RECONCILE_INITIAL_CHANGES: usize = 100;
             let heartbeat_state = Arc::clone(&app.state);
             let heartbeat_owner = lock_owner.clone();
             let lease_lost = Arc::new(AtomicBool::new(false));
@@ -328,7 +329,10 @@ async fn reconcile(State(app): State<AppState>, headers: HeaderMap) -> Response 
                     );
                 }
             };
-            let result = app.worker.reconcile(since.as_deref(), MAX_CHANGES).await;
+            let result = app
+                .worker
+                .reconcile(since.as_deref(), RECONCILE_INITIAL_CHANGES)
+                .await;
             heartbeat.abort();
             let response = if lease_lost.load(Ordering::Acquire) {
                 StatusCode::SERVICE_UNAVAILABLE
