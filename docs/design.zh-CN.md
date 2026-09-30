@@ -10,7 +10,7 @@
 > **相关文档**（职责分离，避免重复堆砌）：
 > - [docs/charter.md](charter.zh-CN.md) — 项目章程：项目目标、技术选型、安全不变量、实现阶段、禁止事项、测试验收与稳定 ID 注册表
 > - [AGENTS.md](../AGENTS.md) — 通用、语言无关的代码编写与环境构建规范（不含项目专属内容）
-> - [docs/deployment.md](deployment.zh-CN.md) — 部署运维与发布：通用 HTTPS-only Docker 容器、Secrets、Redis（状态唯一载体）、短请求 Webhook/Push/对账路由、健康检查、CI 发布与仍需确认项
+> - [docs/deployment.md](deployment.zh-CN.md) — 部署运维与发布：通用 HTTPS-only Docker 容器、密钥管理、Redis（状态唯一载体）、短请求 Webhook/Push/对账路由、健康检查、CI 发布与仍需确认项
 >
 > 本文档只保留与**产品行为、代码架构、模块接口、状态机、数据流、错误处理、测试和实施阶段**直接相关的内容。部署运维与 Docker/通用容器平台细节已移至 `deployment.md`；项目约束与安全不变量在 `docs/charter.md`；通用、语言无关的代码编写与环境构建规范在 `../AGENTS.md`。
 
@@ -565,7 +565,7 @@ pub enum BotError {
 2. `cargo clippy --all-targets -- -D warnings` 通过（零告警；禁 crate 级 `allow`）。
 3. `cargo test` 通过（含路由/配置最小测试）。
 4. 上述三条**在 Debian `rust:1-slim-bookworm` 容器内**执行通过（`C-DEBIAN-SLIM`）。
-5. 配置读取为 env-only（无 figment/TOML）；`SecretString` 包裹秘密且 `Debug` 不泄密；`JMAP_PASSWORD` 安全访问器保留。
+5. 配置仅读取环境变量（不使用 figment/TOML）；`SecretString` 包装敏感凭据，且 `Debug` 输出不会泄露其内容；保留 `JMAP_PASSWORD` 安全访问器。
 6. `RUN_MODE` **不**参与路由分派：`webhook` 与 `reconcile` 共享同一套路由表，`reconcile` 作为独立 HTTP 端点 `POST /reconcile` 提供。`RUN_MODE` 仅在启动时读取并校验取值，**当前不影响任何运行时行为**，留待后续阶段在此挂载差异化副作用（见 §12.2 的运行模式说明）。
 
 > **阶段0 之后已演进的判据（当前口径，取代上述第 5、6 条的具体实现描述）**：
@@ -609,7 +609,7 @@ pub enum BotError {
 ### 10.2 阶段 2：渠道适配（已完成）
 - `src/channel.rs` 实现 `TelegramClient`（`send_text` / `send_notification`，`reqwest` 自研）；领域类型 `Notification` 在 `src/domain.rs`。
 - Telegram 装配用 `reqwest` 直发 `https://api.telegram.org/bot{token}/sendMessage`（**未引入 teloxide**；评估记录见 `docs/retired.md`）。
-- 入站：`POST /webhook/tg` 校验 secret token → 按 `update_id` 去重（`dedup:tg:{update_id}`）→ 入 Redis Streams → 2xx；出站为 Telegram 唯一用到的 Bot API 端点。
+- 入站：`POST /webhook/tg` 校验 Webhook 密钥 → 按 `update_id` 去重（`dedup:tg:{update_id}`）→ 入 Redis Streams → 2xx；出站为 Telegram 唯一用到的 Bot API 端点。
 - 意图路由：`src/worker.rs` 的 `parse_intent` 解析 6 种意图 —— `Help` / `Consent { ttl, label }` / `Summary(email_id)` / `Search(query)` / `Query` / `Unknown`，全部走自然语言触发词（AI 授权词见 `docs/reference.md` 的 AI 授权态一节）。`/search` 详见 §2.3、§5.7；中文搜索词只做**前缀匹配**（`搜索/查找/检索` + `/search`），避免覆盖授权与摘要意图。
 - 渲染在 adapter 内部：领域 Notification → TG Markdown/HTML + 转义。
 - 会话存储走外部 Redis（`C-REDIS-ONLY-STATE`；**不用 SQLite**）。

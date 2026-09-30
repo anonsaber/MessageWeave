@@ -25,9 +25,8 @@ HTTP 端口（“PORT”，默认“8080”）。该过程需要两个加密的�
 
 ### 容器平台
 
-构建根 Dockerfile 并在平台中配置所需的机密。对于本地人来说
-容器冒烟，将 `.env.example` 复制到未跟踪的 `.env`，替换两个占位符，
-然后运行：
+使用仓库根目录的 Dockerfile 构建镜像，并在部署平台配置必需的密钥。
+如需进行本地容器冒烟测试，将 `.env.example` 复制为未跟踪的 `.env`，替换两个占位值后运行：
 
 ```sh
 docker build -t messageweave:latest .
@@ -47,10 +46,9 @@ docker run --rm --env-file .env -p 8080:8080 messageweave:latest
 `src/notify.rs:694`。后续修改可通过 Worker URL 打开受保护的配置页。
 
 至少配置 Telegram 机器人令牌、目标聊天 ID、入站聊天允许列表、Stalwart
-JMAP HTTPS 会话 URL 和应用程序密码、Webhook 机密和工作人员令牌。设置一个
-如果使用计划的协调，则协调令牌。仅当用户
-已明确同意外部处理。秘密值不会由
-配置API；完整的字段语义位于[配置参考](reference.zh-CN.md#5-环境变量)中。
+JMAP HTTPS 会话 URL 和应用专用密码、Webhook 密钥和工作令牌。如果启用定时对账，还需设置对账令牌。
+只有用户明确同意外部处理时，才配置 LLM。配置 API 不会返回密钥内容；完整字段语义见
+[配置参考](reference.zh-CN.md#5-环境变量)。
 
 ### 2.1 可选的远程诊断
 
@@ -84,24 +82,20 @@ Telegram 使用已保存的 webhook secret 和 `allowed_updates: ["message"]`。
 
 ### 6.3 调度队列排空与状态协调
 
-后端没有内部调度程序。外部 cron、计划作业或平台计时器
-必须调用 [`scripts/cron-drain.sh`](../scripts/cron-drain.sh);否则排队的通知
-仍然未交付。当设置“MW_RECONCILE_TOKEN”时，脚本调用“/reconcile”，然后耗尽
-工作队列。
+后端没有内部调度程序。外部 cron、计划任务或平台定时器必须调用
+[`scripts/cron-drain.sh`](../scripts/cron-drain.sh)，否则排队的通知会一直无法投递。
+设置了 `MW_RECONCILE_TOKEN` 时，脚本先调用 `/reconcile`，然后排空 `/worker` 队列。
 
-提供`MW_APP_URL`和`MW_WORKER_TOKEN`；当对帐时设置“MW_RECONCILE_TOKEN”
-已启用。将令牌存储在调度程序的秘密管理器中。对于单次运行：
-
-使用调度程序的秘密管理器注入的令牌，运行：
+提供 `MW_APP_URL` 和 `MW_WORKER_TOKEN`；启用增量对账时还要设置 `MW_RECONCILE_TOKEN`。
+将这些令牌存入调度器的密钥管理器。单次运行时，使用调度器注入的令牌：
 
 ```sh
 MW_APP_URL='https://<PUBLIC_URL>' bash scripts/cron-drain.sh --once
 ```
 
-调节节奏通常为 5-10 分钟。两个成功的端点都返回“204”
-身体空虚；不要将其视为错误。脚本的“--diagnose”模式有帮助
-将服务配置问题与调度问题分开。其论点和
-操作模式列在[调度程序参考](reference.zh-CN.md#93-回调注册与定时任务)中。
+增量对账通常每 5–10 分钟运行一次。两个端点成功时都返回 `204`，且响应正文为空；这是正常结果，不是错误。
+脚本的 `--diagnose` 模式可帮助区分服务配置问题和调度问题。参数与运行模式见
+[调度器参考](reference.zh-CN.md#93-回调注册与定时任务)。
 
 ### 6.4 可靠性行为
 

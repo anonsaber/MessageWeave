@@ -287,9 +287,8 @@ env var — 并且“DEBUG_TOKEN”非空**（“SAF-DEBUG-GATE”；门被读�
 ## 4. 网关与后端路由对照表
 
 > **独立验证。** 来源：`cloudflare-worker/src/backends.js` `SAFE_ROUTES`，
-> 18 个条目，以及 `ROUTE_METHODS` (`index.js`)
-> 它修复了每个路径的一个方法集。工作线程入口点是 `src/index.js`
-> (`牧马人.toml`); `src/lb.js` 执行转发和有界故障转移（`SAF-LB-PASSTHRU`，
+> 共 18 条，并与 `ROUTE_METHODS`（`index.js`）一起定义每条路径允许的方法。Worker 入口文件是 `src/index.js`
+>（`wrangler.toml`）；`src/lb.js` 实现请求转发和有界故障转移（`SAF-LB-PASSTHRU`，
 > `C-NO-LONG-CONN`)。
 
 该门是**无条件且失败时关闭的**。工作线程没有读取任何配置开关
@@ -328,7 +327,7 @@ admin-session Bearer-auth'd，因此暴露与已转发的相同
 proxy：回调 URL 由客户端在请求正文中提供，
 在写入任何内容之前验证为 URL，并且每个推送订阅记录都是
 写入共享 Redis 并从共享 Redis 读取（`lock:push-register:{sha256(url)}`、`get_push_subscription_for_callback`），
-因此工作人员选择哪个后端实例并不重要。推
+因此请求由哪个后端服务实例处理并不重要。推送
 因此，注册不再需要访问特定的后端地址。操作员保存业务配置后，SPA 会通过受保护接口提交两个回调 URL。
 
 ---
@@ -364,19 +363,17 @@ proxy：回调 URL 由客户端在请求正文中提供，
 
 ### 5.2 存储在 Redis 中的业务配置
 
-SPA 通过 `GET /api/business-config` 读取并写入
-`PUT /api/business-config` （1秒内生效）；第一次成功写入创建
-配置，稍后写热重载吧。 `GET` 返回四个键 — `configured`、`revision`、
-`values`、`secrets_present` — 保存 10 个非秘密字段以及每个字段一个存在布尔值
-秘密（`bot_token`，`jmap_password`，`telegram_webhook_secret`，`reconcile_token`，
-`worker_token`、`llm_api_key`），绝不是秘密值本身（`SAF-NO-SECRET-ECHO`）。与
-没有保存任何内容，但它返回 `200`、`configured: false`、`revision: 0`、空的 `values` 和
-每个标志都为 false，因此 SPA 不需要特殊情况的代码路径。 PUT 主体是 ** 部分
-patch** 仅替换其命名的字段并保留其余字段的存储值（`apply`
-在`config.rs`中）；补丁中省略的秘密保留了存储的秘密，因此预填表格
-值可以安全地重新提交。显式提交的空字符串按原样存储并且实际上
-揭开秘密——“空白意味着不变”是客户端合同，由 SPA 强制执行
-在发送之前删除空白秘密字段，而不是由服务器删除。
+SPA 通过 `GET /api/business-config` 读取配置，并通过 `PUT /api/business-config` 写入配置；
+成功写入后，配置会在 1 秒内生效。首次写入会创建配置，后续写入会热加载配置。
+`GET` 返回 `configured`、`revision`、`values` 和 `secrets_present` 四个字段：`values` 包含 10 个非敏感字段，
+`secrets_present` 则分别标记 `bot_token`、`jmap_password`、`telegram_webhook_secret`、
+`reconcile_token`、`worker_token` 和 `llm_api_key` 是否已配置；响应绝不包含这些密钥的值（`SAF-NO-SECRET-ECHO`）。
+尚未保存配置时，接口返回 `200`、`configured: false`、`revision: 0`、空的 `values`，且所有存在标记均为 `false`，
+因此 SPA 无需为首次配置另设代码路径。
+
+`PUT` 请求体采用**部分更新**：只替换请求中列出的字段，其余字段沿用已存储值（见 `config.rs` 的 `apply`）。
+未提交的密钥会保留原值，因此重新提交预填表单是安全的。显式提交空字符串会清空对应密钥。
+“空白表示不变”是客户端约定；SPA 会在发送前移除空白密钥字段，服务端不会替客户端过滤。
 
 增量语义仅在配置存在后才有效。没有任何存储，就没有
 要回退到的值，因此不完整的补丁会被拒绝，并显示 **422 `invalid_configuration`**
@@ -406,7 +403,7 @@ patch** 仅替换其命名的字段并保留其余字段的存储值（`apply`
 
 `POST /api/business-config/preflight` (`preflight_business_config`) 运行相同的
 验证和客户端根据提交的线路构建并返回每个组件的判决
-无需编写任何内容，也无需接触正在运行的工作人员：
+不写入任何数据，也不调用正在运行的服务处理流程：
 
 ```json
 {
@@ -461,7 +458,7 @@ env 表面并仅列出，以便过时的部署脚本可以被识别为过时的
 
 `send_notification` (`src/channel.rs`) 是唯一将通知渲染到
 Telegram 文本，它只渲染三个元数据行——不是正文，也不是
-法学硕士摘要：
+大语言模型摘要：
 
 ```text
 From: Zhang San <zhang@example.com>
@@ -614,9 +611,9 @@ Redis 打嗝永远不会折叠窗口。仅在多实例上重复
 
 -“/search”**已**实现（“bfe0fd8”）。适配器：“worker.rs”中的“Intent::Search”和
   在`src/domain/jmap.rs`中，由`src/domain/jmap/client.rs`中的`search_emails`支持。
-  什么是“不可能”的：**身体层面**片段。 jmap-client `0.4.2` 仅公开
+  当前无法实现：**邮件正文片段**。jmap-client `0.4.2` 仅公开
   来自“SearchSnippet/get”的“emailId”/“subject”/“preview”，其“Filter”类型没有比较器语法，因此
-  每个部位的身体高光无法通过锁定的板条箱建模。搜索降级为
+  无法通过锁定版本的 crate 实现对邮件各正文部分的高亮。搜索会降级为
   当不支持片段时，“主题”/“预览”突出显示以及纯 ID 列表。设计
   请注意“docs/design.md”第 5.7 节。
 - Cloudflare Worker 不包含 Rust：“cloudflare-worker/src/”仅包含“index.js”，
@@ -647,8 +644,8 @@ Redis 打嗝永远不会折叠窗口。仅在多实例上重复
 - OWASP 日志记录备忘单 — https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html
 
 未链接，因为它们未解析为文档：`crates.io/crates/jmap-client`
-(404) 和 `platform.openai.com` 文档路径 (403)。该项目描述了法学硕士
-依赖项与 OpenAI 兼容，并通过“reqwest”记录它。
+（404）和 `platform.openai.com` 文档路径（403）。项目使用的大语言模型依赖与 OpenAI API 兼容，
+并通过 `reqwest` 调用。
 
 ## 9. 部署平台细节
 
@@ -658,17 +655,14 @@ Redis 打嗝永远不会折叠窗口。仅在多实例上重复
 
 ### 9.1 后端部署方式
 
-**HostStack 生产路径。** 存储库的 `hoststack.yaml` 是生产路径
-HostStack 的本机 Rust 运行时的配置。它运行 `cargo fetch --locked`，构建
-使用“cargo build --release --locked”，启动“./target/release/message-weave”，并使用
-`/healthz` 表示活跃度。将`REDIS_URL`和`CONFIG_ENCRYPTION_KEY`设置为加密服务
-秘密。 YAML 中声明的服务命令会覆盖存储的仪表板命令；去除
-该文件可以恢复HostStack的默认`./target/release/app`，这不是这个包的
-二进制。保持 YAML 签入状态，除非所有仪表板命令均已更正并且
-替换部署已得到验证。
+**HostStack 生产部署。** 仓库中的 `hoststack.yaml` 配置 HostStack 原生 Rust 运行时。
+它运行 `cargo fetch --locked` 和 `cargo build --release --locked`，启动
+`./target/release/message-weave`，并以 `/healthz` 检查存活状态。通过平台加密配置
+`REDIS_URL` 和 `CONFIG_ENCRYPTION_KEY`。YAML 中的服务命令会覆盖控制面板中保存的命令；
+移除该文件会恢复 HostStack 默认的 `./target/release/app`，而这个仓库并不生成该二进制文件。
+在控制面板命令全部修正且替代部署通过验证前，应继续将此 YAML 文件纳入版本控制。
 
-HostStack路径不执行存储库Dockerfile。它的建造者和运行者是
-由平台管理。 Dockerfile 适用于本地容器运行和基于 Docker 的主机。
+HostStack 部署不使用仓库的 Dockerfile；镜像构建和运行时由平台管理。Dockerfile 适用于本地容器运行和其他基于 Docker 的主机。
 
 **Docker 镜像路径。** 根 Dockerfile 有两个阶段：
 
@@ -679,7 +673,7 @@ HostStack路径不执行存储库Dockerfile。它的建造者和运行者是
    通过`tini`启动服务。
 
 该映像没有 Redis 进程、数据库或持久数据卷。运行时配置是
-由主机注入；秘密不会进入构建参数或图像层。 Docker 平台
+由主机注入；敏感凭据不会进入构建参数或镜像层。 Docker 平台
 运行状况检查应调用 [`deployment.md`](deployment.zh-CN.md) 中描述的 HTTP 端点。
 
 ### 9.2 后端配置与密钥
@@ -697,22 +691,17 @@ Telegram、JMAP、allowlist、worker、reconcile 和 LLM 业务设置驻留在 R
 
 ### 9.3 回调注册与定时任务
 
-Telegram 的“setWebhook”请求必须使用配置的 Webhook 密钥并包含“message”
-在“允许的更新”中。使用“getWebhookInfo”检查生成的 URL；电报不回
-该回应中的秘密。旋转机密后重新运行“setWebhook”。
+调用 Telegram 的 `setWebhook` 时，使用已配置的 Webhook 密钥，并在 `allowed_updates` 中包含 `message`。
+使用 `getWebhookInfo` 检查已注册的 URL；Telegram 不会在响应中回显 Webhook 密钥。更换密钥后，需重新调用 `setWebhook`。
 
-使用“POST /api/push/register”和 HTTPS“callback_url”注册 Stalwart 推送。后端
-创建订阅并完成 Stalwart 的验证回调。重复同样的事情
-回调 URL 是幂等的。使用带有该 URL 的“POST /api/push/disable”来删除它。
+通过 `POST /api/push/register` 和 HTTPS `callback_url` 注册 Stalwart Push。后端会创建订阅并完成 Stalwart 的验证回调；
+重复注册相同 URL 是幂等的。调用 `POST /api/push/disable` 并传入该 URL 可删除订阅。
 
-后端没有内部调度程序。 [`scripts/cron-drain.sh`](../scripts/cron-drain.sh)
-调用“/reconcile”（当设置“MW_RECONCILE_TOKEN”时），然后调用“/worker”。配置
-外部中的“MW_APP_URL”、“MW_WORKER_TOKEN”和可选的“MW_RECONCILE_TOKEN”
-调度程序的秘密存储。当操作员需要时`MW_WORKER_URL`可以覆盖默认值
-直接调用后端源。 `--once` 用于 cron； `--loop` 用于托管进程。
-该脚本还提供了“--diagnose”和“--test-notify”用于故障排除。均成功
-漏极端点返回“204”，响应正文为空； `/reconcile` 可以返回 `409` 而
-另一个协调拥有该锁。
+后端没有内置调度器。外部调度器运行 [`scripts/cron-drain.sh`](../scripts/cron-drain.sh)：设置了 `MW_RECONCILE_TOKEN` 时，
+脚本先调用 `/reconcile`，再调用 `/worker`。在调度器的密钥管理器中配置 `MW_APP_URL`、`MW_WORKER_TOKEN`，
+以及可选的 `MW_RECONCILE_TOKEN`。需要绕过 Worker、直连后端源站时，可用 `MW_WORKER_URL` 覆盖默认地址。
+`--once` 用于 cron 单次运行，`--loop` 用于常驻进程；脚本还提供 `--diagnose` 和 `--test-notify` 排查问题。
+两个端点成功时均返回 `204` 和空响应正文。若另一轮对账仍持有锁，`/reconcile` 会返回 `409`。
 
 ### 9.4 健康检查与发布核验
 
@@ -733,7 +722,7 @@ Telegram 的“setWebhook”请求必须使用配置的 Webhook 密钥并包含�
 Worker 是可选的 HTTPS 网关。后端来源必须是 HTTPS 字符串，不带任何内容
 路径、查询、片段或嵌入凭据。目前公开的来源清单和
 “LB_VERSION”在“[vars]”下的“cloudflare-worker/wrangler.toml”中声明。移动
-仅当其值是私有时，“BACKEND_ORIGINS_JSON”才为加密秘密；从不存储
+只有来源地址需要保密时，才将 `BACKEND_ORIGINS_JSON` 作为加密变量存储；从不存储
 该列表中的凭据。 Worker本身不持有Telegram、JMAP、Redis或后端
 商业凭证。
 
@@ -742,19 +731,19 @@ Worker 是可选的 HTTPS 网关。后端来源必须是 HTTPS 字符串，不�
 |根目录 | `cloudflare-worker` |存储库根包含 Rust 服务，而不是 Worker 配置。 |
 |应用名称 | `messageweave-lb` |匹配“wrangler.toml”中的“name”。 |
 |构建命令 |留空 | Wrangler 在部署期间捆绑 Worker；该字段不是测试命令。 |
-|部署命令| `npx 牧马人部署` |将此命令保留在所需的部署字段中。 |
-|预览命令 | `npx 牧马人开发 --ip 0.0.0.0 --端口 8787` |在启用预览版本时使用； “wrangler Preview”不是有效命令。 |
+|部署命令| `npx wrangler deploy` |将此命令填入必需的部署字段。 |
+|预览命令 | `npx wrangler dev --ip 0.0.0.0 --port 8787` |启用预览构建时使用；`wrangler preview` 不是有效命令。 |
 
-在仪表板中，在 **Settings → Variables & Secrets → Add 下添加 Worker 调整值
-变量**。默认值为“LB_REQUEST_TIMEOUT_MS=10000”、“LB_MAX_ATTEMPTS=2”、
+在控制面板的 **Settings → Variables & Secrets → Add variable** 中添加 Worker 调整变量。
+默认值为 `LB_REQUEST_TIMEOUT_MS=10000`、`LB_MAX_ATTEMPTS=2`、
 `LB_RECONCILE_TIMEOUT_MS=320000`、`LB_WORKER_TIMEOUT_MS=300000` 和
-`LB_HEALTH_TTL_MS=30000`。这些是可调整的变量，而不是秘密。 `LB_VERSION` 属于
+`LB_HEALTH_TTL_MS=30000`。这些是可调整的变量，不是敏感凭据。 `LB_VERSION` 属于
 在“[vars]”中，以便部署的版本在源代码管理中保持可见。
 
-如果私有来源列表必须存储在仪表板中，请使用**加密**并添加
-**设置→变量和秘密**下的`BACKEND_ORIGINS_JSON`；删除其“[vars]”条目。
+如果来源列表包含不应公开的地址，请在 **Settings → Variables & Secrets** 下将
+`BACKEND_ORIGINS_JSON` 添加为加密变量，并删除其 `[vars]` 条目。
 对加密变量的更改无需重建代码即可生效。仅预览环境
-接收为该环境配置的机密；可以开始没有原始列表的预览
+只接收为该环境配置的密钥。预览环境可以在没有来源列表时启动，
 但无法验证后端转发。
 
 对于 Git 集成，将选定的提交推送到连接到的 GitHub 存储库
