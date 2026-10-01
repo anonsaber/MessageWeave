@@ -296,7 +296,7 @@ Response conventions:
 ## 4. Gateway vs backend route matrix
 
 > **Independently verified.** Source: `cloudflare-worker/src/backends.js` `SAFE_ROUTES`,
-> 18 entries, alongside `ROUTE_METHODS` (`index.js`)
+> 19 entries, alongside `ROUTE_METHODS` (`index.js`)
 > which fixes one method set per path. The worker entry point is `src/index.js`
 > (`wrangler.toml`); `src/lb.js` performs forwarding and bounded failover (`SAF-LB-PASSTHRU`,
 > `C-NO-LONG-CONN`).
@@ -324,9 +324,12 @@ backend pool returns **503** rather than passing the request through.
 
 `GET, PUT /api/enabled` (the `SAF-ENABLE-FLAG` kill switch) **is** forwarded, because the
 admin SPA serves it at the Worker URL and toggles it from the service card (`loadEnabled`
-reads it, the toggle writes it); both calls are
-admin-session Bearer-auth'd, so the exposure is identical to the already-forwarded
-`/api/admin/session` pair.
+reads it, the toggle writes it). Both endpoints already require credentials, but not the
+same ones: `/api/enabled` is gated by `config_authorized`, which accepts either the shared
+worker token or a valid admin session, while `POST /api/admin/session` is gated by
+`worker_authorized` against the admin credential (`CONFIG_ENCRYPTION_KEY`) and is itself
+what mints the session. Adding `/api/enabled` therefore opens no new credential path —
+`/api/admin/session` was already in the forwarded set.
 
 Consequence: neither remaining route carries external business traffic, so no second ingress is
 needed in front of the backend instances. The SPA's first-boot flow still cannot drive

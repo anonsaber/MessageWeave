@@ -221,17 +221,18 @@ HTTPS URL，之后才进行路由校验或转发。Worker 使用“404”拒绝�
 
 ### 10.5 回调地址
 
-使用网关时，将Telegram的webhook和Stalwart的push回调设置给Worker
-域。外部调度程序可以对转发路径使用相同的 URL。引导程序和
-诊断端点仍然需要后端源。
+使用网关时，将 Telegram 的 webhook 和 Stalwart 的 push 回调都设置为 Worker URL。
+外部调度程序（cron/`systemd`/K8s CronJob）对已转发的路径使用相同的 URL。
+引导程序必须在后端源上执行；诊断端点需要后端源**和** debug token——Worker 都不转发它们。
 
 ### 10.6 网关健康状态
 
-`GET /healthz-worker` 报告 Worker 版本和后端可用性。两者都使用
-用于验证部署的“可用”和“版本”； `status: no-backends` 可以返回
-当未配置有效源时，HTTP 200。
+`GET /healthz-worker` 报告 Worker 的版本（`version`）和健康的 origin 数量
+（`available`）。两者都用于验证部署：`version` 告诉你当前是哪次部署在应答，
+`available` 告诉你有多少 origin 健康。`status: no-backends` 在返回 HTTP 200 时
+是**正确**的。
 
-### 10.7 功能边界
+
 
 Worker 不是 Redis 代理，也不会使后端无状态；共享外部
 Redis 仍然需要。它不添加数据库、长期连接或第二层
@@ -239,10 +240,14 @@ Redis 仍然需要。它不添加数据库、长期连接或第二层
 
 ### 10.8 多源站之间的配置收敛
 
-SPA 的一次编辑只写入 Redis 一次。各源站**惰性收敛，发生在请求边界上**：每个带请求的入口
-（`/worker`、`/reconcile`、`/healthz`、`/push/jmap`、`/api/*`）都会调用
-`refresh_business_config`，它先从 Redis 读全局版本，当 `remote_revision <= local_revision` 时
-立即返回。没有轮询循环，也没有 watch，所以一台完全收不到流量的源站会一直保留它原有的配置。
+SPA 的一次编辑只写入 Redis 一次。各源站**惰性收敛，发生在请求边界上**：每个调用
+`refresh_business_config` 的入口都会先从 Redis 读全局版本，当 `remote_revision <= local_revision`
+时立即返回。没有轮询循环，也没有 watch，所以一台完全收不到流量的源站会一直保留它原有的配置。
+
+会调用的入口是 `/ready`、`/worker`、`/reconcile`、`/push/jmap`、`/webhook/tg`、
+`/api/config`、`/api/business-config`、`/api/telegram/register-webhook`。`GET /healthz`
+**不**在其中——它只是一个静态的 `200 "ok"`，从不刷新；`GET /api/status`、`/api/enabled`、
+`/api/push/register`、`/api/push/disable` 以及 `/api/admin/session` 那一对也不在其中。
 
 **已知行为：重建失败后不会重试，直到下一次版本更新。** 上面的版本判断只是一个提前返回，它不是
 重试保护。当某台源站的 `build_worker` 失败——JMAP session URL 不可达，或 `llm_api_key` /

@@ -165,7 +165,7 @@ Connected. Real environment integration tests must be marked with `#[ignore]` an
 
 ## 7. Document boundaries
 
-Answer only one question per document; **Tables, lists, or values ​​may not be copied across documents. **
+Answer only one question per document; **tables, lists and values must not be duplicated across documents.**
 
 | Documentation | What to answer | Scope of authority |
 |---|---|---|

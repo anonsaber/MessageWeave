@@ -292,7 +292,7 @@ env var — 并且“DEBUG_TOKEN”非空**（“SAF-DEBUG-GATE”；门被读�
 ## 4. 网关与后端路由对照表
 
 > **独立验证。** 来源：`cloudflare-worker/src/backends.js` `SAFE_ROUTES`，
-> 共 18 条，并与 `ROUTE_METHODS`（`index.js`）一起定义每条路径允许的方法。Worker 入口文件是 `src/index.js`
+> 共 19 条，并与 `ROUTE_METHODS`（`index.js`）一起定义每条路径允许的方法。Worker 入口文件是 `src/index.js`
 >（`wrangler.toml`）；`src/lb.js` 实现请求转发和有界故障转移（`SAF-LB-PASSTHRU`，
 > `C-NO-LONG-CONN`)。
 
@@ -317,9 +317,12 @@ env var — 并且“DEBUG_TOKEN”非空**（“SAF-DEBUG-GATE”；门被读�
 | `/debug/*`（7 条路由）| 选择加入的远程调试界面（`SAF-DEBUG-GATE`）；不在 `SAFE_ROUTES` 中，因此**只能**在后端源自己的地址上访问 |
 
 `GET, PUT /api/enabled`（`SAF-ENABLE-FLAG` 终止开关）**被转发**：
-管理 SPA 从 Worker URL 提供，Service 卡片读取它（`loadEnabled`）、切换开关写入它；
-两次调用都走 admin session 的 Bearer 认证，因此它不会暴露比已转发的
-`/api/admin/session` 那一对更多的东西。
+管理 SPA 从 Worker URL 提供，Service 卡片读取它（`loadEnabled`）、切换开关写入它。
+两个端点本来就都要求凭据，但凭据并不相同：`/api/enabled` 由 `config_authorized` 校验，
+它接受共享 worker token **或**有效的 admin session；而 `POST /api/admin/session` 由
+`worker_authorized` 对 admin 凭据（`CONFIG_ENCRYPTION_KEY`）校验，它本身就是发放 session
+的入口。因此新增 `/api/enabled` 并没有打开新的凭据路径——`/api/admin/session` 本来就在
+转发列表里。
 
 后果：没有任何剩余路由承载外部业务流量，所以后端实例前面不需要第二个入口。
 SPA 的首次启动流程仍然无法通过 Worker 的 `/api/bootstrap` 完成——引导要么必须

@@ -267,11 +267,16 @@ business authentication.
 
 ### 10.8 Configuration convergence across origins
 
-One SPA edit writes once to Redis. The origins converge **lazily, at the request boundary**: every
-request-bearing entry point (`/worker`, `/reconcile`, `/healthz`, `/push/jmap`, `/api/*`) calls
-`refresh_business_config`, which reads the global revision from Redis and returns immediately when
-`remote_revision <= local_revision`. There is no polling loop and no watch, so an origin that
-receives no traffic keeps the configuration it already had.
+One SPA edit writes once to Redis. The origins converge **lazily, at the request boundary**: each
+entry point that calls `refresh_business_config` re-reads the global revision from Redis and
+returns immediately when `remote_revision <= local_revision`. There is no polling loop and no
+watch, so an origin that receives no traffic keeps the configuration it already had.
+
+The entry points are `/ready`, `/worker`, `/reconcile`, `/push/jmap`, `/webhook/tg`,
+`/api/config`, `/api/business-config` and `/api/telegram/register-webhook`. `GET /healthz` is
+**not** among them — it is a static `200 "ok"` and never refreshes — and neither does
+`GET /api/status`, `/api/enabled`, `/api/push/register`, `/api/push/disable` or the
+`/api/admin/session` pair.
 
 **Known behavior: a failed rebuild is not retried until the next revision.** The revision check
 above is an early exit, not a retry guard. When `build_worker` fails for one origin — a JMAP
