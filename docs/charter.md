@@ -265,7 +265,7 @@ Answer only one question per document; **Tables, lists, or values ​​may not 
 | `SAF-JMAP-URL` | docs/design.md §7.1 / §4 | JMAP URL constraints: HTTPS only, disallow inline credentials, deny dangerous query | Security |
 | `REQ-JMAP-RAW-MULTIPART` | docs/design.md §3.2/§10.1 | `read_email` Multi-part Original text: Splice the parts "with part_id and bodyValue" in text_body order; no available part → clear error | Requirements |
 | `GATE-G1-JMAP-READONLY` | docs/design.md §10.1 / §6 | G1 access control: read-only adapter **Code has been implemented** (mock + `#[ignore]` real machine test), **to be real `cargo test -- --ignored jmap::` verification** | Process |
-| `ARCH-LB-WORKER` | docs/deployment.md §10 | Multi-instance LB/HA: Free Cloudflare Worker as the only external entrance + failover, the backend is multi-platform with the same mirror | Architecture |
+| `ARCH-LB-WORKER` | docs/deployment.md §10 | Multi-instance LB/HA: a free-plan Cloudflare Worker as the only *registered* entrance, plus failover. The backends stay directly reachable and it adds no access control | Architecture |
 | `C-LB-SINGLE-REG-URL` | docs/deployment.md §10.1 | Telegram/Push/Cron only registers the stable URL of the Worker; the backend platform entrance does not register externally | Constraints |
 | `C-LB-SHARED-SECRETS` | docs/deployment.md §10.3 | Multiple instances must share the same set of `SAF-AUTH-*` secrets, otherwise a random 401 | Constraints |
 | `SAF-LB-PASSTHRU` | docs/deployment.md §10.3 / §3 | Trust model = transparent transmission: Worker does not overwrite authentication; the backend must continue fail-closed verification (the backend may be directly connected to the public network) | Security |

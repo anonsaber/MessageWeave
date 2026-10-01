@@ -32,12 +32,23 @@ State is an architectural boundary here, not a preference.
 One image, one Redis, one SPA. The only difference is what sits in front and which URL you hand
 to Telegram and Stalwart.
 
+**The Cloudflare Worker gateway is optional.** Nothing in the backend requires it, and the
+backend runs identically with or without it. It exists for one reason: Cloudflare's Load
+Balancer product is not available on the free plan, so a Worker is the way a free-plan account
+puts load sharing and failover in front of several backends.
+
+**It is also not a security layer, and it is not meant to be one.** There is no intent to hide
+the backends and no intent to harden them; the origins stay directly reachable whether the
+gateway is present or not, and no access control is added at the edge. The fixed route safelist
+is what makes it a load balancer for a bounded set of paths, not a firewall.
+
 | | Form A: backend origin only | Form B: behind the Cloudflare Worker gateway |
 |---|---|---|
 | What answers requests | one backend host | one Worker URL, N backend origins |
 | Failover | none — a down origin stays down | bounded: 2 attempts by default, only timeout and `5xx` retry |
 | Callback URL you register | `https://a.example` | `https://lb.example` |
-| Reachable routes | every route, including `/api/bootstrap` and `/debug/*` | only the 19 safelisted paths |
+| Backend access | direct from the network | equally direct — the gateway adds no access control |
+| Gateway route set | n/a — there is no gateway | fixed at 19 paths; unknown paths answer `404` |
 | Health to watch | `GET /ready` on the origin | `GET /ready` proxied, plus `GET /healthz-worker` for the gateway aggregate |
 | Extra moving parts | none | one Worker deploy, one origin list |
 | Docs | `docs/deployment.md §2` | `docs/deployment.md §10`, `cloudflare-worker/README.md` |
@@ -56,8 +67,10 @@ business config, because a callback can land on any instance and no instance can
 the one asked for (`C-LB-SHARED-SECRETS`). Mis-matched secrets show up as a random 401, not as
 a routing error.
 
-`POST /api/bootstrap` and `/debug/*` stay origin-only in both forms, so neither is exposed
-through the gateway.
+`POST /api/bootstrap` and `/debug/*` are not in the gateway's route set, so requests addressed
+to the Worker URL never reach them. That is the safelist working as designed for the paths that
+need to be load balanced; it is not hiding anything, because the same origins are reachable at
+their own addresses in both forms.
 
 ## 3. 5-minute setup
 
@@ -135,6 +148,11 @@ trust root — is `CONFIG_ENCRYPTION_KEY` itself, the single 32-byte hex value y
 startup. It is only compared in constant time, and is never echoed, logged, or stored. The
 Redis ACL password, if you have one, authenticates the Redis connection alone and is not
 the credential for any HTTP endpoint.
+
+The optional Cloudflare Worker gateway in front of the backends is not part of this boundary.
+It holds no credential and checks no auth header, and the backends behind it are directly
+reachable either way, so nothing about it changes what stands between an attacker and your
+mail. See §2.
 
 ## 6. Where to read more
 

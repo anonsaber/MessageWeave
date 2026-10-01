@@ -319,8 +319,8 @@ backend pool returns **503** rather than passing the request through.
 
 | Path | Why it is absent from the gateway |
 |---|---|
-| `POST /api/bootstrap` | One-shot trust bootstrap; kept off the public path |
-| `/debug/*` (7 routes) | Opt-in remote-debug surface (`SAF-DEBUG-GATE`); absent from `SAFE_ROUTES`, so it is reachable **only** by talking to the backend origin directly |
+| `POST /api/bootstrap` | One-shot trust bootstrap; not in the route set, so it is only reachable at the backend's own address |
+| `/debug/*` (7 routes) | Opt-in remote-debug surface (`SAF-DEBUG-GATE`); not in `SAFE_ROUTES`, so it is reachable **only** at the backend origin's own address |
 
 `GET, PUT /api/enabled` (the `SAF-ENABLE-FLAG` kill switch) **is** forwarded, because the
 admin SPA serves it at the Worker URL and toggles it from the service card (`loadEnabled`
@@ -700,9 +700,9 @@ variable semantics and Redis business configuration fields are in [§5](#5-envir
 
 Telegram, JMAP, allowlist, worker, reconcile, and LLM business settings are Redis-resident,
 not process environment variables. The field list and validation rules in [§5.2](#52-redis-resident-business-configuration)
-are authoritative. A successful initial save can use the one-shot `/api/bootstrap` endpoint
-on the backend origin; that route is not exposed through the Worker. Subsequent edits use the
-protected configuration API.
+are authoritative. A successful initial save can use the one-shot `/api/bootstrap` endpoint at
+the backend's own address; it is not in the gateway's route set, so a request addressed to the
+Worker never reaches it. Subsequent edits use the protected configuration API.
 
 ### 9.3 Callback registration and scheduled work
 

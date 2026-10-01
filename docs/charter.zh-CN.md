@@ -265,7 +265,7 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 | `SAF-JMAP-URL` | docs/design.md §7.1 / §4 | JMAP URL 约束：仅 HTTPS、禁止内嵌凭据、拒绝危险 query | 安全 |
 | `REQ-JMAP-RAW-MULTIPART` | docs/design.md §3.2/§10.1 | `read_email` 多 part 原文：按 text_body 顺序拼接"有 part_id 且 bodyValue"的部分；无可用部分→明确错误 | 需求 |
 | `GATE-G1-JMAP-READONLY` | docs/design.md §10.1 / §6 | G1 门禁：只读 adapter **代码已实现**（mock + `#[ignore]` 真机测试），**待真实 `cargo test -- --ignored jmap::` 验证** | 流程 |
-| `ARCH-LB-WORKER` | docs/deployment.md §10 | 多实例 LB/HA：免费 Cloudflare Worker 作唯一对外入口 + 故障转移，后端为多平台同镜像 | 架构 |
+| `ARCH-LB-WORKER` | docs/deployment.md §10 | 多实例 LB/HA：免费套餐 Cloudflare Worker 作唯一*注册*入口 + 故障转移；后端仍可直接访问，网关不加访问控制 | 架构 |
 | `C-LB-SINGLE-REG-URL` | docs/deployment.md §10.1 | Telegram/Push/Cron 只登记 Worker 的稳定 URL；后端平台入口不对外登记 | 约束 |
 | `C-LB-SHARED-SECRETS` | docs/deployment.md §10.3 | 多实例必须共享同一组 `SAF-AUTH-*` secret，否则随机 401 | 约束 |
 | `SAF-LB-PASSTHRU` | docs/deployment.md §10.3 / §3 | 信任模型=透传：Worker 不改写鉴权；后端必须继续 fail-closed 校验（后端可能被公网直连） | 安全 |

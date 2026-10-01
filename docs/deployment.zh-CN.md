@@ -41,7 +41,7 @@ docker run --rm --env-file .env -p 8080:8080 messageweave:latest
 
 在原点打开后端的配置页面进行初始设置。使用
 `CONFIG_ENCRYPTION_KEY` 建立管理会话，然后完成一次性引导
-表单。Worker 网关不会公开 bootstrap 路由。bootstrap 和管理会话处理器位于
+表单。bootstrap 路由不在网关路由集内，因此只能在后端自己的地址上访问。bootstrap 和管理会话处理器位于
 `src/notify.rs:834` 与 `src/notify.rs:1187`；业务配置保存处理器位于
 `src/notify.rs:694`。后续修改可通过 Worker URL 打开受保护的配置页。
 
@@ -156,10 +156,16 @@ Telegram 和 Stalwart 的稳定 Worker URL；不要在网关处公开凭据。
 
 ## 10. 可选的 Cloudflare Worker 网关
 
-Worker 为多个后端源提供一个公共 HTTPS 入口点。所有后端
-必须共享相同的Redis和业务配置。 Worker 仅转发其固定的
-路由白名单； bootstrap 和 `/debug/*` 仍然仅限原始。详细路线事实在
-[网关路由矩阵](reference.zh-CN.md#4-网关与后端路由对照表)。
+网关是可选项，后端没有任何东西依赖它。它为多个后端 origin
+提供一个公共 HTTPS 入口。所有后端必须共享同一 Redis 和业务配置。
+详细的路由事实在[网关路由矩阵](reference.zh-CN.md#4-网关与后端路由对照表)中。
+
+它的用途是负载均衡，不是防护。Cloudflare 的 Load Balancer 产品在免费
+套餐上不可用，这就是免费套餐账户在多个 origin 前面做负载均衡与故障转移
+的办法。没有隐藏后端的意图，也没有加固后端的意图：网关在不在，origin
+都同样可以直接访问，边缘上也没有加任何访问控制。固定的路由白名单只是
+限定负载均衡器转发哪些路径——bootstrap 和 `/debug/*` 不在其中，所以发给
+网关的请求到不了它们——但它不是防火墙。
 
 ### 10.1 部署拓扑
 

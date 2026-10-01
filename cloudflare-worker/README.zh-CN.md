@@ -4,7 +4,11 @@
 
 面向一个或多个 MessageWeave 后端的统一 HTTPS 入口，带**有界多 origin 故障转移**（HA/LB 子项目）。**透传模型**：Worker 不解析业务载荷，把请求原样转发给后端 https origin；只有*超时 / 5xx* 才触发有界的故障转移到另一个实例。
 
-> 本组件是**基于白名单限制的边缘负载均衡器**：路由集合固定（19 个白名单路径）、后端 origin 在部署时固定且仅允许 https、任何未知路径一律 `404`。它只把这些固定后端之间的请求做转发与故障转移，不接受任意目标主机，也不提供任何通用的流量中转或隐身能力。
+> 本组件是**针对 MessageWeave 需要放在同一个 URL 后面的一组固定路由的负载均衡器**：路由集合固定（19 个路径）、后端 origin 在部署时固定且仅允许 https、任何未知路径一律 `404`。它只把这些固定后端之间的请求做转发与故障转移，不接受任意目标主机，也不提供通用的流量中转能力。
+>
+> **它的用途是负载均衡，不是防护。** Cloudflare 的 Load Balancer 产品在免费套餐上不可用，所以这是免费套餐账户在它的那些 MessageWeave 后端前面做多 origin 负载分摊与故障转移的办法。这就是它存在的唯一理由，网关是可选的：后端有它和没有它跑起来完全一样。
+>
+> **它不是安全特性。** 这里没有隐藏后端的意图，也没有加固后端的意图。网关在不在，origin 都同样可以直接访问，边缘上也没有加任何访问控制，所以路由白名单不是防火墙，本文档任何一处都不该被读成防护。
 
 > 设计依据：`docs/design.md §11.3`（`NFR-HA-MULTI-INSTANCE`）与 `docs/deployment.md §10`。
 > 安全基线与禁令：`docs/charter.md §3`、`docs/charter.md §5`；稳定 ID 注册表 `docs/charter.md §8`。
@@ -13,6 +17,7 @@
 
 - **只转发。** method、headers（含认证头）、body 一律原样转发。Worker 自身不做任何认证，也不改写任何内容。
 - **无 secret。** 没有 Telegram bot token，没有 JMAP 密码，没有 session secret。它收到什么认证头就转发什么，自己一个都不校验。真正共享的是后端之间必须一致的同一组 `SAF-AUTH-*` secret——`RECONCILE_TOKEN`、`TG_WEBHOOK_SECRET` 与加密后的业务配置——因为回调可能落在任何一个实例上，而任何实例都证明不了自己是被点名的那一个（`C-LB-SHARED-SECRETS`）。凭据不一致的表现是随机 401，而不是路由错误。
+- **不是安全层。** 它是负载均衡器，不是访问控制边界。后端 origin 有没有它都同样直连可达，这里既没有隐藏也没有加固它们。白名单对未知路径的 fail-closed 应答，是让负载均衡器在一组固定路径上定义明确的手段，不是可以依赖的防护。
 - **不做 origin 发现。** origin 只来自部署时的 origin 列表。
 - **零运行时依赖。** 纯 ES2022 加平台提供的 `fetch`、`Headers`、`Request`、`Response`、`URL`。`wrangler` 是 devDependency，只用于 `check`、`deploy`、`dev`。
 - **零状态。** 不连 Redis、不连 JMAP、不连数据库（`C-NO-DB`、`C-REDIS-ONLY-STATE`）。唯一的可变状态是 isolate 内的健康探测缓存。

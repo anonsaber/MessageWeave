@@ -10,11 +10,21 @@ multi-origin failover (HA/LB sub-project). **Pass-through model**: the Worker do
 business payloads and forwards the request as-is to the backend https origins; only *timeout /
 5xx* triggers a bounded failover to another instance.
 
-> This component is a **safelist-restricted edge load balancer**: the route set is fixed (19
-> whitelisted paths), the backend origins are fixed at deploy time and https-only, and every
-> unknown path gets a `404`. It only forwards requests to those fixed backends and fails over
-> between them. It does not accept an arbitrary target host and provides no general-purpose
-> traffic-relay or access-hiding capability.
+> This component is a **load balancer for the fixed set of routes MessageWeave needs behind one
+> URL**: the route set is fixed (19 paths), the backend origins are fixed at deploy time and
+> https-only, and every unknown path gets a `404`. It only forwards requests to those fixed
+> backends and fails over between them. It does not accept an arbitrary target host and
+> provides no general-purpose traffic-relay capability.
+>
+> **Why it exists.** Cloudflare's Load Balancer product is not available on the free plan, so
+> this is the way a free-plan account gets multi-origin load sharing and failover in front of
+> its MessageWeave backends. That is the whole reason for it, and the gateway is optional: the
+> backend runs identically without it.
+>
+> **Why it is not a security feature.** There is no intent here to hide the backends and no
+> intent to harden them. The origins stay directly reachable with or without the gateway and no
+> access control is added at the edge, so the route safelist is not a firewall and nothing in
+> this document is meant to be read as protection.
 
 > Design basis: `docs/design.md §11.3` (`NFR-HA-MULTI-INSTANCE`) and `docs/deployment.md §10`.
 > Security baseline and prohibitions: `docs/charter.md §3`, `docs/charter.md §5`; stable-ID
@@ -29,6 +39,10 @@ business payloads and forwards the request as-is to the backend https origins; o
   the same set of `SAF-AUTH-*` secrets — `RECONCILE_TOKEN`, `TG_WEBHOOK_SECRET` and the
   encrypted business config — because a callback can land on any instance and no instance can
   prove which one was asked (`C-LB-SHARED-SECRETS`). Per-instance secrets mean a random 401.
+- **Not a security layer.** It is a load balancer, not an access-control boundary. The backend
+  origins are directly reachable with or without it, and nothing here hides or hardens them. The
+  safelist's fail-closed answer on unknown paths is what makes the balancer well-defined for a
+  fixed set of paths, not a protection to be relied on.
 - **No origin discovery.** Origins come from the deploy-time origin list only.
 - **Zero runtime dependencies.** Pure ES2022 plus the platform `fetch`, `Headers`, `Request`,
   `Response` and `URL`. `wrangler` is a devDependency, used only by `check`, `deploy` and

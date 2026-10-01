@@ -314,8 +314,8 @@ all：`SAFE_ROUTES` 中缺少的路径返回 **404**，一个已注册的路径
 
 |路径|为什么网关上没有它 |
 |---|---|
-| `POST /api/bootstrap` |一次性信任引导；远离公共道路|
-| `/debug/*`（7 条路线）|选择加入远程调试界面（`SAF-DEBUG-GATE`）； “SAFE_ROUTES”中不存在，因此**只能**通过直接与后端源通信来访问它 |
+| `POST /api/bootstrap` | 一次性信任引导；不在路由集内，只能在后端自己的地址上访问 |
+| `/debug/*`（7 条路线）| 选择加入的远程调试界面（`SAF-DEBUG-GATE`）；不在 `SAFE_ROUTES` 中，因此**只能**在后端源自己的地址上访问 |
 
 “GET, PUT /api/enabled”（“SAF-ENABLE-FLAG”终止开关）**被转发，因为
 管理 SPA 在 Worker URL 上提供服务，并从服务卡（`loadEnabled`
@@ -690,9 +690,9 @@ HostStack 部署不使用仓库的 Dockerfile；镜像构建和运行时由平�
 
 Telegram、JMAP、allowlist、worker、reconcile 和 LLM 业务设置驻留在 Redis 中，
 不是进程环境变量。 [§5.2](#52-存储在-redis-中的业务配置)中的字段列表和验证规则
-是权威的。成功的初始保存可以使用一次性“/api/bootstrap”端点
-在后端原点；该路由不通过 Worker 公开。后续编辑使用
-受保护的配置 API。
+是权威的。成功的初始保存可以使用一次性 `/api/bootstrap` 端点，在后端
+自己的地址上完成；该路由不在网关路由集内，所以发给 Worker 的请求到不了它。
+后续编辑使用受保护的配置 API。
 
 ### 9.3 回调注册与定时任务
 

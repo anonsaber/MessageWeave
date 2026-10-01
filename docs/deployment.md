@@ -42,7 +42,8 @@ only port `8080`. Do not mount a data or log volume. Full image contents are in 
 
 Open the backend's configuration page at its origin for initial setup. Use
 `CONFIG_ENCRYPTION_KEY` to establish the admin session, then complete the one-time bootstrap
-form. The bootstrap route is not exposed by the Worker gateway. The one-time bootstrap and
+form. The bootstrap route is not in the gateway's route set, so it is only reachable at the
+backend's own address. The one-time bootstrap and
 admin-session handlers are `src/notify.rs:834` and `src/notify.rs:1187`; saving business
 configuration uses `src/notify.rs:694`. Later edits can use the protected page through the Worker URL.
 
@@ -176,10 +177,18 @@ The stable IDs in this section point to the project charter's registry.
 
 ## 10. Optional Cloudflare Worker gateway
 
-The Worker provides one public HTTPS entry point for multiple backend origins. All backends
-must share the same Redis and business configuration. The Worker forwards only its fixed
-route allowlist; bootstrap and `/debug/*` remain origin-only. Detailed route facts are in
-the [gateway route matrix](reference.md#4-gateway-vs-backend-route-matrix).
+The gateway is optional; nothing in the backend requires it. It provides one public HTTPS
+entry point for multiple backend origins. All backends must share the same Redis and business
+configuration. Detailed route facts are in the
+[gateway route matrix](reference.md#4-gateway-vs-backend-route-matrix).
+
+Its purpose is load balancing, not protection. Cloudflare's Load Balancer product is not
+available on the free plan, and this is how a free-plan account puts load sharing and failover
+in front of several origins. There is no intent to hide the backends and no intent to harden
+them: the origins are directly reachable whether the gateway is present or not, and no access
+control is added at the edge. The fixed route allowlist is what bounds the paths the balancer
+forwards — bootstrap and `/debug/*` are not in it, so requests addressed to the gateway never
+reach them — but it is not a firewall.
 
 ### 10.1 Topology
 
