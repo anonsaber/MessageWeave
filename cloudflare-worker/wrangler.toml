@@ -12,7 +12,7 @@
 # - 真 secret 不进代码/日志（SAF-LOG-PURITY / C-NO-SECRET-IN-IMAGE；C-LB-SHARED-SECRETS：
 #   所有后端实例共享同一组 secret）。唯一明文例外是 [vars] 里的 BACKEND_ORIGINS_JSON——
 #   它的值只是公开 https origin，不是凭据（见该段的「明文例外的边界」）。
-# - 日志无密钥（SAF-LOG-PURITY）：只打「方法/路径/origin/失败类别」，origin 清单走 secret。
+# - 日志无密钥（SAF-LOG-PURITY）：只打「方法/路径/origin/失败类别」，密钥一律不进日志。
 # - 仅允许转发 safelist 路由（C-LB-SINGLE-REG-URL）；未知路径 404。
 #
 # 部署：
@@ -50,5 +50,5 @@ compatibility_flags = ["nodejs_compat_v2"]
 # 其余五个 LB_* 调参保持可调、不写死，用 dashboard 的 Add Variable 覆盖默认值即可；
 # LB_VERSION 是例外——它是版本标识，必须跟代码同版本、可 diff，写进 dashboard 反而容易漂。
 [vars]
-BACKEND_ORIGINS_JSON = '["https://messageweave-eu-1.motofans.club"]'
+BACKEND_ORIGINS_JSON = '["https://messageweave-eu-1.motofans.club","https://messageweave-eu-2.motofans.club"]'
 LB_VERSION = "2026.10.4"
