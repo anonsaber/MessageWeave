@@ -103,8 +103,8 @@ TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），�
 
 **将来若真要做的最小改动面**（本轮核实过现状，供拆需求时直接用）
 
-- `state:jmap:since` 是**单一全局游标**，无账户维度（读 `src/state.rs:777`、写 `src/state.rs:785`）——两个账户会互相覆盖游标，这是第一个要动的地方。
-- `lock:reconcile` 是**单一全局单飞锁**（Redis 实现 `src/state.rs:1076`）——两个账户的对账会被同一把锁串行化。
+- `state:jmap:since` 是**单一全局游标**，无账户维度（读 `src/state.rs:792`、写 `src/state.rs:800`）——两个账户会互相覆盖游标，这是第一个要动的地方。
+- `lock:reconcile` 是**单一全局单飞锁**（Redis 实现 `src/state.rs:1130`）——两个账户的对账会被同一把锁串行化。
 - `dedup:jmap:{account_id}:{email_id}` **已经带账户段**（`docs/reference.md` §1），键形无需改。
 - `ACCOUNT_ID` 环境变量已存在且经校验（留空取 session 主账户，越界值在 `src/domain/jmap/client.rs:485` 报错），业务配置层也能覆盖 `account_id`（`src/config.rs:465` 的 `unwrap_or_else` 回落）。配置面已就绪，缺的只是实例内的分维度状态。
 

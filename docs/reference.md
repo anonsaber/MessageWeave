@@ -143,16 +143,24 @@ duplicate. Source comment:
 | `push:subscription:id` | No EX | `remember_push_subscription_id` | current-subscription lookup |
 | `push:subscription:{id}:status` | 900 / 300 / 86_400 (min 1 enforced) | `set_push_subscription_status`; `pending` on verification request, `verified` on success, `disabled` on disable | **none** |
 | `push:registration:{sha256(callback_url)}` | EX 604_800 | `remember_push_subscription_for_callback`, called from `register_push` | `get_push_subscription_for_callback`; removed by `remove_push_subscription_for_callback` |
+| `push:registration:current` | EX 604_800 | `set_push_registration_current`, called from `register_push` | `get_push_registration_current`; cleared by `clear_push_registration_current`, and by `disable_push` via `clear_push_registration_current_if` |
 | `push:orphan:{subscription_id}` | EX 604_800 | `record_push_orphan` | orphan sweep |
 
-**Two distinct keys that are frequently confused. Read this before editing either.**
+**Three distinct keys that are frequently confused. Read this before editing any of them.**
 
 - `push:registration:{sha256(callback_url)}` is a **mapping from callback URL to
   subscription id**, TTL seven days. It is not a lock.
+- `push:registration:current` holds the **raw callback URL of the live subscription**, same
+  seven-day TTL. It is written last, after the new subscription is created. Registering with a
+  different URL destroys the previous subscription under the registration lock before creating
+  the new one, so the old origin stops receiving pushes; `disable_push` clears it only when the
+  disabled URL is the current one. Its suffix is the literal `current`, which cannot collide
+  with the `session_digest` hex suffix of the per-URL key. It is neither a mapping nor a lock.
 - `lock:push-register:{sha256(callback_url)}` is the **single-flight registration lock**,
   TTL 360 s. It is not a mapping.
 
-They use the same digest but are separate keys with unrelated lifetimes and purposes.
+The first two share the same TTL but are separate keys with unrelated purposes. The lock uses the
+same digest as the per-URL mapping yet is a different key entirely.
 
 **Annotation: `push:subscription:{id}:status` is write-only by design.**
 The source carries an explicit note on `state.rs`:

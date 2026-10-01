@@ -71,7 +71,7 @@ section in the configuration page. Enter the public HTTPS origin that receives c
 the Worker URL when the gateway is enabled, otherwise the backend origin. The page registers
 `/webhook/tg` with Telegram and `/push/jmap` with Stalwart. Credentials remain in the backend;
 the browser sends only the callback URLs. The protected registration handlers are
-`src/notify.rs:1619` for Telegram and `src/notify.rs:1464` for Stalwart.
+`src/notify.rs:1623` for Telegram and `src/notify.rs:1468` for Stalwart.
 
 Telegram's secret token and `allowed_updates: ["message"]` are taken from the saved business
 configuration. Stalwart verification and verification-code writeback happen automatically

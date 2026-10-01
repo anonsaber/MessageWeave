@@ -64,9 +64,9 @@ Debian slim 运行时阶段；有关运行时内容，请参阅 [§8.2](#82-dock
 
 ## 4.1 注册 Telegram 和 Stalwart 回调
 
-保存业务配置后，在配置页的“注册 Telegram 和 Stalwart 回调”区域操作。输入接收回调的公开 HTTPS origin：启用 Worker 时填写 Worker 地址，否则填写后端地址。页面会向 Telegram 注册 `/webhook/tg`，并向 Stalwart 注册 `/push/jmap`。凭据保留在后端，浏览器只提交回调 URL。Telegram 和 Stalwart 注册处理器分别位于 `src/notify.rs:1439` 与 `src/notify.rs:1315`。
+保存业务配置后，在配置页的“注册 Telegram 和 Stalwart 回调”区域操作。输入接收回调的公开 HTTPS origin：启用 Worker 时填写 Worker 地址，否则填写后端地址。页面会向 Telegram 注册 `/webhook/tg`，并向 Stalwart 注册 `/push/jmap`。凭据保留在后端，浏览器只提交回调 URL。Telegram 和 Stalwart 注册处理器分别位于 `src/notify.rs:1623` 与 `src/notify.rs:1468`。
 
-Telegram 使用已保存的 webhook secret 和 `allowed_updates: ["message"]`。注册后，Stalwart 会自动完成验证回调和 verification-code 写回。可以安全地重复注册；更改回调 origin 会更新 Telegram webhook，并为新的 URL 创建 Stalwart subscription。
+Telegram 使用已保存的 webhook secret 和 `allowed_updates: ["message"]`。注册后，Stalwart 会自动完成验证回调和 verification-code 写回。可以安全地重复注册，重复注册同一 origin 是幂等的。更改回调 origin 会更新 Telegram（原子替换），对 Stalwart 则会在注册锁内先销毁旧订阅、再创建新订阅，因此旧 origin 不再收到推送。
 
 ## 5. 运行时配置
 

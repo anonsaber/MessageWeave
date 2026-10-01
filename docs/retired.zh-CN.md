@@ -78,9 +78,9 @@
 | 把 Telegram 接入拆成「模块入口 / 命令解析 / 会话状态 / 回复渲染」四个文件的目录方案 | 虚构目录方案 | 目标目录树里画出，从未创建 | 命令解析在 `parse_intent`（`src/worker.rs`）；会话/授权态走 Redis TTL（`docs/reference.md` 的 AI 授权态一节）；渲染函数在 `src/channel.rs` 内 |
 | `delivery:pending:{stream}` | 虚构键 | 与 Redis Streams 的 pending-entries list（PEL）混淆——PEL 由 Redis 内部维护，不是可写键 | 真实键：`delivery:inflight:{stream}:{id}`（EX 60）与 `delivery:committed:{stream}:{id}`（EX 604_800），见 `docs/reference.md` 的投递流水线键一节 |
 | `check_config_reload` | 虚构函数 | 未提交草稿中的名字，从未进入代码 | 热更新为 `refresh_business_config`（`src/notify.rs:1130`） |
-| `push:registration:{sha256(callback_url)}` 曾被写成「360s 注册单飞锁」 | 事实误标 | 该键是 7d 回调→订阅 ID 映射 | 真正的 360s 单飞锁是 `lock:push-register:{sha256(callback_url)}`（`src/notify.rs:1328-1330`） |
+| `push:registration:{sha256(callback_url)}` 曾被写成「360s 注册单飞锁」 | 事实误标 | 该键是 7d 回调→订阅 ID 映射 | 真正的 360s 单飞锁是 `lock:push-register:{sha256(callback_url)}`（`src/notify.rs:1481-1483`） |
 | `MESSAGWEAVE_DOMAIN` 曾被写成「生产未配置时 Worker 白名单失效」 | 虚构断言（未提交草稿/讨论中出现，未进文档） | 该环境变量全仓零命中；Worker 白名单是**无条件 fail-closed**：未知路径 404、method 不符 405、后端缺失或解析失败 503（`cloudflare-worker/src/index.js:77-92`） | 无需配置开关，白名单恒生效 |
-| `read_batch` / `retry_or_dlq`「Redis 出错时仍可能返回 `Ok(())`，消费循环因此不会因单次失败退出」 | 虚构断言 | 消费入口是 HTTP handler `worker`（`notify.rs:390`），**不是后台循环**：全仓 `src/` 零命中 `select!`，无信号处理、无常驻 worker 进程。`read_batch`（`state.rs:491`）经 `?` 把 Redis 错误原样上抛（`state.rs:531`），唯一被丢弃的结果是 XGROUP `CREATE` 的 `BUSYGROUP` 幂等保护（`state.rs:499-507`）；`retry_or_dlq` 同样经 `?` 上抛。调用方对每一处 `Err` 都返回 `503 service_unavailable` + `retryable=true`，故「循环不因单次失败退出」这一语义前提本身不成立 | 无——不存在该缺口；`docs/opengaps.md`（原名 `docs/roadmap.md`）「代码缺口」4 → 3，`docs/design.md`「已知边界」同句已删 |
+| `read_batch` / `retry_or_dlq`「Redis 出错时仍可能返回 `Ok(())`，消费循环因此不会因单次失败退出」 | 虚构断言 | 消费入口是 HTTP handler `worker`（`notify.rs:390`），**不是后台循环**：全仓 `src/` 零命中 `select!`，无信号处理、无常驻 worker 进程。`read_batch`（`state.rs:506`）经 `?` 把 Redis 错误原样上抛（`state.rs:546`），唯一被丢弃的结果是 XGROUP `CREATE` 的 `BUSYGROUP` 幂等保护（`state.rs:514-522`）；`retry_or_dlq` 同样经 `?` 上抛。调用方对每一处 `Err` 都返回 `503 service_unavailable` + `retryable=true`，故「循环不因单次失败退出」这一语义前提本身不成立 | 无——不存在该缺口；`docs/opengaps.md`（原名 `docs/roadmap.md`）「代码缺口」4 → 3，`docs/design.md`「已知边界」同句已删 |
 
 ---
 
@@ -89,7 +89,7 @@
 | 把渠道层建成目录模块（含模块入口文件） | 虚构目录 | 渠道层就是 `src/channel.rs` 一个文件 | 无 |
 | `notify::push_handler` / `notify::worker` / `notify::reconcile` 作为模块路径 | 虚构模块路径 | 这些是 `src/notify.rs` 内的自由函数（`jmap_push` / `worker` / `reconcile`），不是模块路径 | 无 |
 | `mod_dedup` / `mod_streams` / `mod_sincestate` | 虚构模块名 | `state.rs` / `notify.rs` 都是平铺文件，无子模块；去重与 Streams 逻辑以自由函数存在 | 无 |
-| `PushVerification` 类型 | 虚构类型 | 未定义；`register_push`（`notify.rs:1315`）内联处理回调 URL 与验证码回写 | 无 |
+| `PushVerification` 类型 | 虚构类型 | 未定义；`register_push`（`notify.rs:1468`）内联处理回调 URL 与验证码回写 | 无 |
 | `CancellationToken` | 虚构类型 | 未使用；无优雅关闭、无信号处理（`src/` 零命中 `tokio::signal` / `ctrl_c`） | 无 |
 | `Preview` 类型 / 4000 字符长邮件保护 / `[继续查看原文]` 按钮 / `/llm-fallback` 按钮 | 虚构类型与 UI | 全部未实现；授权后把全文交给 LLM，失败即回退前 300 字符，无任何截断标注或按钮 | 无 |
 | `LlmErr`（5 变体） | 虚构枚举 | 真实是 `AiError`，仅 3 个变体（`InvalidEndpoint` / `Request` / `Response`） | 无 |

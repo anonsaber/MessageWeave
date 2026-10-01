@@ -142,16 +142,22 @@ DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 
 | `推送：订阅：id` |没有 EX | `记住推送订阅 ID` |当前订阅查找 |
 | `推送：订阅：{id}：状态` | 900 / 300 / 86_400（最低 1 强制执行）| `set_push_subscription_status`;验证请求时为“pending”，成功时为“verified”，禁用时为“disabled” | **无** |
 | `推送：注册：{sha256(callback_url)}` |前 604_800 | `remember_push_subscription_for_callback`，从 `register_push` 调用 | `get_push_subscription_for_callback`;通过 `remove_push_subscription_for_callback` 删除 |
+| `push:registration:current` |前 604_800 | `set_push_registration_current`，从 `register_push` 调用 | `get_push_registration_current`;通过 `clear_push_registration_current` 清除，`disable_push` 经 `clear_push_registration_current_if` 清除 |
 | `push:orphan:{subscription_id}` |前 604_800 | `record_push_orphan` |孤儿扫荡|
 
-**两个不同的键经常被混淆。在编辑之前请阅读本文。**
+**三个不同的键经常被混淆。在编辑之前请阅读本文。**
 
 - `push:registration:{sha256(callback_url)}` 是从回调 URL 到
-  订阅 ID**，TTL 7 天。它不是一把锁。
-- `lock:push-register:{sha256(callback_url)}` 是**单次航班注册锁**，
+  订阅 ID 的**映射**，TTL 7 天。它不是一把锁。
+- `push:registration:current` 存的是**当前存活订阅的回调 URL 原文**，同样 7 天 TTL。它在新订阅
+  创建之后最后写入。用一个不同的回调 URL 注册时，后端会在注册锁内先销毁上一个订阅、再创建
+  新订阅，因此旧 origin 不再收到推送；`disable_push` 只在被注销的正是当前地址时才清它。
+  其后缀是字面量 `current`，不会与 per-URL key 的 `session_digest` 十六进制后缀相撞。
+  它既不是映射也不是锁。
+- `lock:push-register:{sha256(callback_url)}` 是**单飞注册锁**，
   TTL 360 秒。它不是映射。
 
-它们使用相同的摘要，但是是具有不相关生命周期和用途的单独密钥。
+前两者 TTL 相同但是用途无关的独立键。锁与 per-URL 映射使用相同的摘要，但完全是不同的键。
 
 **注释：`push:subscription:{id}:status` 设计为只写。**
 来源对“state.rs”有明确的注释：
