@@ -19,7 +19,6 @@
         <span class="brand-copy"><strong>MessageWeave</strong><span data-i18n="brand.tagline">Service configuration</span></span>
       </a>
       <span class="topbar-note"><span class="secure-dot"></span><span data-i18n="topbar.note">Secure configuration channel</span></span>
-      <span id="build-version-top" class="topbar-version" aria-hidden="true"></span>
     </header>
 
     <main class="layout">
@@ -43,7 +42,6 @@
         <p id="setup-missing" class="setup-missing" hidden></p>
         <p class="setup-privacy" data-i18n="setup.privacy">Startup secrets must be configured in the deployment environment. Secrets are never saved or echoed in the page.</p>
         <button id="status-retry-button" class="button button-quiet" type="button" data-i18n="setup.retry">Re-check</button>
-        <p id="build-version-setup" class="build-version" aria-hidden="true"></p>
       </section>
 
       <section id="auth-card" class="panel auth-panel" aria-labelledby="auth-title" hidden>
@@ -137,13 +135,15 @@
           </form>
         </section>
 
-        <section class="panel config-section" aria-labelledby="callback-title">
+        <section class="panel config-section callback-section" aria-labelledby="callback-title">
           <div class="section-heading">
             <div><p class="eyebrow" data-i18n="callback.eyebrow">External callbacks</p><h2 id="callback-title" data-i18n="callback.title">Register Telegram and Stalwart callbacks</h2></div>
           </div>
-          <p class="section-copy" data-i18n="callback.copy">Save the business configuration first. Enter the public HTTPS origin that receives callbacks, then register both services from this page.</p>
-          <div class="field field-wide"><label for="callback-origin" data-i18n="callback.originLabel">Public HTTPS origin</label><input id="callback-origin" type="url" inputmode="url" autocomplete="url" placeholder="https://mail.example.com" data-i18n-placeholder="callback.originPlaceholder"/><small data-i18n="callback.originHint">Use the Worker URL when enabled; otherwise use the backend URL. Enter only the origin, without a path.</small></div>
-          <div class="form-footer"><p id="callback-state" class="save-state" aria-live="polite" data-i18n="callback.state">Registration is an explicit action and can be repeated safely.</p><div class="form-actions"><button id="callback-register-button" class="button button-primary" type="button" disabled data-i18n="callback.register">Register callbacks</button></div></div>
+          <p class="section-copy" data-i18n="callback.copy">Save the business configuration first. This page registers callbacks with the Cloudflare Worker front proxy when it is enabled, or with the backend directly when it is not. Enter the public HTTPS origin that receives callbacks, then register both services from this page.</p>
+          <div class="field-grid">
+            <div class="field field-wide"><label for="callback-origin" data-i18n="callback.originLabel">Public HTTPS origin</label><input id="callback-origin" type="url" inputmode="url" autocomplete="url" placeholder="https://mail.example.com" data-i18n-placeholder="callback.originPlaceholder"/><small data-i18n="callback.originHint">Callbacks hit the Cloudflare Worker front proxy, or the backend directly when no proxy is enabled. Use the Worker URL when the proxy is enabled, otherwise the backend URL. Enter only the origin, without a path.</small></div>
+          </div>
+          <div class="form-footer"><p id="callback-state" class="save-state" aria-live="polite" data-i18n="callback.state">Registration is an explicit action and can be repeated safely. Registering a new address cancels the previous subscription, so the old address stops receiving pushes.</p><div class="form-actions"><button id="callback-register-button" class="button button-primary" type="button" disabled data-i18n="callback.register">Register callbacks</button></div></div>
         </section>
 
         <section class="panel config-section runtime-section" aria-labelledby="runtime-title">
@@ -172,7 +172,5 @@
 
       <aside id="privacy-note" class="privacy-note" hidden><span class="privacy-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 2.8 8 7 10 4.2-2 7-5.5 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg></span><p><strong data-i18n="privacy.title">Secrets are never echoed or persisted to the browser.</strong> <span data-i18n="privacy.body">Your settings are encrypted before they are saved on the server. Email contents are not shown here.</span></p></aside>
     </main>
-
-    <footer class="footer"><span id="build-version" class="footer-version">build version —</span></footer>
   </body>
 </html>

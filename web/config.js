@@ -147,8 +147,6 @@
       "privacy.body": "Your settings are encrypted before they are saved on the server. Email contents are not shown here.",
       "common.required": "Required",
       "common.optional": "Optional",
-      "common.buildVersion": "Build version",
-      "common.buildVersionUnknown": "Build version unavailable",
       "common.atLeastOne": "At least one",
       "common.ms": "ms",
       "common.times": "times",
@@ -210,11 +208,11 @@
       "login.fail": "Unable to connect to the admin service; check the network and retry.",
       "callback.eyebrow": "External callbacks",
       "callback.title": "Register Telegram and Stalwart callbacks",
-      "callback.copy": "Save the business configuration first. Enter the public HTTPS origin that receives callbacks, then register both services from this page.",
+      "callback.copy": "Save the business configuration first. This page registers callbacks with the Cloudflare Worker front proxy when it is enabled, or with the backend directly when it is not. Enter the public HTTPS origin that receives callbacks, then register both services from this page.",
       "callback.originLabel": "Public HTTPS origin",
       "callback.originPlaceholder": "https://mail.example.com",
-      "callback.originHint": "Use the Worker URL when enabled; otherwise use the backend URL. Enter only the origin, without a path.",
-      "callback.state": "Registration is an explicit action and can be repeated safely.",
+      "callback.originHint": "Callbacks hit the Cloudflare Worker front proxy, or the backend directly when no proxy is enabled. Use the Worker URL when the proxy is enabled, otherwise the backend URL. Enter only the origin, without a path.",
+      "callback.state": "Registration is an explicit action and can be repeated safely. Registering a new address cancels the previous subscription, so the old address stops receiving pushes.",
       "callback.saveFirst": "Save the current business configuration before registering callbacks.",
       "callback.register": "Register callbacks",
       "callback.registerBusy": "Registering…",
@@ -360,8 +358,6 @@
       "privacy.body": "你的设置会加密后保存在服务器上。这里不会显示邮件内容。",
       "common.required": "必填",
       "common.optional": "可选",
-      "common.buildVersion": "构建版本",
-      "common.buildVersionUnknown": "构建版本未知",
       "common.atLeastOne": "至少一项",
       "common.ms": "毫秒",
       "common.times": "次",
@@ -425,11 +421,11 @@
       "timezone.desc": "Telegram 通知中的收件时间按此时区渲染。",
       "callback.eyebrow": "外部回调",
       "callback.title": "注册 Telegram 和 Stalwart 回调",
-      "callback.copy": "先保存业务配置，再输入接收回调的公开 HTTPS 地址。本页会向两个服务注册回调。",
+      "callback.copy": "先保存业务配置。本页会向 Cloudflare Worker 前置代理（启用时）或后端本身注册回调。请输入接收回调的公开 HTTPS 地址，然后在本页注册两个服务。",
       "callback.originLabel": "公开 HTTPS 地址",
       "callback.originPlaceholder": "https://mail.example.com",
-      "callback.originHint": "启用 Worker 时填写 Worker 地址，否则填写后端地址。只填写站点 origin，不带路径。",
-      "callback.state": "注册需要显式操作，可以安全地重复执行。",
+      "callback.originHint": "回调会打到 Cloudflare Worker 前置代理或直接打到后端。启用前置代理时填 Worker 地址，否则填后端地址；只填站点 origin，不带路径。",
+      "callback.state": "注册需要显式操作，可以安全地重复执行。改用新地址注册会先注销旧订阅，旧地址不会再收到推送。",
       "callback.saveFirst": "请先保存当前业务配置，再注册回调。",
       "callback.register": "注册回调",
       "callback.registerBusy": "正在注册…",
@@ -619,9 +615,6 @@
   const llmModel = document.querySelector("#llm-model");
   const notice = document.querySelector("#notice");
   const preflightButton = document.querySelector("#business-preflight-button");
-  const versionFooter = document.querySelector("#build-version");
-  const versionTop = document.querySelector("#build-version-top");
-  const versionSetup = document.querySelector("#build-version-setup");
 
   // C-NO-LOCAL-WRITE / C-REDIS-ONLY-STATE: credentials and configuration stay in page memory.
   let adminSession = "";
@@ -716,24 +709,12 @@
     return parseResponseText(responseText, response.status);
   }
 
-  // The build fingerprint comes from /api/status so the SPA never hard-codes one: the binary
-  // supplies it at compile time and the page just echoes it. Absent means the backend is older
-  // than the version endpoint, which is itself useful information for an operator.
-  function renderVersion(version) {
-    const value = typeof version === "string" && version.trim() ? version.trim() : "";
-    const label = t("common.buildVersion");
-    if (versionFooter) versionFooter.textContent = value ? `${label} ${value}` : t("common.buildVersionUnknown");
-    if (versionTop) versionTop.textContent = value;
-    if (versionSetup) versionSetup.textContent = value ? `${label} ${value}` : "";
-  }
-
   async function showSetupStatus(options = {}) {
     showSetupView(t("setup.checking"));
     statusRetryButton.disabled = true;
     statusRetryButton.textContent = t("setup.checkingBtn");
     try {
       const status = await request("/api/status", "GET", undefined, "");
-      renderVersion(status && status.version);
       if (status && status.ready === true) {
         setupMode = false;
         setupCard.hidden = true;
