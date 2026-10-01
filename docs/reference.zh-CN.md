@@ -32,13 +32,13 @@
 
 ### 1.1 配置
 
-|关键| TTL |作家 |读者|
+| 键 | TTL | 写入方 | 读取方 |
 |---|---|---|---|
-| `配置：业务` |没有 EX | `set_business_config`;首次通过“initialize_business_config”中的“SET NX”写入 | `获取业务配置` |
-| `配置：业务：修订版` |没有 EX |每次配置写入时原子“INCR”；首次初始化时“SET 1 NX”| `business_config_revision` |
-| `配置：出站` |没有 EX | `set_outbound_config` | `get_outbound_config` |
-| `配置：启用` |没有 EX | `设置启用` | `已启用` |
-| `配置：admin_session` | EX 1800（30 分钟） | `put_admin_session` | `admin_session_valid`;由 `revoke_admin_session` 清除 |
+| `config:business` | 无 EX | `set_business_config`；首次写入通过 `initialize_business_config` 内的 `SET NX` | `get_business_config` |
+| `config:business:revision` | 无 EX | 每次配置写入做原子 `INCR`；首次初始化用 `SET 1 NX` | `business_config_revision` |
+| `config:outbound` | 无 EX | `set_outbound_config` | `get_outbound_config` |
+| `config:enabled` | 无 EX | `set_enabled` | `is_enabled` |
+| `config:admin_session` | EX 1800（30 分钟） | `put_admin_session` | `admin_session_valid`;由 `revoke_admin_session` 清除 |
 
 笔记：
 
@@ -52,9 +52,9 @@
 
 ### 1.2 AI 授权
 
-|关键| TTL |作家 |读者|
+| 键 | TTL | 写入方 | 读取方 |
 |---|---|---|---|
-| `同意：ai:{chat_id}` | EX 3600 / 86_400 / 604_800 / 31_536_000 | `set_ai_consent` | `ai_consent_until`;由 `clear_ai_consent` 清除 |
+| `consent:ai:{chat_id}` | EX 3600 / 86_400 / 604_800 / 31_536_000 | `set_ai_consent` | `ai_consent_until`;由 `clear_ai_consent` 清除 |
 
 存储的值是**绝对 Unix 到期时间戳**，而不是持续时间；钥匙是“EX”
 具有相同的持续时间，因此密钥会自行删除。
@@ -64,33 +64,33 @@
 
 |输入 | TTL |标签|
 |---|---|---|
-| `/ai on`, `/ai yes`, `开启 ai`, `同意摘要`, `允许 ai` | 3600 | 3600 `1小时` |
-| `临时`、`一次`（子字符串）| 3600 | 3600 `临时1小时` |
+| `/ai on`, `/ai yes`, `开启 ai`, `同意摘要`, `允许 ai` | 3600 | `1小时` |
+| `临时`、`一次`（子字符串）| 3600 | `临时1小时` |
 | `今天` | 86_400 | `今天` |
 | `7天` | 604_800 | `7天` |
-| `直到我取消`, `长期` (子串) | 31_536_000（365 天）| `直到截至（截至365天）` |
-| `/ai off`、`关闭 ai`、`取消授权`、`停止摘要` | — |撤销|
+| `直到我撤销`, `长期`（子串）| 31_536_000（365 天）| `直到撤销（最长365天）` |
+| `/ai off`, `关闭 ai`, `撤销授权`, `停止摘要` | — |撤销|
 
 `/ai ...` 斜杠形式与整个消息完全匹配；中文短语是
 子字符串匹配消息中的任何位置（都在“parse_intent”、“worker.rs”内）。
 
-`1小时` / `临时1小时` / `直到为止（截止365天）`是**类别标签，而不是触发词**：
+`1小时` / `临时1小时` / `直到撤销（最长365天）`是**类别标签，而不是触发词**：
 单独输入标签不会带来任何好处。同意永远不会自动续订。
 
 相同的“parse_intent”（“worker.rs”，“Intent”的变体）路由“/search <关键词>”
-以及中文前缀“搜索”、“查找”、“搜索”（仅匹配前缀，绝不是子字符串）
-`意图::搜索`。搜索未授予同意并且不写入 Redis 密钥。
+以及中文前缀 `搜索`、`查找`、`检索`（只做前缀匹配，绝不做子串匹配），
+路由到 `Intent::Search`。搜索不授予授权，也不写任何 Redis 键。
 
 ### 1.3 投递流水线
 
-|关键| TTL |作家 |读者|
+| 键 | TTL | 写入方 | 读取方 |
 |---|---|---|---|
 | `stalwart:jmap`, `stalwart:telegram` |流式传输，无 EX | `State::enqueue` （一个 `XADD`），从 `telegram_webhook` 和 `jmap_push` 调用；通过 `claim_dedup_and_enqueue` (`worker.rs`) | 协调路径消费者组“stalwart-workers”、消费者“http-worker”上的“read_batch” |
-| `交付：飞行中：{stream}：{id}` |前 60 |在交付路径中使用“claim_dedup”构建并声明密钥 |完成后`release_dedup`
-| `交付：已提交：{stream}：{id}` |前 604_800 |在交付路径中使用“claim_dedup”构建并声明密钥 |发送前`dedup_exists`
-| `重试：{stream}：{id}` |前 86_400 | `retry_or_dlq` 的 Lua 脚本（同一键上的 `INCR` 然后 `EXPIRE`）|回收路径|
-| `坚定：jmap：dlq`，`坚定：telegram：dlq` |流式传输，无 EX |相同 Lua 脚本的“XADD”；名称从工作线程中的 `retry_or_dlq` 调用站点传入（使用 `max_attempts` 3） | **代码中没有任何内容读取它** |
-| `状态：jmap：自` |无（耐用）| `set_reconcile_state` |每次传递之前的`get_reconcile_state`；根据 §6.5 进行编码 |
+| `delivery:inflight:{stream}:{id}` | EX 60 | 交付路径中由 `claim_dedup` 构建并声明 | 完成后 `release_dedup`
+| `delivery:committed:{stream}:{id}` | EX 604_800 | 交付路径中由 `claim_dedup` 构建并声明 | 发送前 `dedup_exists`
+| `retry:{stream}:{id}` | EX 86_400 | `retry_or_dlq` 的 Lua 脚本（同一键上的 `INCR` 然后 `EXPIRE`）|回收路径|
+| `stalwart:jmap:dlq`, `stalwart:telegram:dlq` |流式传输，无 EX |相同 Lua 脚本的“XADD”；名称从工作线程中的 `retry_or_dlq` 调用站点传入（使用 `max_attempts` 3） | **代码中没有任何内容读取它** |
+| `state:jmap:since` | 无（持久）| `set_reconcile_state` |每次传递之前的`get_reconcile_state`；根据 §6.5 进行编码 |
 
 没有 `delivery:pending:{stream}` 键 — “pending”指的是 Redis Streams
 待处理条目列表 (PEL)，Redis 内部维护。
@@ -99,7 +99,7 @@
 该错误记录在“docs/retired.md”中。
 
 每个事件至多交付一次：“delivery:inflight”密钥在 60 秒的窗口内领取
-出站发送前，“delivery:comfilled”将保证延长至发送后 7 天
+出站发送前，`delivery:committed`将保证延长至发送后 7 天
 确认。
 
 DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 /
@@ -109,12 +109,12 @@ DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 
 
 ### 1.4 幂等与速率限制
 
-|关键| TTL |作家 |读者|
+| 键 | TTL | 写入方 | 读取方 |
 |---|---|---|---|
 | `dedup:tg:{update_id}` |前 86_400 |使用 `telegram_webhook` 中的 `claim_dedup` 构建并声明，在失败的入队时使用 `release_dedup` 释放 | — |
-| `dedup:jmap:{帐户}:{电子邮件}` |前 86_400 |使用“jmap_push”中的“claim_dedup”构建并声明；在协调路径上重建相同的密钥并使用“claim_dedup_and_enqueue”（“worker.rs”）|声明— |
-| `速率限制：推送验证：{订阅}` |前 30 |使用“register_push”中的“claim_dedup”构建并声明； “错误”声明是“429 Push_verify_rate_limited”分支 | — |
-| `状态：jmap：自` | **无 EX** | `set_reconcile_state`（没有 `EX` 的 `SET`）| `get_reconcile_state` |
+| `dedup:jmap:{account}:{email}` | EX 86_400 |使用“jmap_push”中的“claim_dedup”构建并声明；在协调路径上重建相同的密钥并使用“claim_dedup_and_enqueue”（“worker.rs”）|声明— |
+| `ratelimit:push-verify:{subscription}` | EX 30 | 由 `register_push` 中的 `claim_dedup` 构建并声明；`false` 的声明结果就是 `429 push_verify_rate_limited` 分支 | — |
+| `state:jmap:since` | **无 EX** | `set_reconcile_state`（没有 `EX` 的 `SET`）| `get_reconcile_state` |
 
 `state:jmap:since` 是唯一一个在没有显式声明的情况下无限期存在的状态键
 删除，按设计：它是协调游标，过期将强制完全删除
@@ -122,10 +122,10 @@ DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 
 
 ### 1.5 锁
 
-|关键| TTL |作家 |读者|
+| 键 | TTL | 写入方 | 读取方 |
 |---|---|---|---|
-| `锁定：协调` | 300 | 300 `reconcile` 中的 `acquire_lock` |心跳任务中的 `renew_lock`（90 秒） |
-| `lock:push-register:{sha256(callback_url)}` | 360 | 360 `register_push` 中的 `acquire_lock` | `register_push` 每个退出路径上的 `release_lock`
+| `lock:reconcile` | 300 | `reconcile` 中的 `acquire_lock` |心跳任务中的 `renew_lock`（90 秒） |
+| `lock:push-register:{sha256(callback_url)}` | 360 | `register_push` 中的 `acquire_lock` | `register_push` 每个退出路径上的 `release_lock`
 
 **为什么注册锁是 360 秒而不是 300 秒。** 锁的寿命必须是最长的
 配置 JMAP 请求超时（300 秒），否则缓慢的注册可能会导致
@@ -136,12 +136,12 @@ DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 
 
 ### 1.6 推送订阅状态
 
-|关键| TTL |作家 |读者|
+| 键 | TTL | 写入方 | 读取方 |
 |---|---|---|---|
-| `推送：订阅：{id}` | EX 300（呼叫者提供，最少 1）| `remember_push_subscription`，从 `register_push` 调用 | `push_subscription_verified` |
-| `推送：订阅：id` |没有 EX | `记住推送订阅 ID` |当前订阅查找 |
-| `推送：订阅：{id}：状态` | 900 / 300 / 86_400（最低 1 强制执行）| `set_push_subscription_status`;验证请求时为“pending”，成功时为“verified”，禁用时为“disabled” | **无** |
-| `推送：注册：{sha256(callback_url)}` |前 604_800 | `remember_push_subscription_for_callback`，从 `register_push` 调用 | `get_push_subscription_for_callback`;通过 `remove_push_subscription_for_callback` 删除 |
+| `push:subscription:{id}` | EX 300（调用方提供，最小 1）| `remember_push_subscription`，从 `register_push` 调用 | `push_subscription_verified` |
+| `push:subscription:id` | 无 EX | `remember_push_subscription_id` | 当前订阅查询 |
+| `push:subscription:{id}:status` | 900 / 300 / 86_400（强制最小 1）| `set_push_subscription_status`；验证请求时为 `pending`，成功时为 `verified`，禁用时为 `disabled` | **无** |
+| `push:registration:{sha256(callback_url)}` | EX 604_800 | `remember_push_subscription_for_callback`，从 `register_push` 调用 | `get_push_subscription_for_callback`;通过 `remove_push_subscription_for_callback` 删除 |
 | `push:registration:current` |前 604_800 | `set_push_registration_current`，从 `register_push` 调用 | `get_push_registration_current`;通过 `clear_push_registration_current` 清除，`disable_push` 经 `clear_push_registration_current_if` 清除 |
 | `push:orphan:{subscription_id}` |前 604_800 | `record_push_orphan` |孤儿扫荡|
 
@@ -165,8 +165,8 @@ DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 
 > `push:subscription:{id}:status` 目前是只写的
 
 它是一个用于“redis-cli”检查的操作/可观察性跟踪；它**不是**门
-并且没有任何内容读取它以获取授权。曾经写入的三个值是“pending”（900 s），
-“已验证”（300 秒）和“已禁用”（86400 秒）——请参阅上表了解其调用站点。
+也没有任何代码为鉴权目的读取它。历史上写入过的三个取值是 `pending`（900 s）、
+`verified`（300 s）和 `disabled`（86400 s）——各自的调用点见上表。
 不要根据它的存在来推断其正确性。
 
 ---
@@ -296,10 +296,9 @@ env var — 并且“DEBUG_TOKEN”非空**（“SAF-DEBUG-GATE”；门被读�
 >（`wrangler.toml`）；`src/lb.js` 实现请求转发和有界故障转移（`SAF-LB-PASSTHRU`，
 > `C-NO-LONG-CONN`)。
 
-该门是**无条件且失败时关闭的**。工作线程没有读取任何配置开关
-all：`SAFE_ROUTES` 中缺少的路径返回 **404**，一个已注册的路径
-方法错误的路径返回**405**，并且缺少或无法解析
-后端池返回 **503** 而不是传递请求。
+该门是**无条件且失败时关闭的**。Worker 不读取任何配置开关：
+`SAFE_ROUTES` 中缺少的路径返回 **404**，已注册路径上的错误方法返回 **405**，
+缺失或无法解析的后端池返回 **503** 而不是转发请求。
 
 **由 Worker 转发（19）：**
 
@@ -315,25 +314,22 @@ all：`SAFE_ROUTES` 中缺少的路径返回 **404**，一个已注册的路径
 |路径|为什么网关上没有它 |
 |---|---|
 | `POST /api/bootstrap` | 一次性信任引导；不在路由集内，只能在后端自己的地址上访问 |
-| `/debug/*`（7 条路线）| 选择加入的远程调试界面（`SAF-DEBUG-GATE`）；不在 `SAFE_ROUTES` 中，因此**只能**在后端源自己的地址上访问 |
+| `/debug/*`（7 条路由）| 选择加入的远程调试界面（`SAF-DEBUG-GATE`）；不在 `SAFE_ROUTES` 中，因此**只能**在后端源自己的地址上访问 |
 
-“GET, PUT /api/enabled”（“SAF-ENABLE-FLAG”终止开关）**被转发，因为
-管理 SPA 在 Worker URL 上提供服务，并从服务卡（`loadEnabled`
-读取它，切换开关写入它）；两个电话都是
-admin-session Bearer-auth'd，因此暴露与已转发的相同
-`/api/admin/session` 对。
+`GET, PUT /api/enabled`（`SAF-ENABLE-FLAG` 终止开关）**被转发**：
+管理 SPA 从 Worker URL 提供，Service 卡片读取它（`loadEnabled`）、切换开关写入它；
+两次调用都走 admin session 的 Bearer 认证，因此它不会暴露比已转发的
+`/api/admin/session` 那一对更多的东西。
 
-结果：剩余路由均不承载外部业务流量，因此没有第二个入口
-在后端实例之前需要。 SPA的首次启动流程仍然无法驱动
-通过worker的`/api/bootstrap` - 必须针对后端源执行引导程序
-直接，或者必须将引导路径添加到网关白名单中。
+后果：没有任何剩余路由承载外部业务流量，所以后端实例前面不需要第二个入口。
+SPA 的首次启动流程仍然无法通过 Worker 的 `/api/bootstrap` 完成——引导要么必须
+直接针对后端 origin 执行，要么必须把 bootstrap 路径加入网关白名单。
 
-`POST /api/push/register`、`POST /api/telegram/register-webhook` 和 `POST /api/push/disable` **被转发。这些接口可以安全地
-proxy：回调 URL 由客户端在请求正文中提供，
-在写入任何内容之前验证为 URL，并且每个推送订阅记录都是
-写入共享 Redis 并从共享 Redis 读取（`lock:push-register:{sha256(url)}`、`get_push_subscription_for_callback`），
-因此请求由哪个后端服务实例处理并不重要。推送
-因此，注册不再需要访问特定的后端地址。操作员保存业务配置后，SPA 会通过受保护接口提交两个回调 URL。
+`POST /api/push/register`、`POST /api/telegram/register-webhook` 和 `POST /api/push/disable` **被转发**。这些路由可以安全代理：
+回调 URL 由客户端在请求正文中提供，在写入任何内容之前就被校验为 URL，并且每个推送订阅记录
+都写入共享 Redis 也从共享 Redis 读取（`lock:push-register:{sha256(url)}`、`get_push_subscription_for_callback`），
+因此请求由哪个后端服务实例处理并不重要——推送注册不再需要访问某个特定的后端地址。
+操作员保存业务配置后，SPA 会通过受保护接口提交两个回调 URL。
 
 ---
 
@@ -455,7 +451,7 @@ env 表面并仅列出，以便过时的部署脚本可以被识别为过时的
 仅与请求承载进行比较——从不回显、记录或存储。会议
 由 `/api/admin/session` 发出是一个新生成的随机 32 字节十六进制令牌
 （每次调用生成），绝不是凭证；仅其摘要保留在 Redis 中
-`配置：admin_session`。 `REDIS_URL` 是单独的 Redis 连接字符串：ACL 密码
+`config:admin_session`。 `REDIS_URL` 是单独的 Redis 连接字符串：ACL 密码
 它（如果有）对 Redis 连接进行身份验证，并且不是任何 HTTP 的凭据
 端点。
 
