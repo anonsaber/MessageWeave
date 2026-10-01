@@ -38,7 +38,7 @@ Conventions used throughout:
 | `config:business:revision` | No EX | atomic `INCR` on every config write; `SET 1 NX` on first-time init | `business_config_revision` |
 | `config:outbound` | No EX | `set_outbound_config` | `get_outbound_config` |
 | `config:enabled` | No EX | `set_enabled` | `is_enabled` |
-| `config:admin_session` | EX 900 | `put_admin_session` | `admin_session_valid`; cleared by `revoke_admin_session` |
+| `config:admin_session` | EX 1800 (30 minutes) | `put_admin_session` | `admin_session_valid`; cleared by `revoke_admin_session` |
 
 Notes:
 
@@ -46,8 +46,8 @@ Notes:
   request-bearing entry point calls `refresh_business_config`, which only
   rebuilds the worker when the remote revision exceeds the cached local value — that
   guard is what keeps a stale or malformed snapshot from turning into a rebuild loop.
-- `config:admin_session` carries no TTL metadata beyond the literal `EX 900` passed at write
-  time; the handler reports the same window in its response body as `expires_in: 900`
+- `config:admin_session` carries no TTL metadata beyond the literal `EX 1800` passed at write
+  time; the handler reports the same window in its response body as `expires_in: 1800`
   on the handler side.
 - `config:enabled` is consulted as a gate; missing or `false` keeps business processing off.
 

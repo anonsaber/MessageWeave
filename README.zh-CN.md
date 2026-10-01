@@ -36,7 +36,7 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 ```
 
 然后在浏览器打开 `http://localhost:8080`，输入你的 `CONFIG_ENCRYPTION_KEY` 值。SPA 用它
-经 `POST /api/admin/session` 换取 900 秒的 admin session，再用 `PUT /api/business-config`
+经 `POST /api/admin/session` 换取 1,800 秒（30 分钟）的管理会话，再用 `PUT /api/business-config`
 把业务密钥写入 Redis。此后业务配置不再读取或写入任何环境变量。
 
 不用 Docker 的本地构建：`cargo build --locked` 产出 `message-weave` 二进制。

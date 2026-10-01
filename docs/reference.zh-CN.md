@@ -38,7 +38,7 @@
 | `配置：业务：修订版` |没有 EX |每次配置写入时原子“INCR”；首次初始化时“SET 1 NX”| `business_config_revision` |
 | `配置：出站` |没有 EX | `set_outbound_config` | `get_outbound_config` |
 | `配置：启用` |没有 EX | `设置启用` | `已启用` |
-| `配置：admin_session` |前 900 | `put_admin_session` | `admin_session_valid`;由 `revoke_admin_session` 清除 |
+| `配置：admin_session` | EX 1800（30 分钟） | `put_admin_session` | `admin_session_valid`;由 `revoke_admin_session` 清除 |
 
 笔记：
 
@@ -46,9 +46,8 @@
   承载请求的入口点调用“refresh_business_config”，这仅
   当远程修订超出缓存的本地值时重建工作程序 - 即
   Guard 可以防止陈旧或格式错误的快照变成重建循环。
-- `config:admin_session` 不携带超出写入时传递的文字 `EX 900` 的 TTL 元数据
-  时间；处理程序在其响应正文中报告相同的窗口“expires_in: 900”
-  在处理程序一侧。
+- `config:admin_session` 的 TTL 由写入时传入的 `EX 1800` 决定；处理程序也在响应正文中
+  通过 `expires_in: 1800` 返回相同的有效期。
 - `config:enabled` 被视为一个门；缺失或“错误”会导致业务处理中断。
 
 ### 1.2 AI 授权

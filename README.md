@@ -42,7 +42,7 @@ docker run --env-file .env -p 8080:8080 messageweave:latest
 ```
 
 Then open `http://localhost:8080` in a browser and enter your `CONFIG_ENCRYPTION_KEY`
-value. The SPA exchanges it with `POST /api/admin/session` for a 900-second admin session,
+value. The SPA exchanges it with `POST /api/admin/session` for a 1,800-second admin session,
 then writes the business secrets to Redis with `PUT /api/business-config`. No environment
 variable is read or written again for business configuration.
 

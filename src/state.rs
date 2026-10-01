@@ -65,7 +65,7 @@ pub(crate) mod ttl {
     pub const PUSH_ORPHAN_SECONDS: u64 = WEEK;
     /// `/admin` digest session. Must match the `expires_in` reported to the
     /// admin client.
-    pub const ADMIN_SESSION_SECONDS: u64 = 900;
+    pub const ADMIN_SESSION_SECONDS: u64 = 1_800;
     /// Retry counter retention. `retry_or_dlq` interpolates this into its Lua
     /// script, so there is exactly one literal for it.
     pub const RETRY_COUNTER_SECONDS: u64 = DAY;
@@ -1523,7 +1523,7 @@ mod tests {
         assert_eq!(ttl::PUSH_SUBSCRIPTION_SECONDS, 300);
         assert_eq!(ttl::PUSH_REGISTRATION_SECONDS, 604_800);
         assert_eq!(ttl::PUSH_ORPHAN_SECONDS, 604_800);
-        assert_eq!(ttl::ADMIN_SESSION_SECONDS, 900);
+        assert_eq!(ttl::ADMIN_SESSION_SECONDS, 1_800);
 
         assert_eq!(ttl::DEDUP_TG_SECONDS, 86_400);
         assert_eq!(ttl::DEDUP_JMAP_SECONDS, 86_400);

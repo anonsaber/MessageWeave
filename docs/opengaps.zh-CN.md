@@ -59,7 +59,7 @@ TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），�
 | `ttl::PUSH_SUBSCRIPTION_SECONDS` | 300 | `push:subscription:{id}` / `push:subscription-code:{code}` |
 | `ttl::PUSH_REGISTRATION_SECONDS` | 604_800 | `push:registration:{sha256(callback_url)}` |
 | `ttl::PUSH_ORPHAN_SECONDS` | 604_800 | `push:orphan:{subscription_id}` |
-| `ttl::ADMIN_SESSION_SECONDS` | 900 | `admin-session:{token}`（同时是 `/admin/session` 返回的 `expires_in`） |
+| `ttl::ADMIN_SESSION_SECONDS` | 1,800 | `admin-session:{token}`（同时是 `/admin/session` 返回的 `expires_in`） |
 | `ttl::RETRY_COUNTER_SECONDS` | 86_400 | `retry:{stream}:{message.id}` |
 | `ttl::CONSENT_TEMPORARY_SECONDS` | 3_600 | `consent:ai:{chat_id}`（「临时 / 一次」与显式 `/ai on` 共用） |
 | `ttl::CONSENT_TODAY_SECONDS` | 86_400 | `consent:ai:{chat_id}`（「今天」） |

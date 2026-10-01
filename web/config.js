@@ -30,7 +30,7 @@
       "auth.eyebrow": "Authorization required",
       "auth.title": "Create admin session",
       "auth.bodyPre": "Enter ",
-      "auth.bodyPost": ". The session lasts 15 minutes and lives only in this page's memory.",
+      "auth.bodyPost": ". The session lasts 30 minutes and lives only in this page's memory.",
       "auth.label": "Business encryption key",
       "auth.placeholder": "Paste the value",
       "auth.submit": "Create session",
@@ -144,7 +144,7 @@
       "runtime.savedToast": "Runtime parameters saved to Redis and applied immediately to subsequent requests.",
       "runtime.defaultsToast": "Runtime parameters restored to default-value preview. They are written to Redis only after clicking \"Save runtime parameters\".",
       "privacy.title": "Secrets are never echoed or persisted to the browser.",
-      "privacy.body": "Business configuration is submitted only to the same-origin API and encrypted into Redis by the backend; this page never reads mailbox contents and uses no local files or database.",
+      "privacy.body": "Your settings are encrypted before they are saved on the server. Email contents are not shown here.",
       "footer.note": "Configuration managed by your server",
       "common.required": "Required",
       "common.optional": "Optional",
@@ -247,7 +247,7 @@
       "auth.eyebrow": "需要授权",
       "auth.title": "管理员授权",
       "auth.bodyPre": "输入 ",
-      "auth.bodyPost": "，会话有效 15 分钟，仅保存在当前页面。",
+      "auth.bodyPost": "，会话有效 30 分钟，仅保存在当前页面。",
       "auth.label": "业务密钥",
       "auth.placeholder": "粘贴部署密钥",
       "auth.submit": "授权",
@@ -357,8 +357,8 @@
       "runtime.readToast": "运行参数已读取。业务配置仍需手动完整填写。",
       "runtime.savedToast": "运行参数已保存到 Redis，并立即应用于后续请求。",
       "runtime.defaultsToast": "运行参数已恢复为默认值预览。点击“保存运行参数”后才会更新 Redis。",
-      "privacy.title": "密钥不会显示或保存到浏览器。",
-      "privacy.body": "配置仅经同源 API 提交，并由后端加密保存。",
+      "privacy.title": "密钥不会显示或保存在浏览器里。",
+      "privacy.body": "你的设置会加密后保存在服务器上。这里不会显示邮件内容。",
       "footer.note": "配置由你的服务端管理",
       "common.required": "必填",
       "common.optional": "可选",
@@ -836,7 +836,7 @@
 
   function scheduleSessionExpiry(seconds) {
     if (expiryTimer) window.clearTimeout(expiryTimer);
-    const duration = Math.max(1, Math.min(Number(seconds) || 900, 900));
+    const duration = Math.max(1, Math.min(Number(seconds) || 1_800, 1_800));
     sessionExpiry.textContent = t("session.expiry", { n: Math.ceil(duration / 60) });
     expiryTimer = window.setTimeout(() => {
       expireSession(t("session.expired"));
