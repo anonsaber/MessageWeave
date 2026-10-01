@@ -71,12 +71,14 @@ section in the configuration page. Enter the public HTTPS origin that receives c
 the Worker URL when the gateway is enabled, otherwise the backend origin. The page registers
 `/webhook/tg` with Telegram and `/push/jmap` with Stalwart. Credentials remain in the backend;
 the browser sends only the callback URLs. The protected registration handlers are
-`src/notify.rs:1439` for Telegram and `src/notify.rs:1315` for Stalwart.
+`src/notify.rs:1619` for Telegram and `src/notify.rs:1464` for Stalwart.
 
 Telegram's secret token and `allowed_updates: ["message"]` are taken from the saved business
 configuration. Stalwart verification and verification-code writeback happen automatically
-after registration. Registration can be repeated safely; changing the callback origin updates
-Telegram and creates a Stalwart subscription for the new URL.
+after registration. Registration can be repeated safely; registering the same origin is
+idempotent. Changing the callback origin updates Telegram (atomic replacement) and, for
+Stalwart, destroys the previous subscription before creating the new one under the registration
+lock, so the old origin stops receiving pushes.
 
 To remove a subscription, call `POST /api/push/disable` with the same `callback_url`.
 

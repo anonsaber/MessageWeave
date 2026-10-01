@@ -271,7 +271,7 @@ env var — 并且“DEBUG_TOKEN”非空**（“SAF-DEBUG-GATE”；门被读�
   “ready”为“false”，“missing”列出了缺少的必需密钥（“REDIS_URL”、
   `CONFIG_ENCRYPTION_KEY`）当变量不存在时 - 路由本身永远不会出错，所以它是
   可以安全进行民意调查。 `version` 是由 `build.rs` 烘焙的 `BUILD_VERSION` 字符串
-  （`<git-sha-or-nogit>+<UTC 构建时间>`），这就是 SPA 页脚证明部署已落地的方式。
+  （`<git-sha-or-nogit>+<UTC 构建时间>`）。SPA 已不再渲染它，确认部署落地只能查这个接口。
 - `/debug/*` 在一个地方返回 **503**：业务执行时`POST /debug/notify`
   配置未加载或没有出站客户端 — `service_unavailable`
 `重试时间：30`。三个探测端点反而报告失败
@@ -694,7 +694,8 @@ Telegram、JMAP、allowlist、worker、reconcile 和 LLM 业务设置驻留在 R
 使用 `getWebhookInfo` 检查已注册的 URL；Telegram 不会在响应中回显 Webhook 密钥。更换密钥后，需重新调用 `setWebhook`。
 
 通过 `POST /api/push/register` 和 HTTPS `callback_url` 注册 Stalwart Push。后端会创建订阅并完成 Stalwart 的验证回调；
-重复注册相同 URL 是幂等的。调用 `POST /api/push/disable` 并传入该 URL 可删除订阅。
+重复注册相同 URL 是幂等的。用一个不同的回调 URL 注册时，后端会先销毁上一个订阅，再创建新订阅并重指向当前指针映射，
+因此旧 origin 不再收到推送。调用 `POST /api/push/disable` 并传入该 URL 可删除订阅。
 
 后端没有内置调度器。外部调度器运行 [`scripts/cron-drain.sh`](../scripts/cron-drain.sh)：设置了 `MW_RECONCILE_TOKEN` 时，
 脚本先调用 `/reconcile`，再调用 `/worker`。在调度器的密钥管理器中配置 `MW_APP_URL`、`MW_WORKER_TOKEN`，

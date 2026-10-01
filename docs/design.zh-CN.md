@@ -420,7 +420,7 @@ message-weave/
 
 ### 7.3.1 配置管理 API
 - `GET /` 提供嵌入 Rust 二进制的 SPA；`/assets/config.js` 与 `/assets/styles.css` 提供页面资源。服务不在运行时读取或写入本地文件（`C-NO-LOCAL-WRITE`）。
-- `GET /api/status` 公开返回 `{ "ready": boolean, "mode": "configured" | "configuration-setup", "missing": string[], "version": string }`，只列缺少的环境变量名称。缺少 `REDIS_URL` 或 `CONFIG_ENCRYPTION_KEY` 时，SPA 只显示配置引导状态与缺失变量；服务状态确认 ready=true 后才显示管理会话授权区。`version` 是 `build.rs` 在编译期烘焙的 `BUILD_VERSION`（`<git-sha 或 nogit>+<UTC 构建时间>`），SPA 页脚据此确认部署是否真正落地。
+- `GET /api/status` 公开返回 `{ "ready": boolean, "mode": "configured" | "configuration-setup", "missing": string[], "version": string }`，只列缺少的环境变量名称。缺少 `REDIS_URL` 或 `CONFIG_ENCRYPTION_KEY` 时，SPA 只显示配置引导状态与缺失变量；服务状态确认 ready=true 后才显示管理会话授权区。`version` 是 `build.rs` 在编译期烘焙的 `BUILD_VERSION`（`<git-sha 或 nogit>+<UTC 构建时间>`）。SPA 已不再渲染它，确认部署落地只能查这个接口。
 - `POST /api/admin/session` 接受 `Authorization: Bearer <CONFIG_ENCRYPTION_KEY>`，返回 `{ "session": "<opaque>", "expires_in": 1800 }`；Redis 中保存的是会话令牌的摘要，30 分钟后过期。`POST /api/admin/session/revoke` 可立即撤销会话，成功返回 `204`。
 - 管理页面仅在 JavaScript 内存中保存 session。请求设置 `credentials: omit`、`cache: no-store`，不使用 Cookie、localStorage 或 sessionStorage。管理 API 接受有效 admin session；兼容路径也接受 `WORKER_TOKEN`。Worker 原样透传鉴权头（`SAF-LB-PASSTHRU`）。
 - `GET /api/config` 与 `PUT /api/config` 只读取和写入非敏感运行参数：

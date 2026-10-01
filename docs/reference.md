@@ -272,7 +272,8 @@ Response conventions:
   `ready` is `false` and `missing` lists the absent required keys (`REDIS_URL`,
   `CONFIG_ENCRYPTION_KEY`) when a variable is absent — the route itself never errors, so it is
   safe to poll. `version` is the `BUILD_VERSION` string baked in by `build.rs`
-  (`<git-sha-or-nogit>+<UTC build time>`) and is how the SPA footer proves a deploy landed.
+  (`<git-sha-or-nogit>+<UTC build time>`). The SPA no longer renders it — the API is now the
+  only way to confirm a deploy landed.
 - `/debug/*` returns **503** in exactly one place: `POST /debug/notify` when the business
   config is not loaded or there is no outbound client — `service_unavailable` with
   `Retry-After: 30`. The three probe endpoints instead report failure
@@ -703,7 +704,9 @@ the secret in that response. Re-run `setWebhook` after rotating the secret.
 
 Register Stalwart push with `POST /api/push/register` and an HTTPS `callback_url`. The backend
 creates the subscription and completes Stalwart's verification callback. Repeating the same
-callback URL is idempotent. Use `POST /api/push/disable` with that URL to remove it.
+callback URL is idempotent. Registering with a different callback URL destroys the previous
+subscription first, then creates the new one and repoints the current-pointer mapping, so the old
+origin stops receiving pushes. Use `POST /api/push/disable` with that URL to remove it.
 
 The backend has no internal scheduler. [`scripts/cron-drain.sh`](../scripts/cron-drain.sh)
 calls `/reconcile` (when `MW_RECONCILE_TOKEN` is set) and then `/worker`. Configure
