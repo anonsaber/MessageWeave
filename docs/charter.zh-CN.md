@@ -178,7 +178,7 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 | `docs/retired.md` | 已废弃或已改名方案的记录与替代指向 | 历史决策 |
 | `docs/charter.md` | 本文件：项目约束、技术选型、实现阶段、安全不变量、稳定 ID 注册表 | 项目约束 |
 | `web/`（无文档，4 个文件） | 管理 SPA 源：静态配置页与前端逻辑，由 `web/config.test.mjs` 覆盖 | 前端行为（权威事实记在 `docs/design.md` 与 `docs/reference.md`） |
-| `cloudflare-worker/README.md` | 网关自身的配置与语义 | 网关 |
+| `cloudflare-worker/README.md` / `cloudflare-worker/README.zh-CN.md` | 网关自身的配置与语义 | 网关 |
 
 **跨文档引用规则**：
 

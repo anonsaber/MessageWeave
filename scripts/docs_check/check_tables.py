@@ -6,7 +6,8 @@ DOCS = ['AGENTS.md', 'README.md', 'README.zh-CN.md', 'docs/design.md',
         'docs/design.zh-CN.md', 'docs/deployment.md', 'docs/deployment.zh-CN.md',
         'docs/reference.md', 'docs/reference.zh-CN.md', 'docs/retired.md',
         'docs/retired.zh-CN.md', 'docs/opengaps.md', 'docs/opengaps.zh-CN.md',
-        'docs/charter.md', 'docs/charter.zh-CN.md', 'cloudflare-worker/README.md']
+        'docs/charter.md', 'docs/charter.zh-CN.md', 'cloudflare-worker/README.md',
+        'cloudflare-worker/README.zh-CN.md']
 
 CODE = re.compile(r'`[^`\n]*`')
 SEP = re.compile(r'^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$')

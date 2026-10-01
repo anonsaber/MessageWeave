@@ -178,7 +178,7 @@ Answer only one question per document; **Tables, lists, or values ​​may not 
 | `docs/retired.md` | Records and alternative links to abandoned or renamed plans | Historical decisions |
 | `docs/charter.md` | This document: project constraints, technology selection, implementation stage, security invariants, stable ID registry | Project constraints |
 | `web/` (no documentation, 4 files) | Manage SPA sources: static configuration pages and front-end logic, covered by `web/config.test.mjs` | Front-end behavior (authoritative facts documented in `docs/design.md` and `docs/reference.md`) |
-| `cloudflare-worker/README.md` | Configuration and semantics of the gateway itself | Gateway |
+| `cloudflare-worker/README.md` / `cloudflare-worker/README.zh-CN.md` | Configuration and semantics of the gateway itself | Gateway |
 
 **Cross-document citation rules**:
 

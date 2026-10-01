@@ -17,7 +17,8 @@ DOCS = ["AGENTS.md", "README.md", "README.zh-CN.md", "docs/design.md",
         "docs/design.zh-CN.md", "docs/deployment.md", "docs/deployment.zh-CN.md",
         "docs/reference.md", "docs/reference.zh-CN.md", "docs/retired.md",
         "docs/retired.zh-CN.md", "docs/opengaps.md", "docs/opengaps.zh-CN.md",
-        "docs/charter.md", "docs/charter.zh-CN.md", "cloudflare-worker/README.md"]
+        "docs/charter.md", "docs/charter.zh-CN.md", "cloudflare-worker/README.md",
+        "cloudflare-worker/README.zh-CN.md"]
 
 HEADING = re.compile(r"^(#{2,4})\s+(\d+(?:\.\d+)?\.?)\s")
 # §2.3, §5.7, §3 (bare), also `§2.3/§3.4` chains handled by finditer
@@ -42,12 +43,23 @@ def headings(path):
 
 def main():
     names = {os.path.basename(p): p for p in DOCS}
-    heads = {os.path.basename(p): headings(os.path.join(ROOT, p)) for p in DOCS}
+    # `README.md` exists both at the repo root and under `cloudflare-worker/`, so a
+    # basename-keyed map silently drops one of them. Keep every file's own heading
+    # set and let the first occurrence win on a basename collision.
+    own_heads = {p: headings(os.path.join(ROOT, p)) for p in DOCS}
+    heads = {}
+    for p in DOCS:
+        heads.setdefault(os.path.basename(p), own_heads[p])
     errors = []
     checked = 0
 
     for rel in DOCS:
         base = os.path.basename(rel)
+        # A basename held by more than one file (`README.md` lives both at the
+        # repo root and under `cloudflare-worker/`) must resolve against the
+        # document being scanned when it names that document itself.
+        heading_set = (lambda t: own_heads[rel] if t == base
+                       else heads.get(t, set()))
         full = os.path.join(ROOT, rel)
         with open(full, encoding="utf-8") as fh:
             for lineno, line in enumerate(fh, 1):
@@ -69,7 +81,7 @@ def main():
                     target = m.group(1)
                     override_pos = m.end()
                     checked += 1
-                    if m.group(2) not in heads.get(target, set()):
+                    if m.group(2) not in heading_set(target):
                         errors.append(
                             f"{rel}:{lineno}: §{m.group(2)} does not exist "
                             f"in {target}")
@@ -93,7 +105,7 @@ def main():
                             re.search(r"([A-Za-z0-9_.-]+\.md)[`\s]*$",
                                       prefix).group(1))
                     checked += 1
-                    if num not in heads.get(target, set()):
+                    if num not in heading_set(target):
                         errors.append(
                             f"{rel}:{lineno}: §{num} does not exist in {target}")
 

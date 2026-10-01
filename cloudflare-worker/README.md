@@ -1,120 +1,295 @@
-# MessageWeave Cloudflare Worker（ARCH-LB-WORKER）
+# MessageWeave Cloudflare Worker gateway
 
-统一 HTTPS 入口 + 多后端 origin 故障转移（HA/LB 子项目）。
-**透传模型**：Worker 不感知业务，原样转发请求到多个 https 后端 origin；仅「超时 / 5xx」做有界故障转移。
+> [中文版本 / Chinese version → README.zh-CN.md](README.zh-CN.md)
 
-> 本组件是 **safelist 受限的边缘负载均衡器（edge load balancer）**：路由固定 18 条白名单、
-> 后端 origin 在部署期固定且仅允许 https、未知路径一律 404。它只对固定后端做请求转发与
-> 故障转移，不接受任意目标主机，也不提供任何形式的流量中转或访问隐藏能力。
+This is the canonical English version. The Chinese version is
+[README.zh-CN.md](README.zh-CN.md).
 
-> 设计依据：`docs/design.md §10 / NFR-HA-MULTI-INSTANCE`、`docs/deployment.md §10`。
-> 安全基线与禁止事项：`docs/charter.md §3/§5`（稳定 ID 注册表 §8）。
+One public HTTPS entry point in front of one or more MessageWeave backends, with bounded
+multi-origin failover (HA/LB sub-project). **Pass-through model**: the Worker does not parse
+business payloads and forwards the request as-is to the backend https origins; only *timeout /
+5xx* triggers a bounded failover to another instance.
 
-## 目录
+> This component is a **safelist-restricted edge load balancer**: the route set is fixed (19
+> whitelisted paths), the backend origins are fixed at deploy time and https-only, and every
+> unknown path gets a `404`. It only forwards requests to those fixed backends and fails over
+> between them. It does not accept an arbitrary target host and provides no general-purpose
+> traffic-relay or access-hiding capability.
 
-- `wrangler.toml` — Wrangler 示例配置（name/main/compat/vars；后端 secret 走 `wrangler secret`）
-- `src/index.js` — Worker 入口（路由分发、/healthz-worker 聚合、safelist 校验）
-- `src/backends.js` — origin 解析 + https/凭据/query 校验（C-HTTPS-INBOUND）
-- `src/lb.js` — 透传转发 + 有界故障转移（SAF-LB-PASSTHRU）
-- `src/health.js` — 健康聚合探针（MOD-HEALTH-AGG / C-NO-DB）
-- `test/*.test.js` — 单元/集成测试（零依赖，`node --test`）
-- `package.json` — npm 元数据（`dev`/`deploy` 调 wrangler；`test` 纯 node）
+> Design basis: `docs/design.md §11.3` (`NFR-HA-MULTI-INSTANCE`) and `docs/deployment.md §10`.
+> Security baseline and prohibitions: `docs/charter.md §3`, `docs/charter.md §5`; stable-ID
+> registry `docs/charter.md §8`.
 
-## 零依赖设计
+## 1. What it is, and what it is not
 
-运行时仅依赖 ES2022 标准 + 平台/Node 的 `fetch`/`Headers`/`Request`/`Response`/`URL`。
-`npm run test` 直接 `node --test test/`，**无需安装**任何生产依赖；
-`wrangler` 仅在 `check`/`deploy`/`dev` 中作 devDependency（CI 可选装）。
+- **Forward only.** Method, headers (including auth headers) and body are forwarded as-is. The
+  Worker performs no authentication of its own and rewrites nothing.
+- **Secretless.** No Telegram bot token, no JMAP password, no session secret. It forwards
+  whatever auth header it is given and checks none of them. All backends must instead share
+  the same set of `SAF-AUTH-*` secrets — `RECONCILE_TOKEN`, `TG_WEBHOOK_SECRET` and the
+  encrypted business config — because a callback can land on any instance and no instance can
+  prove which one was asked (`C-LB-SHARED-SECRETS`). Per-instance secrets mean a random 401.
+- **No origin discovery.** Origins come from the deploy-time origin list only.
+- **Zero runtime dependencies.** Pure ES2022 plus the platform `fetch`, `Headers`, `Request`,
+  `Response` and `URL`. `wrangler` is a devDependency, used only by `check`, `deploy` and
+  `dev`.
+- **Zero state.** No Redis, no JMAP, no database (`C-NO-DB`, `C-REDIS-ONLY-STATE`). The only
+  mutable state is an in-isolate health probe cache.
+- **No long-lived connections** (`C-NO-LONG-CONN`). Pure request-response. The request body is
+  read once as `arrayBuffer` and re-attached on every attempt, so streaming is never required.
+- **Not a queue.** There is no retry beyond the bounded attempts below. When every origin
+  fails the gateway answers `503`, and Telegram / Stalwart redelivery is what makes up for it.
 
-## 语义
+## 2. Directory layout
 
-### 透传（A，SAF-LB-PASSTHRU）
-- 原样转发 method / headers（含鉴权头）/ body；不鉴权改写。
-- 所有后端实例共享同一组 secret（`C-LB-SHARED-SECRETS`）：同一 `TELEGRAM_WEBHOOK_SECRET`、
-  `JMAP_PUSH_VERIFICATION_CODE`、`API_TOKEN`（`API_TOKEN` 在 `docs/deployment.md` §10 仅用于多实例互斥，非鉴权）
-  + 相同 App Password（各后端实例的 `JMAP` 可不同，`docs/deployment.md` §10.2）。
+| file | role |
+|---|---|
+| `wrangler.toml` | `name`, `main`, compatibility flags, `[vars]` |
+| `package.json` | `check` / `test` / `deploy` / `dev` scripts only, no runtime dependencies |
+| `src/index.js` | entry point: HTTPS redirect, route dispatch, safelist, health aggregate |
+| `src/backends.js` | origin parsing and validation, route safelist |
+| `src/lb.js` | pass-through forwarding and bounded failover |
+| `src/health.js` | TTL-cached health aggregate probe |
+| `test/*.test.js` | 38 tests in four files, all offline |
 
-### 路由 safelist（ARCH-LB-WORKER / C-LB-SINGLE-REG-URL）
-- HTTP requests receive a permanent `308` redirect to the same HTTPS URL before route validation or forwarding.
-- 透传公开 `GET /api/status` 启动状态，以及管理 SPA API：`POST /api/admin/session[/revoke]`、`GET|PUT /api/enabled`（业务总开关，SPA 服务卡片读写）、`GET|PUT /api/config`、`GET|PUT /api/business-config`（读回 + 增量保存）、`POST /api/business-config/preflight`（保存前逐组件连通性预检）。启动状态只包含缺少的环境变量名称；管理 API 的鉴权仍由后端执行。
-- 只透传 `POST /webhook/tg`、`POST /push/jmap`、`POST /api/push/register`、`POST /api/telegram/register-webhook`、`POST /api/push/disable`、`POST /reconcile`、`POST /worker`、`GET /ready`。
-- 其它路径 → **404**（不透传，避免 Worker 沦为后端任意路径的跳板）。
-- method 不符 → **405**。
+## 3. Pass-through semantics
 
-### 有界故障转移（`docs/deployment.md` §10.4）
-- 每次请求只试 `min(LB_MAX_ATTEMPTS, origins.length)` 次；默认 2（首次 + 1 次换实例）。
-- **仅** 超时（AbortError）或 5xx 触发换下一个实例；4xx / 2xx / 3xx 直接返回。
-- 起点按 `rng` 随机化（默认 `Math.random`），实现双活分摊；单 origin 配置时退化为确定性。
-- 全失败 → **503 All Backends Unavailable**（交由 Telegram / Stalwart 自动重投兜底，不丢消息）。
-- 健康缓存（`aggregateHealth` / `LB_HEALTH_TTL_MS`）仅服务于 `/healthz-worker` 聚合视图；转发目前**不做健康路由过滤**（`docs/deployment.md` §10.4「只向健康实例转发」为后续增强，当前靠故障转移兜底）。
-- **例外：`POST /reconcile` 与 `POST /worker` 走 per-route 覆盖。** 两者都是后端同步长任务：
-  全局 10s 超时会把它们误判为失败并故障转移到第二实例，而第二实例对 `/reconcile` 必然立刻
-  返回 409（集群级锁 `lock:reconcile`，初租 300s 由心跳续期），对 `/worker` 只会重复排同一批
-  消息。所以这两条路由改为：超时分别取 `LB_RECONCILE_TIMEOUT_MS`（默认 `320000`，留足锁初租 +
-  心跳余量）与 `LB_WORKER_TIMEOUT_MS`（默认 `300000`，等于后端单条事件下界），且 `maxAttempts=1`
-  绝不故障转移。其余快路径保持全局默认。
+- Method, headers and body go out unchanged; the backend response status, body and headers are
+  returned as-is.
+- The only header the gateway adds is best-effort observability: `x-lb-backend`, naming the
+  origin that answered. The write sits behind a `try/catch`. A cross-origin response that
+  carries no `access-control-allow-*` header comes back with an immutable header guard, and
+  `headers.set` throws on those. An observability write that throws must never mask a healthy
+  `2xx` as a `503`, so the header is dropped silently when it cannot be written. That exact
+  defect was the 2026-09-30 production incident.
+- `GET` and `HEAD` never forward a body: a bodyless upstream response is returned as it is,
+  and no `Content-Length` is recomputed.
+- Backend `3xx` redirects are followed by the gateway itself (`redirect: "follow"`), so a
+  redirecting origin never hands the browser a second hop.
+- Logs and error strings carry method, path, origin and failure class only. Never headers,
+  body, auth secrets or App Password (`SAF-LOG-PURITY`).
 
-### 健康聚合（MOD-HEALTH-AGG；C-NO-DB / C-REDIS-ONLY-STATE）
-- `GET /healthz-worker`（由 Worker 自身承载；入站 `/healthz` 保留给源站自己的健康检查并透传，两者互不遮蔽）：
-  按 TTL 缓存（默认 30s）探测各后端 `/healthz`，返回
-  `{status: ok|down, version, available, total, backends:[{origin, up, status}]}`；
-  有 ≥1 后端 up → 200；全部 down → 503。
-- **不代理 Redis/JMAP**：Worker 不做数据库侧检查；后端端到端就绪（配置完整性 + Redis 可达 + JMAP session + Telegram getMe，对应 `ARCH-READY-BASELINE`）由 `/ready`（透传）承担。
+## 4. Route safelist
 
-### 无长连接 / 无密钥日志（§3/§5 红线）
-- 不使用 WebSocket/SSE/长轮询（`C-NO-LONG-CONN`）：纯请求-响应转发，body 一次性 `arrayBuffer` 回灌。
-- 日志只打「方法 / 路径 / origin / 失败类别」；**绝不**打印 header / body / 鉴权 secret / App Password（`SAF-LOG-PURITY`）。
+Every inbound **HTTP** request gets a permanent **308** redirect to the same HTTPS URL before
+route validation or forwarding (`C-HTTPS-INBOUND`). After that the request must hit one of 19
+paths and carry a method that path allows; every other combination is refused at the edge.
 
-## 环境变量
+| path | methods |
+|---|---|
+| `/` | GET |
+| `/assets/config.js` | GET |
+| `/assets/styles.css` | GET |
+| `/api/status` | GET |
+| `/api/config` | GET PUT |
+| `/api/business-config` | GET PUT |
+| `/api/business-config/preflight` | POST |
+| `/api/admin/session` | POST |
+| `/api/admin/session/revoke` | POST |
+| `/api/enabled` | GET PUT |
+| `/webhook/tg` | POST |
+| `/push/jmap` | POST |
+| `/api/push/register` | POST |
+| `/api/telegram/register-webhook` | POST |
+| `/api/push/disable` | POST |
+| `/reconcile` | POST |
+| `/worker` | POST |
+| `/healthz` | GET |
+| `/ready` | GET |
 
-| 变量 | 必填 | 说明 |
-|---|---|---|
-| `BACKEND_ORIGINS_JSON` | 是 | JSON 数组，形如 `["https://a.platform1.example","https://b.platform2.example"]`；必须全部 https、无内嵌凭据/query/fragment/路径。已写在 `wrangler.toml` 的 `[vars]`。 |
-| `LB_REQUEST_TIMEOUT_MS` | 否 | 单 origin 请求超时；默认 `10000`。建议 > 最坏 cold start + 最长 JMAP 拉取。 |
-| `LB_MAX_ATTEMPTS` | 否 | 每请求最多 origin 尝试次数；默认 `2`（= 1 次故障转移）。`POST /reconcile` 与 `POST /worker` 固定为 `1`。 |
-| `LB_RECONCILE_TIMEOUT_MS` | 否 | 仅 `POST /reconcile` 的单 origin 超时覆盖；默认 `320000`（须大于后端锁初租 300s + 心跳余量）。 |
-| `LB_WORKER_TIMEOUT_MS` | 否 | 仅 `POST /worker` 的单 origin 超时覆盖；默认 `300000`（= 后端单条事件下界 `SINGLE_EVENT_CEILING_FLOOR_MS`）。一次排空 batch 条（默认 10，硬上限 10），batch 拉大时需相应上调。 |
-| `LB_HEALTH_TTL_MS` | 否 | 健康探测缓存 TTL；默认 `30000`。 |
-| `LB_VERSION` | 否 | `/healthz-worker` 响应体里的 `version` 字段，用于确认线上是哪次部署在回答；取自 `wrangler.toml` 的 `[vars]`（当前 `2026.10.4`），改 LB 逻辑的提交同时 bump |
+- Unknown path: `404`, body `route not forwarded: <path>`. The gateway can therefore never be
+  turned into a jump host for arbitrary backend paths.
+- Method mismatch on a known path: `405`, body `method not allowed for <path>`, plus an
+  `Allow` header.
+- Bootstrap (`POST /api/bootstrap`) and the remote diagnostics face (`/debug/*`) are
+  deliberately absent, so both stay origin-only.
+- `/healthz-worker` is not in the safelist at all: the gateway serves it itself, on `GET`
+  only.
 
-> 默认写在 `wrangler.toml` 的 `[vars]`（**明文例外**，因为当前值只是公开可达的 https origin，
-> 不是凭据）。一旦要放内网地址、带内嵌凭据的 URL、或不想公开的 staging 主机名，
-> 立刻改用 `npx wrangler secret put BACKEND_ORIGINS_JSON` 并把该行从 `[vars]` 删掉。
+## 5. Timeout and retry budget
 
-## 本地 / CI 验证
+| variable | required | default | applies to |
+|---|---|---|---|
+| `BACKEND_ORIGINS_JSON` | yes | — | all routes |
+| `LB_REQUEST_TIMEOUT_MS` | no | `10000` | every route except the two below, and the §7.2 probe |
+| `LB_MAX_ATTEMPTS` | no | `2` | attempts per request |
+| `LB_RECONCILE_TIMEOUT_MS` | no | `320000` | `POST /reconcile` only |
+| `LB_WORKER_TIMEOUT_MS` | no | `300000` | `POST /worker` only |
+| `LB_HEALTH_TTL_MS` | no | `30000` | `/healthz-worker` probe cache only |
+| `LB_VERSION` | no | `unknown` | `/healthz-worker` `version` field |
+
+Integer env values are parsed with `Math.floor`. A non-finite or non-positive value is ignored
+and the default applies, so a typo cannot switch the budget off.
+
+`/reconcile` and `/worker` are **single-attempt routes** with per-route timeout overrides.
+Both are long synchronous backend jobs: at the 10 s global timeout the gateway would declare
+them failed and fail over to a second instance, but that instance answers `/reconcile` with
+`409` immediately (the cluster-wide `lock:reconcile` starts with a 300 s lease, renewed by
+heartbeat) and a second `/worker` would merely drain the same batch twice. They therefore get
+`LB_RECONCILE_TIMEOUT_MS` (default 320 s, headroom over the 300 s lease plus heartbeats) and
+`LB_WORKER_TIMEOUT_MS` (default 300 s, equal to the backend per-event floor
+`SINGLE_EVENT_CEILING_FLOOR_MS`), both with `max_attempts = 1`.
+
+`LB_WORKER_TIMEOUT_MS` must grow if the `/worker` batch grows: the backend batch default and
+its hard cap are both 10.
+
+## 6. Bounded failover
+
+- Each request tries `max(1, min(LB_MAX_ATTEMPTS, origins.length))` origins. The default of
+  2 is one first attempt plus one failover.
+- Only a timeout or a `5xx` response moves on to the next origin. `2xx`, `3xx` and `4xx` are
+  answers and are returned immediately.
+- A timeout or transport failure counts as retryable when the error name is `AbortError`, or
+  when the message, or the message of a `cause` further down the chain, matches one of:
+  `fetch failed`, `network error`, `socket hang up`, `ECONNREFUSED`, `ECONNRESET`,
+  `EAI_AGAIN`, `ENOTFOUND`, `ETIMEDOUT`, `EHOSTUNREACH`, `ENETUNREACH`. Anything else fails
+  fast.
+- With more than one origin and more than one attempt, the starting origin is chosen with
+  `rng` (defaulting to `Math.random`) so load spreads over the healthy instances. A single
+  origin degrades to a fixed order.
+- Every origin fails: `503` with status text `All Backends Unavailable` and body
+  `all backends failed: <last reason>`. Telegram and Stalwart then redeliver, which is why
+  nothing is lost.
+
+The health cache feeds only the `/healthz-worker` aggregate view. Forwarding does **not**
+filter by health; today, failover is the safety net.
+
+## 7. Health endpoints
+
+The two endpoints deliberately do not overlap, so neither can hide the other.
+
+### 7.1 GET /healthz — passthrough
+
+Forwarded like any other safelisted route. The response is the backend's own liveness
+envelope, which is exactly why it can read healthy while a different origin is down.
+
+### 7.2 GET /healthz-worker — gateway aggregate
+
+Answered by the gateway itself. It never touches the forwarded route set.
+
+- Probes each origin's `/healthz` with the same request timeout as forwarding
+  (`LB_REQUEST_TIMEOUT_MS`, default 10 s). Redirects are followed, so an origin that answers
+  with a `3xx` still counts as up.
+- `up` is true when the origin answered with a status below 500. A probe failure records
+  `up: false` with `status: null`.
+- Results are cached per origin for `LB_HEALTH_TTL_MS` (default 30 s) in an in-isolate map,
+  to keep probe traffic bounded. A cache miss probes and stores; a fresh entry is served
+  without another probe.
+- Response body: `{status, version, available, total, backends: [{origin, up, status}]}`.
+  - at least one origin up: HTTP `200`, `status: "ok"`
+  - every origin down: HTTP `503`, `status: "down"`
+  - no origins configured: HTTP `200`, `status: "no-backends"`
+  - `version` is `LB_VERSION`, defaulting to the literal string `unknown`
+- Any method other than `GET`: `405` with `Allow: GET`.
+- The gateway does not proxy Redis or JMAP readiness. End-to-end backend readiness
+  (`ARCH-READY-BASELINE`: config completeness, Redis reachable, JMAP session, Telegram
+  `getMe`) stays on the backend's `/ready`, which is passed through.
+
+## 8. Callback registration
+
+The SPA registers callback URLs against **one** origin (`C-LB-SINGLE-REG-URL`). Origin only,
+no path:
+
+- Gateway enabled: the Worker URL, for example `https://lb.example`.
+- Gateway disabled: a backend origin, for example `https://a.example`.
+
+Whichever origin you register is where `/webhook/tg` and `/push/jmap` land. All three
+registration endpoints are safelisted and pass through the gateway, so registration works
+through either front door. Registration is idempotent, and registering a new address retires
+the previous subscription — that is how you switch fronts.
+
+## 9. Configuration
+
+- Defaults live in `wrangler.toml` `[vars]` as a **deliberate plaintext exception**: the
+  current value is only publicly reachable https origins, which is not a credential. The
+  moment you need an internal address, a URL with embedded credentials, or a hostname that
+  should not be public, move it to `npx wrangler secret put BACKEND_ORIGINS_JSON` and delete
+  the line from `[vars]`. Git history is irreversible, so deleting it does not un-publish it.
+- `BACKEND_ORIGINS_JSON` is a JSON **array of plain strings**. Object shapes such as
+  `{"url": "..."}` are rejected: `parseBackendOrigins` throws, and because the config is
+  re-parsed on **every** request the failure shows up as `503` on every request rather than
+  at boot. The body is `misconfigured backends`. An empty list throws the same way, before
+  anything is forwarded.
+- Each entry must be an https **origin** only: no http, no path, no query, no fragment, no
+  embedded credentials (`C-HTTPS-INBOUND`).
+- `wrangler.toml` also pins `name = "messageweave-lb"`, `main = "src/index.js"`,
+  `compatibility_date = "2025-01-01"` and
+  `compatibility_flags = ["nodejs_compat_v2"]`. `nodejs_compat_v2` is what lets the test
+  files import `node:test` and `node:assert/strict`. The runtime code imports no
+  node module.
+- Comments in `wrangler.toml` must stay single-line `#` comments. TOML has no block comment,
+  so a JSDoc `/** */` block makes wrangler fail to parse the file at all.
+
+## 10. Local and CI verification
 
 ```bash
 cd cloudflare-worker
 
-# 单元/集成测试（零依赖）：
-npm run test
-# 等价：node --test test/
-
-# 语法检查 + wrangler dry-run（需 npx wrangler，会拉 devDependency）：
-npm run check
-# 等价：node --check src/*.js && node --check test/*.test.js && wrangler deploy --dry-run
+npm test       # 38 tests, four files, fully offline
+npm run check  # node --check on sources and tests, then wrangler deploy --dry-run
 ```
 
-## 部署示例
+`npm test` is `node --test`, which picks up `test/*.test.js`: `test/index.test.js` 15,
+`test/lb.test.js` 12, `test/backends.test.js` 6, `test/health.test.js` 5. There is no install
+step for the tests — the Worker has no runtime dependencies, and the test files import only
+`node:test` and `node:assert/strict`.
+
+Two traps:
+
+- `node --test test/` (a directory) exits 0 after running **zero** tests on some Node
+  versions. Always pass the file glob.
+- A default CI install step of `bun install` ignores the npm lockfile: it re-resolves and can
+  move wrangler across major versions. Add an explicit `npm ci` before the test step if you
+  need the pinned wrangler.
+
+## 11. Deploy
 
 ```bash
 cd cloudflare-worker
-# 安装 dev dep（仅 wrangler）：
 npm install --no-audit --no-fund
-# BACKEND_ORIGINS_JSON 已写在 wrangler.toml 的 [vars]，直接部署：
-npx wrangler deploy
-# 可选调参（默认值已够用；要覆盖就用 dashboard 的 Add Variable）：
-#   LB_REQUEST_TIMEOUT_MS / LB_MAX_ATTEMPTS / LB_HEALTH_TTL_MS
-#   LB_RECONCILE_TIMEOUT_MS / LB_WORKER_TIMEOUT_MS
-# 仅当 [vars] 里要放非公开值时才改用 secret 注入：
-npx wrangler secret put BACKEND_ORIGINS_JSON
-# 部署后确认：
-curl https://<your-worker>.workers.dev/healthz
+npm run deploy
+curl https://<your-worker>.workers.dev/healthz-worker
 ```
 
-健康探针：
+`npm run check` includes `wrangler deploy --dry-run --outdir=.build-check`, which bundles the
+four sources and reports the artifact size before anything is published. The gateway is
+deployed from push, so a `curl` of `/healthz-worker` and a compare of its `version` is the
+acceptance check. Bump `LB_VERSION` in the same commit as any LB logic change, so you can tell
+which build answered.
 
-```bash
-curl https://lb.messageweave.example/healthz
-# => {"status":"ok","available":2,"total":2,"backends":[{"origin":"https://a.example","up":true,"status":200},...]}
-```
+Two production incidents worth keeping in mind:
+
+- **2026-09-30**: a build wrote `x-lb-backend` onto proxied responses. Cross-origin responses
+  without `access-control-allow-*` headers have an immutable header guard, so `headers.set`
+  threw and the surrounding handler logged a healthy backend as unavailable and burned its
+  retries — the gateway returned `503` while `GET /` actually returned `200`.
+  `/healthz-worker` did not go through that code path, which is exactly what hid the outage.
+  Fixed by making the header write best-effort.
+- **Object-shaped origin lists fail silently at parse time.** `parseBackendOrigins` throws and
+  you get `503 misconfigured backends` on every request. Keep `weight` and any other
+  per-origin tuning out of the list: nothing reads them.
+
+## 12. Design invariants
+
+- `SAF-LB-PASSTHRU` — no auth, header or body rewriting on the path
+- `C-HTTPS-INBOUND` — https-only origins, embedded credentials and paths rejected, HTTP gets a
+  308
+- `C-LB-SINGLE-REG-URL` — one callback origin, unknown paths 404
+- `C-LB-SHARED-SECRETS` — every backend carries identical business credentials
+- `MOD-HEALTH-AGG` — TTL-cached aggregate probe owned by the gateway
+- `C-NO-DB`, `C-REDIS-ONLY-STATE` — no database or Redis access from the gateway
+- `C-NO-LONG-CONN` — request-response only
+- `ARCH-READY-BASELINE` — end-to-end readiness stays on the backend's `/ready`
+- `SAF-LOG-PURITY` — method, path, origin and failure class only
+- `ARCH-LB-WORKER` — the gateway is the only edge component
+- `NFR-HA-MULTI-INSTANCE` — multi-origin failover is how HA is realised
+
+## References
+
+- `docs/deployment.md §10` — gateway deployment, configuration and rollout
+- `docs/reference.md §4` — gateway versus backend route matrix
+- `docs/reference.md §9.2` — backend configuration and secrets
+- `docs/reference.md §9.4` — health and release checks
+- `docs/design.md §11.3` — HA and multi-instance design
+- `docs/charter.md §3`, `docs/charter.md §5`, `docs/charter.md §8` — security baseline,
+  prohibitions, stable-ID registry

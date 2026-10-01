@@ -27,7 +27,39 @@ State is an architectural boundary here, not a preference.
 - **What it is not.** It is not a mail client, not a proxy, and not a relay. It forwards
   metadata to one bot; it does not read arbitrary URLs, open tunnels, or broker traffic.
 
-## 2. 5-minute setup
+## 2. Two ways to run it
+
+One image, one Redis, one SPA. The only difference is what sits in front and which URL you hand
+to Telegram and Stalwart.
+
+| | Form A: backend origin only | Form B: behind the Cloudflare Worker gateway |
+|---|---|---|
+| What answers requests | one backend host | one Worker URL, N backend origins |
+| Failover | none — a down origin stays down | bounded: 2 attempts by default, only timeout and `5xx` retry |
+| Callback URL you register | `https://a.example` | `https://lb.example` |
+| Reachable routes | every route, including `/api/bootstrap` and `/debug/*` | only the 19 safelisted paths |
+| Health to watch | `GET /ready` on the origin | `GET /ready` proxied, plus `GET /healthz-worker` for the gateway aggregate |
+| Extra moving parts | none | one Worker deploy, one origin list |
+| Docs | `docs/deployment.md §2` | `docs/deployment.md §10`, `cloudflare-worker/README.md` |
+
+Pick Form A for a single origin with no HA requirement. Pick Form B for two or more origins, or
+whenever you want one stable callback URL while you roll or rebuild an instance.
+
+Switching is a re-registration, not a migration. Registration is idempotent and registering a
+new address retires the previous subscription, so moving from Form A to Form B, or back, is one
+field in the SPA. Do not register both origins at once: there is a single registration slot, and
+the platform entrance must stay internal (`C-LB-SINGLE-REG-URL`).
+
+No secret moves to the gateway in Form B. It holds no business credential and checks no auth
+header. Instead every backend must carry the same `SAF-AUTH-*` secrets and the same encrypted
+business config, because a callback can land on any instance and no instance can prove it was
+the one asked for (`C-LB-SHARED-SECRETS`). Mis-matched secrets show up as a random 401, not as
+a routing error.
+
+`POST /api/bootstrap` and `/debug/*` stay origin-only in both forms, so neither is exposed
+through the gateway.
+
+## 3. 5-minute setup
 
 Requires a reachable Redis instance and a JMAP session plus a Telegram bot token.
 
@@ -50,9 +82,9 @@ For local builds without Docker: `cargo build --locked` produces the `message-we
 
 If the service answers requests but does nothing useful, check the logs for a startup
 warning: a missing required variable does **not** crash the process. It serves a
-read-only setup router over in-memory state instead. See §3.
+read-only setup router over in-memory state instead. See §4.
 
-## 3. Configuration entry points
+## 4. Configuration entry points
 
 Three layers. They are not interchangeable.
 
@@ -79,7 +111,8 @@ secrets from the environment in normal operation.
 returns 503 until configuration, Redis, and both upstreams (a JMAP session `GET` and
 Telegram `getMe`, 3s each) are reachable. Probe `/ready`, not `/healthz`, when deciding
 whether to route traffic — but `/ready` is the heavier probe (~3s worst case), so a monitor
-that must stay cheap should watch the gateway's aggregated `/healthz`.
+that must stay cheap should watch the gateway aggregate `GET /healthz-worker` when the gateway
+is enabled.
 
 **Remote debug (opt-in, off by default).**
 `/debug/*` is an optional remote-debug surface: live JMAP and Telegram probes, the current
@@ -92,7 +125,7 @@ unset. If you do turn it on for a one-off diagnosis, configure the chat allowlis
 an empty allowlist the test send is not restricted to any chat. See
 `docs/deployment.md` §2.1.
 
-## 4. Security boundary, in one sentence
+## 5. Security boundary, in one sentence
 
 > All state lives in Redis; the process reads only two environment variables and writes
 > nothing to disk.
@@ -103,7 +136,7 @@ startup. It is only compared in constant time, and is never echoed, logged, or s
 Redis ACL password, if you have one, authenticates the Redis connection alone and is not
 the credential for any HTTP endpoint.
 
-## 5. Where to read more
+## 6. Where to read more
 
 | Document | What it answers |
 |---|---|
@@ -113,6 +146,7 @@ the credential for any HTTP endpoint.
 | [`docs/opengaps.md`](docs/opengaps.md) | Gaps, blockers and the next phase |
 | [`docs/retired.md`](docs/retired.md) | What was tried and dropped — abandoned routes, unreleased designs, and names that never existed |
 | [`docs/charter.md`](docs/charter.md) | Project charter: goals, locked technology choices, security invariants, prohibitions, and the stable-ID registry |
+| [`cloudflare-worker/README.md`](cloudflare-worker/README.md) | The Cloudflare Worker gateway: route safelist, timeout and retry budget, bounded failover, health aggregate, deploy |
 | [`AGENTS.md`](AGENTS.md) | Language-agnostic engineering norms: code style, config and secrets, build environment, testing gates, document governance |
 
 Facts that matter are traceable. If two documents disagree, `docs/reference.md` wins.
