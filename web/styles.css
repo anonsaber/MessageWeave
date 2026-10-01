@@ -158,7 +158,7 @@ fieldset:disabled .field input, fieldset:disabled .field textarea, fieldset:disa
 .privacy-icon svg { width: 18px; height: 18px; }
 .privacy-note p { margin: 0; font-size: 11px; line-height: 1.65; }
 .privacy-note strong { color: #64657a; font-weight: 680; }
-.footer { width: min(1100px, calc(100% - 48px)); display: flex; justify-content: space-between; margin: 0 auto; padding: 18px 0 23px; border-top: 1px solid rgba(224, 224, 238, .72); color: #a5a5b2; font-size: 9px; letter-spacing: .08em; }
+.footer { width: min(1100px, calc(100% - 48px)); display: flex; justify-content: center; margin: 0 auto; padding: 18px 0 23px; border-top: 1px solid rgba(224, 224, 238, .72); color: #a5a5b2; font-size: 9px; letter-spacing: .08em; }
 .footer span:last-child { letter-spacing: 0; }
 .footer-version { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); border: 0; }
