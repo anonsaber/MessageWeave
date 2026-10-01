@@ -71,21 +71,21 @@ Source: Read directly from the `stalwartlabs/jmap-client` warehouse `stalwartlab
 
 ### 2.2 Module structure (`src/`)
 ```
-lib.rs 顶层：URI / Method / DataType / PushObject / Error 枚举
-client.rs Client：认证、connect、session、send_request、event_source、ws
-core/ request / response / get / set / query / query_changes / changes / error / session
-email/ mod + helpers（email_get/email_query/email_import/email_copy/email_set/email_parse…）
+lib.rs            顶层：URI / Method / DataType / PushObject / Error 枚举
+client.rs         Client：认证、connect、session、send_request、event_source、ws
+core/             request / response / get / set / query / query_changes / changes / error / session
+email/            mod + helpers（email_get/email_query/email_import/email_copy/email_set/email_parse…）
 email_submission/ helpers（email_submission_get/query/set → 发送邮件 + 状态查询）
-mailbox/ helpers（mailbox_create/query/get/set/destroy…）
-thread/ thread/get
-identity/ Identity（发件身份）get/set
-blob/ blob 上传/复制（附件）
-sieve/ SieveScript（服务端过滤脚本）
+mailbox/          helpers（mailbox_create/query/get/set/destroy…）
+thread/           thread/get
+identity/         Identity（发件身份）get/set
+blob/             blob 上传/复制（附件）
+sieve/            SieveScript（服务端过滤脚本）
 vacation_response/
-principal/ Principal（账户/共享）
+principal/        Principal（账户/共享）
 push_subscription/ PushSubscription（HTTP push 回调注册）
-event_source/ SSE 流：mod / parser / stream
-client_ws/ WebSocket 客户端（feature = "websockets"）
+event_source/     SSE 流：mod / parser / stream
+client_ws/        WebSocket 客户端（feature = "websockets"）
 ```
 
 ### 2.3 Key capabilities mapped to this Bot
@@ -111,14 +111,14 @@ client_ws/ WebSocket 客户端（feature = "websockets"）
 
 ### 2.5 Error model (`Error` enumeration)
 ```
-Transport(reqwest::Error) 网络/TLS/超时
-Parse(serde_json::Error) 序列化
-Internal(String) 客户端内部
+Transport(reqwest::Error)   网络/TLS/超时
+Parse(serde_json::Error)    序列化
+Internal(String)            客户端内部
 Problem(Box<ProblemDetails>) JMAP problem-details
 Server(String)
-Method(MethodError) JMAP method-level 错误（NotJSON/Forbidden/RateLimit/StateMismatch…）
-Set(SetError<String>) /set 级别错误（每条记录的 creation/update/destroy 失败）
-WebSocket(...) ws 错误（feature 开启时）
+Method(MethodError)         JMAP method-level 错误（NotJSON/Forbidden/RateLimit/StateMismatch…）
+Set(SetError<String>)       /set 级别错误（每条记录的 creation/update/destroy 失败）
+WebSocket(...)              ws 错误（feature 开启时）
 ```
 - `MethodErrorType` fine-grained: `ServerUnavailable`/`ServerFail`/`RateLimit`/`InvalidArguments`/`Forbidden`/`StateMismatch`/`TooManyChanges`… → Can directly drive Bot’s retry/current limiting/state reset strategy.
 
@@ -175,37 +175,37 @@ Candidate comparison (`teloxide` / `grammers` / old `telegram-bot`), 6 reasons w
 
 ### 5.1 High-level topology
 ```
- ┌───────────────────────────────────────────────────┐
- │ Telegram │
- └───────────────────────┬───────────────────────────┘
- Webhook(HTTPS) │
- ┌───────────────────────▼───────────────────────────┐
- │ HTTP 入口 (axum，单端口 PORT) │
- │ POST /webhook/tg · POST /push/jmap · │
- │ POST /reconcile · GET /healthz /ready │
- │ GET / + admin session + config APIs (管理 SPA) │
- └───────────────────────┬───────────────────────────┘
- 命令 │ 通知 ↓(Redis Streams worker)
- ┌───────────────────────▼───────────────────────────┐
- │ bot 层 (handlers) │
- │ /list /read /send /search /folders /flag ... │
- └───────────────────────┬───────────────────────────┘
- 领域 │
- ┌───────────────────────▼───────────────────────────┐
- │ jmap 适配层 (JmapService) │
- │ list_folders/list_emails/read_email/send_email… │
- │ + sinceState 缓存 → 外部 Redis (MOD-SINCESTATE) │
- └───────────────────────┬───────────────────────────┘
- JMAP │ HTTPS（短请求）
- ┌───────────────────────▼───────────────────────────┐
- │ Stalwart JMAP Server │
- │ session_url / email/* / mailbox/* / submission/* │
- └───────────────────────▲───────────────────────────┘
- Push 回调(HTTPS)│ + 外部 Cron 对账(FLOW-RECONCILE)
- ┌───────────────────────┴───────────────────────────┐
- │ push handler → Redis Streams(MOD-STREAMS) │
- │ worker: Email/changes → 通知 → 发往 TG → 推进游标│
- └───────────────────────────────────────────────────┘
+            ┌───────────────────────────────────────────────────┐
+            │                    Telegram                       │
+            └───────────────────────┬───────────────────────────┘
+                     Webhook(HTTPS) │
+            ┌───────────────────────▼───────────────────────────┐
+            │   HTTP 入口 (axum，单端口 PORT)   │
+            │  POST /webhook/tg  ·  POST /push/jmap  ·          │
+            │  POST /reconcile   ·  GET /healthz /ready          │
+            │  GET / + admin session + config APIs (管理 SPA)     │
+            └───────────────────────┬───────────────────────────┘
+                                命令 │            通知 ↓(Redis Streams worker)
+            ┌───────────────────────▼───────────────────────────┐
+            │            bot 层 (handlers)                     │
+            │  /list /read /send /search /folders /flag ...     │
+            └───────────────────────┬───────────────────────────┘
+                                领域 │
+            ┌───────────────────────▼───────────────────────────┐
+            │        jmap 适配层 (JmapService)                   │
+            │  list_folders/list_emails/read_email/send_email…  │
+            │  + sinceState 缓存 → 外部 Redis (MOD-SINCESTATE)  │
+            └───────────────────────┬───────────────────────────┘
+                                JMAP │ HTTPS（短请求）
+            ┌───────────────────────▼───────────────────────────┐
+            │     Stalwart JMAP Server                          │
+            │  session_url / email/* / mailbox/* / submission/* │
+            └───────────────────────▲───────────────────────────┘
+                     Push 回调(HTTPS)│  + 外部 Cron 对账(FLOW-RECONCILE)
+            ┌───────────────────────┴───────────────────────────┐
+            │  push handler → Redis Streams(MOD-STREAMS)        │
+            │  worker: Email/changes → 通知 → 发往 TG → 推进游标│
+            └───────────────────────────────────────────────────┘
 ```
 > Deployment form = **General HTTPS-only Docker, no long connection** (deployment.md `C-NO-LONG-CONN`/`C-HTTPS-INBOUND`):
 > Telegram is Webhook only; JMAP real-time is Push callback only; slow tasks are asynchronously stepped into Redis Streams; reconciliation is triggered by **External HTTPS Cron**.
@@ -216,47 +216,47 @@ Candidate comparison (`teloxide` / `grammers` / old `telegram-bot`), 6 reasons w
 - **Status quo**: The first (and currently only) channel is Telegram. The goal is to retain the ability to expand DingTalk/Feishu in parallel, but not to achieve it ahead of time.
 - **Principle**: Decoupling the domain layer and channel layer - Mail/JMAP/AI/intention state machine ** must not rely on Telegram type**.
 - **Abstract (not over-engineered)**: No empty traits are reserved. `src/channel.rs` had three zero implementations
- `#[expect(dead_code)]` Placeholder trait (`Channel` / `Notifier` / `MessageAdapter`, comment readme
- "Stable ID + Phase 0 placeholder"), **Deleted** (see `docs/retired.md` for registration) - Actual Telegram outbound
- `channel::telegram::TelegramClient::send_text` (self-developed by `reqwest`), by `worker.rs`
- `MetadataWorker` and `notify.rs` are held directly and are never passed through these three traits. The command is parsed in
- `parse_intent` (`src/worker.rs`), rendering logic is scattered in `src/worker.rs` / `src/notify.rs`.
- What is passed between the domain and the channel is the domain `Notification` (`src/domain.rs`), and the channel only adapts at the edge.
+  `#[expect(dead_code)]` Placeholder trait (`Channel` / `Notifier` / `MessageAdapter`, comment readme
+  "Stable ID + Phase 0 placeholder"), **Deleted** (see `docs/retired.md` for registration) - Actual Telegram outbound
+  `channel::telegram::TelegramClient::send_text` (self-developed by `reqwest`), by `worker.rs`
+  `MetadataWorker` and `notify.rs` are held directly and are never passed through these three traits. The command is parsed in
+  `parse_intent` (`src/worker.rs`), rendering logic is scattered in `src/worker.rs` / `src/notify.rs`.
+  What is passed between the domain and the channel is the domain `Notification` (`src/domain.rs`), and the channel only adapts at the edge.
 - **Constraints**:
- - The public interface of `jmap` / `llm` / intent state machine / `notify::core` only accepts/returns domain types;
- - Specific channel SDK types must not appear in the domain layer (the channel layer does not currently introduce third-party Bot frameworks, see §4);
- - Add new channel = new adapter + assembly, do not change the domain layer. When abstraction is really needed, add it with the implementation and leave no empty traits.
+  - The public interface of `jmap` / `llm` / intent state machine / `notify::core` only accepts/returns domain types;
+  - Specific channel SDK types must not appear in the domain layer (the channel layer does not currently introduce third-party Bot frameworks, see §4);
+  - Add new channel = new adapter + assembly, do not change the domain layer. When abstraction is really needed, add it with the implementation and leave no empty traits.
 - **What not to do**: Do not define a polymorphic configuration registry, do not abstract the "channel capability matrix" in advance, do not build a plugins mechanism; evolve on demand (YAGNI).
 
 ### 5.3 Running model (short request, no long connection)
 - Single binary `message-weave`, `#[tokio::main]`.
 - On startup:
- 1. Load configuration (`config::Config`).
- 2. Construct `JmapService` (`Client::connect` completes session parsing, account_id caching, mailbox role→id mapping warm-up); sinceState is restored from external Redis (`MOD-SINCESTATE`).
- 3. Start the **HTTP portal** (axum, single port `PORT`): `/webhook/tg`, `/push/jmap`, `/reconcile`, `/healthz`, `/ready`; three of the write paths first pass the `SAF-AUTH-*` portal authentication (fail-closed, §7.3), `/healthz`, `/ready` For the public probe (`SAF-PROBE-PUBLIC`); `/ready` has done end-to-end detection (configuration + Redis + outbound read-only detection JMAP session `GET` and TG `getMe`, each 3s, parallel, about 3s at worst).
- 4. Start **Redis Streams worker** (background task) to consume Push events → `Email/changes` → Notification → Send to TG → Push sinceState → XACK.
- 5. **Does not hold any long connections and does not build self-timers** (`C-NO-LONG-CONN`); reconciliation is triggered by **external HTTPS Cron** `/reconcile` (`FLOW-RECONCILE`).
+  1. Load configuration (`config::Config`).
+  2. Construct `JmapService` (`Client::connect` completes session parsing, account_id caching, mailbox role→id mapping warm-up); sinceState is restored from external Redis (`MOD-SINCESTATE`).
+  3. Start the **HTTP portal** (axum, single port `PORT`): `/webhook/tg`, `/push/jmap`, `/reconcile`, `/healthz`, `/ready`; three of the write paths first pass the `SAF-AUTH-*` portal authentication (fail-closed, §7.3), `/healthz`, `/ready` For the public probe (`SAF-PROBE-PUBLIC`); `/ready` has done end-to-end detection (configuration + Redis + outbound read-only detection JMAP session `GET` and TG `getMe`, each 3s, parallel, about 3s at worst).
+  4. Start **Redis Streams worker** (background task) to consume Push events → `Email/changes` → Notification → Send to TG → Push sinceState → XACK.
+  5. **Does not hold any long connections and does not build self-timers** (`C-NO-LONG-CONN`); reconciliation is triggered by **external HTTPS Cron** `/reconcile` (`FLOW-RECONCILE`).
 - Notification sending and command processing share `Arc<JmapService>`, and internal `tokio::sync::RwLock` protects the variable cache; cross-request status always falls to external Redis (`C-REDIS-ONLY-STATE`).
 - **Multiple instances and load balancing (deployment form, `ARCH-LB-WORKER`)**: Since the state is all external Redis (`C-REDIS-ONLY-STATE`) and the delivery is idempotent (`MOD-DEDUP`), **the same image can be instantiated across multiple serverless platforms**, free Cloudflare Worker is used as the only entrance and failover (`C-LB-SINGLE-REG-URL`); `/reconcile` Use Redis to lock a single instance (`SAF-RECONCILE-LOCK`), and Streams to automatically amortize using the same consumer group (`MOD-STREAMS-GROUP`). See deployment.md §10 for details. **Field/channel logic does not need to be changed. **
 - **Production redline (`C-NO-DB` / `C-NO-LOCAL-WRITE` / `C-LOG-STDOUT-ONLY` / `SAF-LOG-PURITY` / `C-NO-STATEFUL-RECOVERY`, see deployment.md §0 / §8.2)**:
- - **Production uses no database** (`C-NO-DB`): No SQLite/Postgres/MySQL/embedded database; Redis is the only production state store.
- - **Disable local file/directory writing** (`C-NO-LOCAL-WRITE`): no log files, no data files, no temporary cache, no local volumes mounted.
- - **Log only writes to stdout/stderr** (`C-LOG-STDOUT-ONLY`): The container/platform is responsible for collecting and placing disk; disable the file log backend.
- - **Log and Redis write content constraints** (`SAF-LOG-PURITY`): Only structured events, counts, timestamps, desensitized summaries; **Prohibited** key original text, JMAP email body, AI request/response, attachment content.
- - **It is prohibited to rely on in-process status for production recovery** (`C-NO-STATEFUL-RECOVERY`): Restart and continuation (deduplication, sinceState, Streams breakpoints, circuit breaker counts, sessions) are all implemented by external Redis + JMAP reconciliation; the in-process cache is only for performance optimization, and the loss must be safe and reentrant.
+  - **Production uses no database** (`C-NO-DB`): No SQLite/Postgres/MySQL/embedded database; Redis is the only production state store.
+  - **Disable local file/directory writing** (`C-NO-LOCAL-WRITE`): no log files, no data files, no temporary cache, no local volumes mounted.
+  - **Log only writes to stdout/stderr** (`C-LOG-STDOUT-ONLY`): The container/platform is responsible for collecting and placing disk; disable the file log backend.
+  - **Log and Redis write content constraints** (`SAF-LOG-PURITY`): Only structured events, counts, timestamps, desensitized summaries; **Prohibited** key original text, JMAP email body, AI request/response, attachment content.
+  - **It is prohibited to rely on in-process status for production recovery** (`C-NO-STATEFUL-RECOVERY`): Restart and continuation (deduplication, sinceState, Streams breakpoints, circuit breaker counts, sessions) are all implemented by external Redis + JMAP reconciliation; the in-process cache is only for performance optimization, and the loss must be safe and reentrant.
 - Graceful exit: signal + `CancellationToken`, flush Redis Streams pending entries before exiting (**Do not write local files**, `C-NO-LOCAL-WRITE`).
 - **Current status**: Configuration guidance, HTTP entry and write entry authentication completed (`R1`/`SAF-AUTH-*`, fail-closed); JMAP session, Email/changes, PushSubscription create/update, Redis Streams worker and `/reconcile` have been connected. `/reconcile` and the Push closed loop still need to complete end-to-end acceptance in the real Stalwart, Redis, and Telegram environments. You cannot claim that the production link has been verified based on local access control alone.
 
 ### 5.4 Data flow: new email push (critical path, FLOW-NEW-MAIL)
 ```
 Stalwart JMAP Push → POST /push/jmap (StateChange{Email/EmailDelivery: new_state})
- → 校验 pushSubscriptionId + verificationCode → 幂等去重(MOD-DEDUP) → 入 Redis Streams(MOD-STREAMS) → 立即 2xx ACK
- → worker: XREADGROUP → 用 sinceState(存 Redis, MOD-SINCESTATE) 调 Email/changes → 取 created[] 的 id
- → read_email 封装 email_get（Subject, Preview, From, TextBody, BodyValues, Size, ReceivedAt, HasAttachment）→ EmailMetadata
- → notify::core 组装领域 Notification（仅元数据 + 行内按钮意图，绝不含正文）
- → channel::telegram::TelegramClient::send_notification(chat, notification)（内部渲染文本后经 send_text 发出）
- → 更新 sinceState（写外部 Redis）→ XACK
- → 若 Redis 丢失：由外部 Cron 对账(FLOW-RECONCILE) 重建游标并补发
+  → 校验 pushSubscriptionId + verificationCode → 幂等去重(MOD-DEDUP) → 入 Redis Streams(MOD-STREAMS) → 立即 2xx ACK
+  → worker: XREADGROUP → 用 sinceState(存 Redis, MOD-SINCESTATE) 调 Email/changes → 取 created[] 的 id
+  → read_email 封装 email_get（Subject, Preview, From, TextBody, BodyValues, Size, ReceivedAt, HasAttachment）→ EmailMetadata
+  → notify::core 组装领域 Notification（仅元数据 + 行内按钮意图，绝不含正文）
+  → channel::telegram::TelegramClient::send_notification(chat, notification)（内部渲染文本后经 send_text 发出）
+  → 更新 sinceState（写外部 Redis）→ XACK
+  → 若 Redis 丢失：由外部 Cron 对账(FLOW-RECONCILE) 重建游标并补发
 ```
 > Key: `Email/changes` lists the new email id in `created` to avoid full `email_query`; `sinceState` is stored in external Redis (`C-REDIS-ONLY-STATE`). When Redis is lost, it will be reconstructed from JMAP by reconciliation, and the **fact source is in JMAP**.
 > Notifications only contain sender/subject/time (+number of attachments), the text never appears in the notification (see `docs/charter.md §3` Security Boundary `SAF-NOTIFY-META`).
@@ -265,13 +265,13 @@ Stalwart JMAP Push → POST /push/jmap (StateChange{Email/EmailDelivery: new_sta
 ### 5.5 Data flow: command `/read <seq>` (long mail branch)
 ```
 TG /read 3 → handler 取会话里的 folder+page 游标
- → JmapService.list_emails(folder, page=3)
- → 取第 3 封 id → read_email(id, body=true) # JMAP 直取，绝不经 LLM
- → 格式化：
- 正文 ≤ long_email_char_limit(默认 4000) → 正常发送（HTML escape）
- 正文 > 阈值 → 不发全文，发 Preview(120) + 发件人/主题/附件概览 + 选项：
- "[AI 总结](约300字，需确认) / [继续查看原文(截断，标注‘完整请电脑查看’)]"
- → reply
+  → JmapService.list_emails(folder, page=3)
+  → 取第 3 封 id → read_email(id, body=true)   # JMAP 直取，绝不经 LLM
+  → 格式化：
+      正文 ≤ long_email_char_limit(默认 4000) → 正常发送（HTML escape）
+      正文 > 阈值 → 不发全文，发 Preview(120) + 发件人/主题/附件概览 + 选项：
+        "[AI 总结](约300字，需确认) / [继续查看原文(截断，标注‘完整请电脑查看’)]"
+  → reply
 （"AI 总结"分支必须用户确认后才把正文交 LLM 生成 ~300 字摘要；见 §12.3）
 ```
 
@@ -303,30 +303,30 @@ Key boundaries:
 Actual project structure (all code anchors in this document refer to this structure; see `docs/retired.md` for the historical target module splitting plan):
 ```
 message-weave/
-├── Cargo.toml # jmap-client 0.4.2 / redis 0.27 / reqwest 0.13；不含 teloxide
-├── .env.example # 仅 2 个必填项的占位样例（REDIS_URL / CONFIG_ENCRYPTION_KEY），不含业务配置
+├── Cargo.toml                    # jmap-client 0.4.2 / redis 0.27 / reqwest 0.13；不含 teloxide
+├── .env.example                  # 仅 2 个必填项的占位样例（REDIS_URL / CONFIG_ENCRYPTION_KEY），不含业务配置
 ├── .gitignore
-├── Dockerfile # 仅本地开发用；生产不执行（C-DEBIAN-SLIM，边界见 deployment.md §3）
-├── hoststack.yaml # 生产部署真源（runtime/build/start/healthCheck），非网关清单，见 §5.1
+├── Dockerfile                    # 仅本地开发用；生产不执行（C-DEBIAN-SLIM，边界见 deployment.md §3）
+├── hoststack.yaml                # 生产部署真源（runtime/build/start/healthCheck），非网关清单，见 §5.1
 ├── src/
-│ ├── main.rs # tokio main：读 PORT/REDIS_URL/CONFIG_ENCRYPTION_KEY 后启动 webhook HTTP 入口（单入口，无 CLI 子命令）
-│ ├── config.rs # Redis 业务配置反序列化（serde → BusinessConfigWire → Config）；CONFIG_ENCRYPTION_KEY 解析
-│ ├── error.rs # BotError 统一错误（见 §8.1）
-│ ├── domain.rs # 领域层根（渠道中立，见 §5.2）
-│ ├── domain/jmap.rs # JmapBackend trait + MockBackend（契约测试不联网）
-│ ├── domain/jmap/client.rs # 包装 jmap_client::Client（真实只读 adapter，MOD-JMAP-CLIENT）
-│ ├── state.rs # Redis 读写封装：配置/开关/会话/TTL 键（C-REDIS-ONLY-STATE）
-│ ├── channel.rs # 渠道层：TelegramClient（reqwest 自研出站）；领域类型在 src/domain.rs
-│ ├── notify.rs # /push/jmap 校验入队 + Redis Streams worker + /reconcile 对账
-│ ├── worker.rs # parse_intent → Intent，命令路由与 AI 授权判定
-│ ├── ai.rs # LlmClient / summarize：LLM 摘要调用
-│ └── web.rs # /config 静态前端路由 + include_str! 嵌入 + CSP
-├── web/ # 前端资源，构建期 include_str! 嵌入二进制（C-NO-LOCAL-WRITE）
-│ ├── index.html
-│ ├── styles.css
-│ ├── config.js
-│ └── config.test.mjs # Node 原生断言测试（非 cargo 测试）
-└── cloudflare-worker/ # 边缘反向代理，JS，不在 Rust 工程中
+│   ├── main.rs                   # tokio main：读 PORT/REDIS_URL/CONFIG_ENCRYPTION_KEY 后启动 webhook HTTP 入口（单入口，无 CLI 子命令）
+│   ├── config.rs                 # Redis 业务配置反序列化（serde → BusinessConfigWire → Config）；CONFIG_ENCRYPTION_KEY 解析
+│   ├── error.rs                  # BotError 统一错误（见 §8.1）
+│   ├── domain.rs                 # 领域层根（渠道中立，见 §5.2）
+│   ├── domain/jmap.rs            # JmapBackend trait + MockBackend（契约测试不联网）
+│   ├── domain/jmap/client.rs     # 包装 jmap_client::Client（真实只读 adapter，MOD-JMAP-CLIENT）
+│   ├── state.rs                  # Redis 读写封装：配置/开关/会话/TTL 键（C-REDIS-ONLY-STATE）
+│   ├── channel.rs                # 渠道层：TelegramClient（reqwest 自研出站）；领域类型在 src/domain.rs
+│   ├── notify.rs                 # /push/jmap 校验入队 + Redis Streams worker + /reconcile 对账
+│   ├── worker.rs                 # parse_intent → Intent，命令路由与 AI 授权判定
+│   ├── ai.rs                     # LlmClient / summarize：LLM 摘要调用
+│   └── web.rs                    # /config 静态前端路由 + include_str! 嵌入 + CSP
+├── web/                          # 前端资源，构建期 include_str! 嵌入二进制（C-NO-LOCAL-WRITE）
+│   ├── index.html
+│   ├── styles.css
+│   ├── config.js
+│   └── config.test.mjs           # Node 原生断言测试（非 cargo 测试）
+└── cloudflare-worker/            # 边缘反向代理，JS，不在 Rust 工程中
 ```
 
 Testing: **No integrated test directory**, and no stand-alone util tool module. All Rust tests are `#[cfg(test)]` unit tests within each module; the only test on the front end is `web/config.test.mjs`.
@@ -407,13 +407,13 @@ Testing: **No integrated test directory**, and no stand-alone util tool module. 
 
 ### 7.3 Access control
 - **Entry authentication (hard constraints `SAF-AUTH-RECONCILE`/`SAF-AUTH-TG-WEBHOOK`/`SAF-AUTH-JMAP-PUSH`)**: The three write paths must be authenticated first, **fail-closed**——
- - `/reconcile`: Request header `Authorization: Bearer <RECONCILE_TOKEN>`;
- - `/webhook/tg`: Request header `X-Telegram-Bot-Api-Secret-Token == TG_WEBHOOK_SECRET`;
- - `/push/jmap`: Verify Redis short-term status according to `pushSubscriptionId`; StateChange is released only after the first verification is successfully written back by JMAP `PushSubscription/set`.
- The comparison uses the **constant time** algorithm (`subtle`, anti-timing side channel); verification failure will always be `401` and **will not produce any side effects/status changes** before the authentication is passed. After the business configuration is completed, the credentials for Webhook, Push, Reconcile and Push registration interfaces must be valid; when the startup boot variable is missing, the configuration boot mode will be entered and authentication will not be bypassed (§7.1).
+  - `/reconcile`: Request header `Authorization: Bearer <RECONCILE_TOKEN>`;
+  - `/webhook/tg`: Request header `X-Telegram-Bot-Api-Secret-Token == TG_WEBHOOK_SECRET`;
+  - `/push/jmap`: Verify Redis short-term status according to `pushSubscriptionId`; StateChange is released only after the first verification is successfully written back by JMAP `PushSubscription/set`.
+  The comparison uses the **constant time** algorithm (`subtle`, anti-timing side channel); verification failure will always be `401` and **will not produce any side effects/status changes** before the authentication is passed. After the business configuration is completed, the credentials for Webhook, Push, Reconcile and Push registration interfaces must be valid; when the startup boot variable is missing, the configuration boot mode will be entered and authentication will not be bypassed (§7.1).
 - **Health probe (`SAF-PROBE-PUBLIC`)**: `/healthz` (`ARCH-HEALTHZ`) and `/ready` are **public probes** - no authentication, only returns health status, **does not contain any sensitive information** (does not echo configuration/key/internal error details).
- - `/healthz` = liveness (process survival), long-term stable semantics.
- - `/ready` does end-to-end probing: configuration integrity + Redis reachability + outbound read-only probing (`GET {jmap_origin}/.well-known/jmap`, Basic authentication with configuration; `GET https://api.telegram.org/bot<token>/getMe`; each `PROBE_TIMEOUT` = 3000ms, **Parallel** (`tokio::join!`), worst-case scenario 3s); all four pass `200` and readiness report (`{"status":"ready","configured":...,"jmap":...,"telegram":...}`, where `jmap`/`telegram` is the real probe result), any one fails `503` (standard error envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`). The probe is read-only, read-only configuration status, and will not trigger business side effects such as email synchronization, nor will it echo token or third-party response content; `refresh_business_config` only reads Redis, and has no state to write. Therefore `/ready` requires the outbound egress to the JMAP host and `api.telegram.org:443` to be reachable (if the egress requires a proxy, `/ready` is not available, see deployment.md).
+  - `/healthz` = liveness (process survival), long-term stable semantics.
+  - `/ready` does end-to-end probing: configuration integrity + Redis reachability + outbound read-only probing (`GET {jmap_origin}/.well-known/jmap`, Basic authentication with configuration; `GET https://api.telegram.org/bot<token>/getMe`; each `PROBE_TIMEOUT` = 3000ms, **Parallel** (`tokio::join!`), worst-case scenario 3s); all four pass `200` and readiness report (`{"status":"ready","configured":...,"jmap":...,"telegram":...}`, where `jmap`/`telegram` is the real probe result), any one fails `503` (standard error envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`). The probe is read-only, read-only configuration status, and will not trigger business side effects such as email synchronization, nor will it echo token or third-party response content; `refresh_business_config` only reads Redis, and has no state to write. Therefore `/ready` requires the outbound egress to the JMAP host and `api.telegram.org:443` to be reachable (if the egress requires a proxy, `/ready` is not available, see deployment.md).
 - **chat whitelist (hard constraint `SAF-CHAT-ALLOWLIST`)**: `CHAT_ALLOWLIST` is a **required** configuration; any inbound event (action triggered by TG command/callback) must verify `chat.id ∈ CHAT_ALLOWLIST` before **making any JMAP call, AI call or status change**. If it is not in the whitelist, **directly reject and terminate** (prevent token can be called by anyone after being leaked). Phase 0 has completed the `CHAT_ALLOWLIST` parsing skeleton; the forced rejection logic has been implemented with Telegram channel access (`telegram_webhook` of `src/notify.rs` verifies the whitelist before any JMAP/AI/status operation, and terminates if rejected).
 - **Command Minimization**: Only necessary commands are exposed; writing operations such as sending emails must be confirmed twice (sending emails is not currently implemented, see §10.3).
 - **Rate**: No local token bucket is built on the outbound side; Telegram's outbound sending is retried according to the Redis operating parameter `max_retries` (see `docs/reference.md` §6.1 for default values and hard upper limits); currently only Redis current limiting is done for Push verification code writing (`ratelimit:push-verify:*`). 429 under the 30 msg/s limit of the Telegram server **Automatic backoff in `parameters.retry_after` seconds** (`channel.rs`, `f4cae00`): `retry_after_ms` is truncated to the 60s budget limit after parsing, and the exponential backoff is used when this field is missing or non-numeric `backoff_delay_ms` (starting from 250ms, capped 4s), the overall retry budget is 60s. There is still no local token bucket current limit - if the budget is exceeded, a failure will be returned directly and the upstream will try again.
@@ -424,14 +424,14 @@ Testing: **No integrated test directory**, and no stand-alone util tool module. 
 - `POST /api/admin/session` accepts `Authorization: Bearer <CONFIG_ENCRYPTION_KEY>` and returns `{ "session": "<opaque>", "expires_in": 1800 }`; the admin session only saves the digest in Redis and expires after 1,800 seconds. `POST /api/admin/session/revoke` revokes the current session and returns `204` successfully.
 - The admin page only saves the session in JavaScript memory. Request settings `credentials: omit`, `cache: no-store`, without using cookies, localStorage or sessionStorage. The admin API accepts a valid admin session; the compatibility path also accepts `WORKER_TOKEN`. Worker transparently transmits the authentication header (`SAF-LB-PASSTHRU`) as it is.
 - `GET /api/config` and `PUT /api/config` only read and write non-sensitive running parameters:
- ```json
- {
- "jmap_timeout_ms": 15000,
- "telegram_timeout_ms": 10000,
- "llm_timeout_ms": 30000,
- "max_retries": 3
- }
- ```
+  ```json
+  {
+    "jmap_timeout_ms": 15000,
+    "telegram_timeout_ms": 10000,
+    "llm_timeout_ms": 30000,
+    "max_retries": 3
+  }
+  ```
 - The three timeout units are all milliseconds; the default value, value range and hard upper limit of `max_retries` are only authoritative with `docs/reference.md` §6.1 (the table below and the example response body above are only for illustration, and the values are not repeated). `max_retries` represents the maximum number of retries beyond the first request. When there is no configuration in Redis, GET returns the default value object; PUT successfully returns the same object after saving and persists to Redis (`C-REDIS-ONLY-STATE`).
 - `GET /api/business-config` reads back saved configuration for management SPA pre-populated form: returns `{ "configured", "revision", "values", "secrets_present" }`, where `values` is the value of 10 non-key fields and `secrets_present` is 6 Boolean existence of a key (`bot_token`, `jmap_password`, `telegram_webhook_secret`, `reconcile_token`, `worker_token`, `llm_api_key`) - **Never return the key value itself** (`SAF-NO-SECRET-ECHO`). Not yet saved, staleness returns `200` + `configured: false`, `revision: 0`, empty `values` and an existence boolean of all false. SPA therefore has only one code path and does not need to distinguish between first-time configuration and modified configuration.
 - `PUT /api/business-config` accepts `BusinessConfigPatch` (complete or partial), **only replaces the fields that appear in the submission body, and the rest inherits the stored values** (`BusinessConfigPatch::apply`); Push verification does not belong to Wire, is dynamically generated by Stalwart and written back by the backend. Verification is the only write gate, and the verification object is the merged configuration rather than the commit itself: patches are never verified individually, and existing complete wires are never discarded. `validate_business_wire` runs first, and returns the real `422` when rejected; if the merge result is legal, the configuration **must** be persisted (the merged Wire is persisted, not the request body), and then the client is built and the worker is switched to run. Therefore, when the dependency is not connected, `200` + `{ "persisted": true, "runtime_applied": false, "warnings": [{"component", "step", "detail"}] }` is returned instead of `503` - the configuration has been saved and the fault is reported truthfully instead of being silently swallowed by an unreachable JMAP. `runtime_applied` is only `true` when the reload submission is successful; in both cases, the `x-business-config-revision` header is returned; the request body can carry `revision` (that is, the `u64` returned by `GET`) as a control field - it does not participate in `apply`, does not enter Wire, and is not used as a saved setting. It is only used to determine whether this submission is based on the latest version. See the next article for the semantics of `409`. The response never echoes configuration or keys. The key is "replaced only after submission": the **omitted** key inherits the existing value, so the form backfilled by `GET` only needs to submit the fields to be changed; but the backend does not distinguish between "unsubmitted" and "submitted empty string", and explicitly submitting `""` will actually clear the key - "leave blank and keep" is a client contract implemented by SPA by discarding blank key fields before submission, not a server-side guarantee. `chat_allowlist` must be a non-empty list, empty arrays will be rejected by `validate_business_wire` (422). Incremental semantics only hold after **existing configuration**: if there is no existing configuration, there is no fallback value, and the patch must come with all required fields, otherwise `422` will be returned (the entry created from scratch is `POST /api/bootstrap`).
@@ -475,14 +475,14 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum BotError {
- #[error("configuration error: {0}")]
- Config(String),
- #[error("I/O error: {0}")]
- Io(#[from] std::io::Error),
- #[error("JSON error: {0}")]
- Json(#[from] serde_json::Error),
- #[error("state error")]
- State(#[from] crate::state::StateError),
+    #[error("configuration error: {0}")]
+    Config(String),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("state error")]
+    State(#[from] crate::state::StateError),
 }
 ```
 
@@ -531,17 +531,17 @@ The design target form once included six additional variants: `Jmap(#[from] jmap
 - Notification deduplication: the same `email_id` will not be pushed repeatedly.
 - Text escaping: Message text containing `<script>` is escaped in HTML mode.
 - **Security boundary assertion (hard, see `docs/charter.md §3`)**:
- - VIEW/View original text path: mock AI endpoint zero request (LLM client not called);
- - New email notification: There is no body content in the message (assertion leak);
- - Long emails: if the text is > 4000 characters, the full text will not be sent;
- - AI call prefix: LLM zero call before confirmation;
- - The analysis results are not saved to disk: no new disk/Redis writing path is added after processing;
- - AI fails 3 times → circuit breaker confirmation → fallback with "AI unavailable" logo.
- - **Entry Authentication (`SAF-AUTH-*`)**: `/reconcile`, `/webhook/tg`, `/push/jmap` returns `401` under **missing or wrong** credentials, and asserts **no side effects** (no Redis writes, no JMAP/AI calls) when authentication fails; correct credentials are allowed.
- - **Health Probe (`SAF-PROBE-PUBLIC`)**: `/healthz` returns `200` for process alive; `/ready` returns `200/503` for readiness - checks configuration integrity + Redis reachability + outbound read-only probe (`GET {jmap_origin}/.well-known/jmap` with Basic authentication, `GET https://api.telegram.org/bot<token>/getMe`, 3s each, parallel, about 3s at worst), any failure will return the standard error envelope (`service_unavailable` + `Retry-After: 30`), all will return the readiness report JSON; the response body does not contain sensitive information. Uptime Kuma is monitored by status code (`/ready` expects 200) and is not affected by changes in the response body.
- - **Channel decoupling**: No channel SDK types appear in the public interfaces of domain modules (`src/domain.rs` / `src/ai.rs` / `src/worker.rs`); channel assembly is centralized in `src/channel.rs`.
- - **JMAP session URL (`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`)**: both the base address and the complete `…/.well-known/jmap` are accepted and the normalized results are consistent**, the URL passed to `Client::connect` does not contain duplicate `/.well-known/jmap`**; `http://` Rejected; **Embedded credentials (`https://user:pass@host`) are rejected**; Dangerous queries are rejected; Redirects only trust the origin host in the configuration (Stalwart will 307 jump to `/jmap/session`).
- - **JMAP multi-part original text (`REQ-JMAP-RAW-MULTIPART`)**: `read_email` splices the parts with `part_id` and `bodyValue`" for the multi-part text in the order of `text_body`; constructing the "no available part" use case assertion returns **clear error** (non-empty string).
+  - VIEW/View original text path: mock AI endpoint zero request (LLM client not called);
+  - New email notification: There is no body content in the message (assertion leak);
+  - Long emails: if the text is > 4000 characters, the full text will not be sent;
+  - AI call prefix: LLM zero call before confirmation;
+  - The analysis results are not saved to disk: no new disk/Redis writing path is added after processing;
+  - AI fails 3 times → circuit breaker confirmation → fallback with "AI unavailable" logo.
+  - **Entry Authentication (`SAF-AUTH-*`)**: `/reconcile`, `/webhook/tg`, `/push/jmap` returns `401` under **missing or wrong** credentials, and asserts **no side effects** (no Redis writes, no JMAP/AI calls) when authentication fails; correct credentials are allowed.
+  - **Health Probe (`SAF-PROBE-PUBLIC`)**: `/healthz` returns `200` for process alive; `/ready` returns `200/503` for readiness - checks configuration integrity + Redis reachability + outbound read-only probe (`GET {jmap_origin}/.well-known/jmap` with Basic authentication, `GET https://api.telegram.org/bot<token>/getMe`, 3s each, parallel, about 3s at worst), any failure will return the standard error envelope (`service_unavailable` + `Retry-After: 30`), all will return the readiness report JSON; the response body does not contain sensitive information. Uptime Kuma is monitored by status code (`/ready` expects 200) and is not affected by changes in the response body.
+  - **Channel decoupling**: No channel SDK types appear in the public interfaces of domain modules (`src/domain.rs` / `src/ai.rs` / `src/worker.rs`); channel assembly is centralized in `src/channel.rs`.
+  - **JMAP session URL (`REQ-JMAP-SESSION-URL`/`SAF-JMAP-URL`)**: both the base address and the complete `…/.well-known/jmap` are accepted and the normalized results are consistent**, the URL passed to `Client::connect` does not contain duplicate `/.well-known/jmap`**; `http://` Rejected; **Embedded credentials (`https://user:pass@host`) are rejected**; Dangerous queries are rejected; Redirects only trust the origin host in the configuration (Stalwart will 307 jump to `/jmap/session`).
+  - **JMAP multi-part original text (`REQ-JMAP-RAW-MULTIPART`)**: `read_email` splices the parts with `part_id` and `bodyValue`" for the multi-part text in the order of `text_body`; constructing the "no available part" use case assertion returns **clear error** (non-empty string).
 
 ---
 
@@ -643,9 +643,9 @@ Both are wrong, and the real 360s solo lock `lock:push-register:{sha256(callback
 Single authority table, this section only retains four "whys" that affect design judgment:
 
 - **Reconciliation lock TTL 300s, deliberately larger than the upper limit of 120s for a single page**, to avoid lock expiration during the lock period, causing the same account to enter reconciliation repeatedly
- (`REQ-RECONCILE-IDEMPOTENCY`, `SAF-RECONCILE-LOCK`).
+  (`REQ-RECONCILE-IDEMPOTENCY`, `SAF-RECONCILE-LOCK`).
 - **push registration solo lock TTL 360s, deliberately larger than the upper limit of 300s for a single outbound request**, otherwise a slow registration will cause repeated requests
- (`SAF-AUTH-JMAP-PUSH`).
+  (`SAF-AUTH-JMAP-PUSH`).
 - **Reconciliation deduplication 24h is intentionally designed**: the same email will only be notified once within 24h (`MOD-DEDUP`, see 11.5 of this article for the scope).
 - **If the configuration key is missing, it will be regarded as failed (fail-closed)** and the business path will not be entered.
 
@@ -728,7 +728,7 @@ There are no pending decisions regarding deployment/platform decisions: `Q-DEP-A
 ### 12.1 Module division (current implementation)
 There is only **one file** for LLM related code:
 ```
-src/ai.rs # LlmClient（唯一实现）：summarize() 打 OpenAI 兼容 /chat/completions
+src/ai.rs   # LlmClient（唯一实现）：summarize() 打 OpenAI 兼容 /chat/completions
 ```
 The configuration is loaded in `LlmConfig` in `src/config.rs`, and the runtime parameters are in `OutboundConfig` in `src/state.rs` (delivered by `RuntimeConfigProvider`).
 The LLM capability only exists in the `src/ai.rs` file; **no** configuration/fallback/policy/audit layering - circuit breaker, rule fallback, and audit span are all not implemented (see §12.4–12.7).
