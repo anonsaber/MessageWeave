@@ -305,6 +305,21 @@ pub trait ReliableState: Send + Sync {
         &self,
         callback_url: &str,
     ) -> Result<(), StateError>;
+
+    /// 读取当前激活的 push 回调地址（current 指针），无注册时为 None。
+    ///
+    /// per-URL 映射是分散的、无法枚举出"现在生效的是哪一个"；这个指针让
+    /// /api/push/register 在更换地址时能找到旧订阅去注销，否则 Stalwart 会
+    /// 对同一邮件事件向新旧两个地址各推一次（重复通知）。
+    async fn get_push_registration_current(&self) -> Result<Option<String>, StateError>;
+
+    /// 记录当前激活的 push 回调地址。仅在 /api/push/register 真正建好订阅并
+    /// 写入 per-URL 映射之后调用；幂等命中（未创建订阅）不写。
+    async fn set_push_registration_current(&self, callback_url: &str) -> Result<(), StateError>;
+
+    /// 清除 current 指针。注销掉的是 current 地址时调用，否则指针会指向
+    /// 一个已 disabled 的订阅。
+    async fn clear_push_registration_current(&self) -> Result<(), StateError>;
 }
 
 /// Bound on a single Redis connect attempt, for both the initial connection
@@ -912,7 +927,44 @@ impl ReliableState for RedisState {
             .await?;
         Ok(())
     }
+
+    async fn get_push_registration_current(&self) -> Result<Option<String>, StateError> {
+        let mut connection = self.connection.clone();
+        let reply: Option<String> = redis::cmd("GET")
+            .arg(PUSH_REGISTRATION_CURRENT_KEY)
+            .query_async(&mut connection)
+            .await?;
+        Ok(reply)
+    }
+
+    async fn set_push_registration_current(&self, callback_url: &str) -> Result<(), StateError> {
+        let mut connection = self.connection.clone();
+        // 与 per-URL 映射同 TTL：指针指向的注册过期后，指针本身也应一起消失。
+        redis::cmd("SET")
+            .arg(PUSH_REGISTRATION_CURRENT_KEY)
+            .arg(callback_url)
+            .arg("EX")
+            .arg(ttl::PUSH_REGISTRATION_SECONDS)
+            .query_async::<()>(&mut connection)
+            .await?;
+        Ok(())
+    }
+
+    async fn clear_push_registration_current(&self) -> Result<(), StateError> {
+        let mut connection = self.connection.clone();
+        redis::cmd("DEL")
+            .arg(PUSH_REGISTRATION_CURRENT_KEY)
+            .query_async::<()>(&mut connection)
+            .await?;
+        Ok(())
+    }
 }
+
+/// current 指针的键：当前激活的 push 回调地址原文。
+///
+/// 与 per-URL 映射共用前缀，但字面量 `current` 含非十六进制字符，永远不会
+/// 与 `session_digest` 的十六进制摘要相撞。
+const PUSH_REGISTRATION_CURRENT_KEY: &str = "push:registration:current";
 
 fn push_registration_key(callback_url: &str) -> String {
     format!(
@@ -999,6 +1051,8 @@ struct MemoryInner {
     dedup: HashSet<String>,
     locks: HashMap<String, String>,
     push_registrations: HashMap<String, String>,
+    /// 当前激活的 push 回调地址（current 指针）
+    push_registration_current: Option<String>,
     streams: HashMap<String, Vec<(String, String)>>,
     retries: HashMap<(String, String), u32>,
     consent: HashMap<i64, i64>,
@@ -1363,6 +1417,31 @@ impl ReliableState for MemoryState {
             .map_err(|_| StateError::Poisoned)?
             .push_registrations
             .remove(&push_registration_key(callback_url));
+        Ok(())
+    }
+
+    async fn get_push_registration_current(&self) -> Result<Option<String>, StateError> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| StateError::Poisoned)?
+            .push_registration_current
+            .clone())
+    }
+
+    async fn set_push_registration_current(&self, callback_url: &str) -> Result<(), StateError> {
+        self.inner
+            .lock()
+            .map_err(|_| StateError::Poisoned)?
+            .push_registration_current = Some(callback_url.to_owned());
+        Ok(())
+    }
+
+    async fn clear_push_registration_current(&self) -> Result<(), StateError> {
+        self.inner
+            .lock()
+            .map_err(|_| StateError::Poisoned)?
+            .push_registration_current = None;
         Ok(())
     }
 
@@ -1881,6 +1960,37 @@ mod real_redis_ttl_tests {
         delete_key(state.connection.clone(), &consent_key)
             .await
             .unwrap();
+
+        // `set_push_registration_current` reuses the registration TTL: the
+        // pointer is only useful while the registration it points at is still
+        // valid, so both must expire together. The key name is fixed and this
+        // may target a shared database, so a populated key means a real
+        // registration exists -- skip it rather than clobber it.
+        let previous = state.get_push_registration_current().await.unwrap();
+        if previous.is_some() {
+            eprintln!("skipped pointer TTL check: push:registration:current is already populated");
+            return;
+        }
+        state
+            .set_push_registration_current("ttlcheck://example.invalid/push")
+            .await
+            .unwrap();
+        assert_eq!(
+            state
+                .get_push_registration_current()
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("ttlcheck://example.invalid/push")
+        );
+        let pttl: i64 = redis::cmd("PTTL")
+            .arg(PUSH_REGISTRATION_CURRENT_KEY)
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        assert_within(pttl, ttl::PUSH_REGISTRATION_SECONDS, 2_000);
+        assert!(state.clear_push_registration_current().await.is_ok());
+        assert_eq!(state.get_push_registration_current().await.unwrap(), None);
 
         // The retry counter's 86400s lives in the Lua script, not at a call
         // site, so it is asserted through `retry_or_dlq` rather than read back
