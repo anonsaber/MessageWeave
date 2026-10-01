@@ -192,6 +192,38 @@ Multiple backends can share traffic because request state is stored in Redis, du
 deliveries are deduplicated, and reconciliation repairs missed push events. No sticky session
 or application code change is required.
 
+All Redis keys are named globally and carry no instance, hostname, or origin suffix. Sharing one
+Redis is not a compromise here: several origins hold a single copy of each item below.
+
+| Data | Key | Semantics |
+|---|---|---|
+| Business configuration | `config:business` | one global ciphertext blob (AES-256-GCM), with no per-instance slot |
+| Configuration revision | `config:business:revision` | one global monotonic counter, bumped in the same Lua transaction as the write (`CONFIG_STORE_REV_SCRIPT`) |
+| Enable gate | `config:enabled` | one global boolean |
+| Reconcile cursor | `state:jmap:since` | one global cursor, with no account dimension |
+| Delivery streams | `stalwart:jmap:events` / `stalwart:telegram:events` | shared through a consumer group; the group is created lazily and `XAUTOCLAIM` reclaims idle messages |
+| Reconcile lock | `lock:reconcile` | one global single-flight lock, mutual exclusion across instances |
+
+Two consequences matter in practice.
+
+First, **the business configuration exists once, and an SPA edit from any origin writes the same
+copy.** There is no way to change only one instance: no key carries an instance dimension and
+`refresh_business_config` takes no instance argument. This is intended behavior. If two genuinely
+independent configurations are needed, for example production alongside a pre-production twin,
+deploy a second instance pointed at a second Redis rather than distinguishing inside one Redis.
+
+Second, **`CONFIG_ENCRYPTION_KEY` must be byte-identical on every origin.** It is 64 hex
+characters (32 bytes) and is used directly as the AES-256-GCM key, with the AAD fixed at
+`message-weave/config:business/v1`. It also doubles as the SPA admin credential. An origin holding
+a different value can neither decrypt configuration written by another origin nor log in to the
+SPA, and both paths fail closed.
+
+Extra origins buy failover rather than throughput. Delivery is spread across the shared consumer
+group, but `/reconcile` is serialized globally by `lock:reconcile` and the cursor is singular. If
+one instance dies mid-batch, the next instance picks the messages up once they pass the
+`XAUTOCLAIM` idle window; the cost is possible duplicate delivery, guarded by the `dedup:*` keys,
+never message loss.
+
 ### 10.3 Trust model
 
 The Worker passes request headers and bodies through. Backend authentication remains required
@@ -223,3 +255,31 @@ HTTP 200 when no valid origin is configured.
 The Worker is not a Redis proxy and does not make the backend stateless; shared external Redis
 remains required. It does not add a database, a long-lived connection, or a second layer of
 business authentication.
+
+### 10.8 Configuration convergence across origins
+
+One SPA edit writes once to Redis. The origins converge **lazily, at the request boundary**: every
+request-bearing entry point (`/worker`, `/reconcile`, `/healthz`, `/push/jmap`, `/api/*`) calls
+`refresh_business_config`, which reads the global revision from Redis and returns immediately when
+`remote_revision <= local_revision`. There is no polling loop and no watch, so an origin that
+receives no traffic keeps the configuration it already had.
+
+**Known behavior: a failed rebuild is not retried until the next revision.** The revision check
+above is an early exit, not a retry guard. When `build_worker` fails for one origin — a JMAP
+session URL that is unreachable, or an `llm_api_key` / `llm_base_url` that is missing or invalid —
+that origin advances its in-memory revision to the remote value and keeps the runtime it already
+had. The early-exit condition then holds forever for that origin, so it does not try again until a
+**new** revision is written. Every other failure inside the same function (Redis unreachable, blob
+missing, JSON parse failure, validation failure) leaves the local revision untouched and therefore
+does retry on the next request; those paths fail before a runtime is built, so no worker is
+rebuilt.
+
+The symptom is one origin running the new configuration and another still on the old one, with no
+error and no log line: the failed path returns silently. To detect it, compare the field values
+reported by `GET /debug/config` on each origin — those come from the live in-memory runtime. Do
+not use its `revision` field for this: that value is read from Redis and shows the latest global
+revision even when the instance has not converged.
+
+To recover, touch the configuration again from the SPA so that the revision moves; the stuck
+origin will attempt the rebuild once. If the origin is still in the Worker's origin list, remove
+it in the meantime so requests are not split between two configurations.
