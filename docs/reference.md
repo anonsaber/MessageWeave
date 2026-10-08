@@ -359,11 +359,6 @@ Three distinct layers. They are not interchangeable.
 | `DEBUG_ENABLED` | no | — | truthy values are `1`/`true`/`TRUE`/`True`/`yes`/`YES` (exact match); enables the debug surface on its own, paired with `--debug` as an alternative (`SAF-DEBUG-GATE`) |
 | `DEBUG_TOKEN` | no | — | effective only once the debug surface is requested via `DEBUG_ENABLED` or `--debug` (`SAF-DEBUG-GATE` / `SAF-DEBUG-ORIGIN-ONLY`) |
 
-`RUN_MODE` **no longer exists**: the identifier was removed together with the legacy
-`Config::from_env()` environment parser (registration in `docs/retired.md`). Both webhook
-and reconcile traffic share one router and reconcile is a standalone `POST /reconcile`
-endpoint, so the variable never changed any runtime behaviour — there is now nothing to set.
-
 **Missing a required variable does not crash the process.** It logs a warning and serves
 `router_configuration_setup`, which mounts only `/api/status`,
 `/ready` and `/healthz` on top of the static SPA. The business and admin routes from §3 are not

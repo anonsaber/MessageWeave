@@ -348,12 +348,7 @@ SPA 的首次启动流程仍然无法通过 Worker 的 `/api/bootstrap` 完成�
 | `CONFIG_ENCRYPTION_KEY` |是的 | — | `encryption_key_from_env` |
 | `端口` |没有| `8080` | `unwrap_or(8080_u16)`。监听者直接绑定它； `Config` 不携带端口字段 |
 | `DEBUG_ENABLED` |没有| — |真值为 `1`/`true`/`TRUE`/`True`/`yes`/`YES` （完全匹配）；单独启用调试界面，与 `--debug` 配对作为替代方案 (`SAF-DEBUG-GATE`) |
-| `DEBUG_TOKEN` |没有| — |仅在通过“DEBUG_ENABLED”或“--debug”（“SAF-DEBUG-GATE”/“SAF-DEBUG-ORIGIN-ONLY”）请求调试表面后才有效
-
-`RUN_MODE` **不再存在**：标识符与旧版本一起被删除
-`Config::from_env()` 环境解析器（在 `docs/retired.md` 中注册）。两个网络钩子
-和协调流量共享一个路由器，并且协调是一个独立的“POST /reconcile”
-端点，因此该变量从未改变任何运行时行为 - 现在无需设置任何内容。
+| `DEBUG_TOKEN` |没有| — |仅在通过 `DEBUG_ENABLED` 或 `--debug`（`SAF-DEBUG-GATE`/`SAF-DEBUG-ORIGIN-ONLY`）请求调试表面后才有效
 
 **缺少必需的变量不会使进程崩溃。**它会记录警告并提供服务
 `router_configuration_setup`，仅挂载`/api/status`，

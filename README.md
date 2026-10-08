@@ -281,8 +281,6 @@ Three layers. They are not interchangeable.
 | `CONFIG_ENCRYPTION_KEY` | yes | — |
 | `PORT` | no | `8080` |
 
-There is no `RUN_MODE`: the legacy environment parser was removed, and webhook plus
-reconcile traffic share one router (`POST /reconcile` is a standalone endpoint).
 `.env.example` ships only the two required
 variables; the rest are documented defaults.
 
