@@ -55,6 +55,8 @@ MessageWeave 位于 JMAP 邮件服务器（例如 Stalwart）与 Telegram bot �
 ## 3. 五分钟跑起来
 
 需要可用的 Redis 服务、一个 JMAP session 与一个 Telegram bot token。
+如果这些你还没有，[`docs/quickstart.zh-CN.md`](docs/quickstart.zh-CN.md) 有手把手教程：BotFather
+申请、chat id 获取、应用密码创建与首次配置全过程。
 
 这段是**本地容器冒烟测试**。生产部署可以用任何能跑起后端容器、注入加密 secret 并连到外部托管 Redis 的平台，见 `docs/deployment.md` §3 与 `docs/reference.md` 的平台相关部分。
 
@@ -118,6 +120,7 @@ Telegram 发送。它由双因子开关控制——进程必须带 `--debug` **�
 
 | 文档 | 回答什么 |
 |---|---|
+| [`docs/quickstart.zh-CN.md`](docs/quickstart.zh-CN.md) | 手把手首次运行：创建 Telegram bot、找到 chat id、部署一个后端、填表、注册回调 |
 | [`docs/design.zh-CN.md`](docs/design.zh-CN.md) | 为什么这样设计：数据流、JMAP 语义、Redis streams、AI 授权规则 |
 | [`docs/deployment.zh-CN.md`](docs/deployment.zh-CN.md) | 怎么部署：Dockerfile、secrets、Redis 托管、webhook/push/对账路由、多实例负载均衡 |
 | [`docs/reference.zh-CN.md`](docs/reference.zh-CN.md) | **可核对事实的唯一权威来源**——Redis 键与 TTL、错误码、路由、环境变量分层、预算常量 |

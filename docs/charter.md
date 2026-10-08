@@ -171,6 +171,7 @@ Answer only one question per document; **tables, lists and values must not be du
 |---|---|---|
 | [`../AGENTS.md`](../AGENTS.md) | Universal, language-independent code writing and environment building specifications | Quality rules |
 | `README.md` / `README.zh-CN.md` | User-oriented: what is it, how to run it, how to configure it | User-visible facts (information must be equivalent in Chinese and English) |
+| `docs/quickstart.md` / `docs/quickstart.zh-CN.md` | Hand-holding first run: create a Telegram bot, find the chat id, deploy one backend, fill the form, register callbacks | Steps and decisions (field semantics, defaults and TTLs stay in `docs/reference.md`) |
 | `docs/design.md` | Why it is designed this way: data flow, module boundaries, state machines, error handling | Architectural intent |
 | `docs/deployment.md` | How to deploy: Dockerfile, secrets, gateway, multiple instances, cron | Deployment and operation and maintenance |
 | `docs/reference.md` | The single authoritative source of verifiable facts: routing, Redis keys and TTLs, configuration items, error codes, outbound constants | **verifiable facts** |

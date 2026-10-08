@@ -75,6 +75,9 @@ their own addresses in both forms.
 ## 3. 5-minute setup
 
 Requires a reachable Redis instance and a JMAP session plus a Telegram bot token.
+If you do not have those yet, the hand-holding walkthrough in
+[`docs/quickstart.md`](docs/quickstart.md) covers BotFather, chat-id lookup, app-password
+creation and the full first-run from zero.
 
 **This is a local container smoke test.** Production deployment can use any platform that
 can run the backend container, inject encrypted secrets, and connect to externally managed
@@ -158,6 +161,7 @@ mail. See §2.
 
 | Document | What it answers |
 |---|---|
+| [`docs/quickstart.md`](docs/quickstart.md) | Hand-holding first run: create a Telegram bot, find the chat id, deploy one backend, fill the form, register callbacks |
 | [`docs/design.md`](docs/design.md) | Why the system is shaped this way: data flow, JMAP semantics, Redis streams, AI consent rules |
 | [`docs/deployment.md`](docs/deployment.md) | How to deploy: Dockerfile, secrets, Redis hosting, webhook/push/reconcile routing, multi-instance load balancing |
 | [`docs/reference.md`](docs/reference.md) | **Single source of truth for verifiable facts** — Redis keys and TTLs, error codes, routes, environment layers, budgets |

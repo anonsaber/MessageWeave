@@ -171,6 +171,7 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 |---|---|---|
 | [`../AGENTS.md`](../AGENTS.md) | 通用、语言无关的代码编写与环境构建规范 | 质量规则 |
 | `README.md` / `README.zh-CN.md` | 面向使用者：是什么、怎么跑、怎么配置 | 用户可见事实（中英必须信息对等） |
+| `docs/quickstart.md` / `docs/quickstart.zh-CN.md` | 手把手首次运行：创建 Telegram bot、找到 chat id、部署一个后端、填表、注册回调 | 步骤与决策（字段语义、默认值、TTL 归 `docs/reference.md`） |
 | `docs/design.md` | 为什么这样设计：数据流、模块边界、状态机、错误处理 | 架构意图 |
 | `docs/deployment.md` | 怎么部署：Dockerfile、secrets、网关、多实例、cron | 部署与运维 |
 | `docs/reference.md` | 可核对事实的唯一权威来源：路由、Redis 键与 TTL、配置项、错误码、出站常量 | **可核对事实** |
