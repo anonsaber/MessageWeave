@@ -293,7 +293,7 @@ Response conventions:
 
 ---
 
-## 4. Gateway vs backend route matrix
+## 4. Load balancer vs backend route matrix
 
 > **Independently verified.** Source: `cloudflare-worker/src/backends.js` `SAFE_ROUTES`,
 > 19 entries, alongside `ROUTE_METHODS` (`index.js`)
@@ -317,7 +317,7 @@ backend pool returns **503** rather than passing the request through.
 
 **Registered on the backend but NOT forwarded (2):**
 
-| Path | Why it is absent from the gateway |
+| Path | Why it is absent from the load balancer |
 |---|---|
 | `POST /api/bootstrap` | One-shot trust bootstrap; not in the route set, so it is only reachable at the backend's own address |
 | `/debug/*` (7 routes) | Opt-in remote-debug surface (`SAF-DEBUG-GATE`); not in `SAFE_ROUTES`, so it is reachable **only** at the backend origin's own address |
@@ -334,7 +334,7 @@ what mints the session. Adding `/api/enabled` therefore opens no new credential 
 Consequence: neither remaining route carries external business traffic, so no second ingress is
 needed in front of the backend instances. The SPA's first-boot flow still cannot drive
 `/api/bootstrap` through the worker — bootstrap must be performed against the backend origin
-directly, or the bootstrap path must be added to the gateway allowlist.
+directly, or the bootstrap path must be added to the load balancer allowlist.
 
 `POST /api/push/register`, `POST /api/telegram/register-webhook` and `POST /api/push/disable` **are** forwarded. These are safe to
 proxy: the callback URL is supplied by the client in the request body and
@@ -704,7 +704,7 @@ variable semantics and Redis business configuration fields are in [§5](#5-envir
 Telegram, JMAP, allowlist, worker, reconcile, and LLM business settings are Redis-resident,
 not process environment variables. The field list and validation rules in [§5.2](#52-redis-resident-business-configuration)
 are authoritative. A successful initial save can use the one-shot `/api/bootstrap` endpoint at
-the backend's own address; it is not in the gateway's route set, so a request addressed to the
+the backend's own address; it is not in the load balancer's route set, so a request addressed to the
 Worker never reaches it. Subsequent edits use the protected configuration API.
 
 ### 9.3 Callback registration and scheduled work
@@ -744,7 +744,7 @@ path audit can read Git history.
 
 ### 9.5 Cloudflare Worker and Dashboard
 
-The Worker is an optional HTTPS gateway. The backend origins must be HTTPS strings, with no
+The Worker is an optional HTTPS load balancer. The backend origins must be HTTPS strings, with no
 path, query, fragment, or embedded credentials. The current public origin list and
 `LB_VERSION` are declared in `cloudflare-worker/wrangler.toml` under `[vars]`. Move
 `BACKEND_ORIGINS_JSON` to an encrypted secret only when its values are private; never store

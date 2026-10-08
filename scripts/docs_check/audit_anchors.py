@@ -46,7 +46,6 @@ DOCS = ['AGENTS.md', 'README.md', 'README.zh-CN.md', 'docs/design.md',
         'docs/reference.md', 'docs/reference.zh-CN.md', 'docs/retired.md',
         'docs/retired.zh-CN.md', 'docs/opengaps.md', 'docs/opengaps.zh-CN.md',
         'docs/charter.md', 'docs/charter.zh-CN.md',
-        'docs/quickstart.md', 'docs/quickstart.zh-CN.md',
         'cloudflare-worker/README.md',
         'cloudflare-worker/README.zh-CN.md']
 

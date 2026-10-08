@@ -307,7 +307,7 @@ message-weave/
 ├── .env.example                  # 仅 2 个必填项的占位样例（REDIS_URL / CONFIG_ENCRYPTION_KEY），不含业务配置
 ├── .gitignore
 ├── Dockerfile                    # 仅本地开发用；生产不执行（C-DEBIAN-SLIM，边界见 deployment.md §3）
-├── hoststack.yaml                # 生产部署真源（runtime/build/start/healthCheck），非网关清单，见 §5.1
+├── hoststack.yaml                # 生产部署真源（runtime/build/start/healthCheck），非负载均衡器清单，见 §5.1
 ├── src/
 │   ├── main.rs                   # tokio main：读 PORT/REDIS_URL/CONFIG_ENCRYPTION_KEY 后启动 webhook HTTP 入口（单入口，无 CLI 子命令）
 │   ├── config.rs                 # Redis 业务配置反序列化（serde → BusinessConfigWire → Config）；CONFIG_ENCRYPTION_KEY 解析
@@ -460,7 +460,7 @@ message-weave/
 
 ### 7.6 为什么远程联调接口必须默认完全关闭？
 
-该面存在的唯一理由是缩短生产排障路径：在无法登录容器、只能靠外部请求观察系统时，需要有人能在不发版的前提下探到 JMAP/Telegram 连通性与当前业务配置。代价是它的入口软度必然高于三条写路径——除只读探测外还保留一次**真实出站发送**，且复用业务白名单而非独立白名单。因此设计选择是「默认关闭」而不是「默认开启、靠网关挡」：进程满足「`DEBUG_ENABLED` 为真值或命令行带 `--debug`」**且**设置了非空 `DEBUG_TOKEN` 时才会挂载这组路由（`SAF-DEBUG-GATE`）；缺一时路由在路由器里**根本不存在**，请求落到 axum 通用 `404`，而非「存在但 401」——后者会泄漏路由存在性。也不存在第三种状态：没有「未配置即开放」的回退，也没有任何配置项能把它设为默认开启。`DEBUG_ENABLED` 走环境变量而非启动命令，是为了让开关能在不发版的前提下从平台控制台改一次完成——启动命令保持静态。再叠一层位置约束：它不在网关的安全路由白名单内，即便后端开错，经平台入口也会被 fail-closed 拒掉，唯一可达路径是直连后端 origin。这四处——双因子挂载、404 而非 401、无默认开启回退、网关不可达——共同构成「暴露面默认为零」的架构决策。启用方式、逐端点状态码与部署确认清单见 deployment.md §2.1。
+该面存在的唯一理由是缩短生产排障路径：在无法登录容器、只能靠外部请求观察系统时，需要有人能在不发版的前提下探到 JMAP/Telegram 连通性与当前业务配置。代价是它的入口软度必然高于三条写路径——除只读探测外还保留一次**真实出站发送**，且复用业务白名单而非独立白名单。因此设计选择是「默认关闭」而不是「默认开启、靠负载均衡器挡」：进程满足「`DEBUG_ENABLED` 为真值或命令行带 `--debug`」**且**设置了非空 `DEBUG_TOKEN` 时才会挂载这组路由（`SAF-DEBUG-GATE`）；缺一时路由在路由器里**根本不存在**，请求落到 axum 通用 `404`，而非「存在但 401」——后者会泄漏路由存在性。也不存在第三种状态：没有「未配置即开放」的回退，也没有任何配置项能把它设为默认开启。`DEBUG_ENABLED` 走环境变量而非启动命令，是为了让开关能在不发版的前提下从平台控制台改一次完成——启动命令保持静态。再叠一层位置约束：它不在负载均衡器的安全路由白名单内，即便后端开错，经平台入口也会被 fail-closed 拒掉，唯一可达路径是直连后端 origin。这四处——双因子挂载、404 而非 401、无默认开启回退、负载均衡器不可达——共同构成「暴露面默认为零」的架构决策。启用方式、逐端点状态码与部署确认清单见 deployment.md §2.1。
 
 ---
 
@@ -579,7 +579,7 @@ pub enum BotError {
 
 **运行监控（`GATE-UPTIME-KUMA`）：**
 - 使用 Uptime Kuma HTTP(s) Monitor 检查 `/healthz`（进程存活）和 `/ready`（配置 / Redis / 上游可达就绪），分别期望 HTTP 200；`/ready` 最坏约 3s，探针超时需设 ≥10s；`/ready` 不就绪时返回 `503` 与标准错误 envelope（`service_unavailable` + `Retry-After: 30`），Uptime Kuma 仍按状态码判定，不受响应体变化影响。
-- `/healthz` 是纯 liveness（无条件 `200`）；`/ready` 检查配置完整性 + Redis 可达性 + 出站只读探测（JMAP session `GET`、TG `getMe`，各 3s、并行，最坏约 3s），探针只读、不回显 token 或第三方响应、不触发业务副作用，报告体不含敏感信息；由于 `/ready` 是最重的一环（可能 3s），平台侧应优先使用网关聚合的 `/healthz-worker` 作为存活探测，避免高频出站请求。
+- `/healthz` 是纯 liveness（无条件 `200`）；`/ready` 检查配置完整性 + Redis 可达性 + 出站只读探测（JMAP session `GET`、TG `getMe`，各 3s、并行，最坏约 3s），探针只读、不回显 token 或第三方响应、不触发业务副作用，报告体不含敏感信息；由于 `/ready` 是最重的一环（可能 3s），平台侧应优先使用负载均衡器聚合的 `/healthz-worker` 作为存活探测，避免高频出站请求。
 - 不引入 Prometheus、Exporter 或额外指标端口；真实 Stalwart/Telegram 端到端链路仍需单独联调。
 
 **生产红线（贯穿所有阶段）**：

@@ -1,4 +1,4 @@
-# MessageWeave Cloudflare Worker gateway
+# MessageWeave Cloudflare Worker load balancer
 
 > [中文版本 / Chinese version → README.zh-CN.md](README.zh-CN.md)
 
@@ -18,11 +18,11 @@ business payloads and forwards the request as-is to the backend https origins; o
 >
 > **Why it exists.** Cloudflare's Load Balancer product is not available on the free plan, so
 > this is the way a free-plan account gets multi-origin load sharing and failover in front of
-> its MessageWeave backends. That is the whole reason for it, and the gateway is optional: the
+> its MessageWeave backends. That is the whole reason for it, and the load balancer is optional: the
 > backend runs identically without it.
 >
 > **Why it is not a security feature.** There is no intent here to hide the backends and no
-> intent to harden them. The origins stay directly reachable with or without the gateway and no
+> intent to harden them. The origins stay directly reachable with or without the load balancer and no
 > access control is added at the edge, so the route safelist is not a firewall and nothing in
 > this document is meant to be read as protection.
 
@@ -52,7 +52,7 @@ business payloads and forwards the request as-is to the backend https origins; o
 - **No long-lived connections** (`C-NO-LONG-CONN`). Pure request-response. The request body is
   read once as `arrayBuffer` and re-attached on every attempt, so streaming is never required.
 - **Not a queue.** There is no retry beyond the bounded attempts below. When every origin
-  fails the gateway answers `503`, and Telegram / Stalwart redelivery is what makes up for it.
+  fails the load balancer answers `503`, and Telegram / Stalwart redelivery is what makes up for it.
 
 ## 2. Directory layout
 
@@ -70,7 +70,7 @@ business payloads and forwards the request as-is to the backend https origins; o
 
 - Method, headers and body go out unchanged; the backend response status, body and headers are
   returned as-is.
-- The only header the gateway adds is best-effort observability: `x-lb-backend`, naming the
+- The only header the load balancer adds is best-effort observability: `x-lb-backend`, naming the
   origin that answered. The write sits behind a `try/catch`. A cross-origin response that
   carries no `access-control-allow-*` header comes back with an immutable header guard, and
   `headers.set` throws on those. An observability write that throws must never mask a healthy
@@ -78,7 +78,7 @@ business payloads and forwards the request as-is to the backend https origins; o
   defect was the 2026-09-30 production incident.
 - `GET` and `HEAD` never forward a body: a bodyless upstream response is returned as it is,
   and no `Content-Length` is recomputed.
-- Backend `3xx` redirects are followed by the gateway itself (`redirect: "follow"`), so a
+- Backend `3xx` redirects are followed by the load balancer itself (`redirect: "follow"`), so a
   redirecting origin never hands the browser a second hop.
 - Logs and error strings carry method, path, origin and failure class only. Never headers,
   body, auth secrets or App Password (`SAF-LOG-PURITY`).
@@ -111,13 +111,13 @@ paths and carry a method that path allows; every other combination is refused at
 | `/healthz` | GET |
 | `/ready` | GET |
 
-- Unknown path: `404`, body `route not forwarded: <path>`. The gateway can therefore never be
+- Unknown path: `404`, body `route not forwarded: <path>`. The load balancer can therefore never be
   turned into a jump host for arbitrary backend paths.
 - Method mismatch on a known path: `405`, body `method not allowed for <path>`, plus an
   `Allow` header.
 - Bootstrap (`POST /api/bootstrap`) and the remote diagnostics face (`/debug/*`) are
   deliberately absent, so both stay origin-only.
-- `/healthz-worker` is not in the safelist at all: the gateway serves it itself, on `GET`
+- `/healthz-worker` is not in the safelist at all: the load balancer serves it itself, on `GET`
   only.
 
 ## 5. Timeout and retry budget
@@ -136,7 +136,7 @@ Integer env values are parsed with `Math.floor`. A non-finite or non-positive va
 and the default applies, so a typo cannot switch the budget off.
 
 `/reconcile` and `/worker` are **single-attempt routes** with per-route timeout overrides.
-Both are long synchronous backend jobs: at the 10 s global timeout the gateway would declare
+Both are long synchronous backend jobs: at the 10 s global timeout the load balancer would declare
 them failed and fail over to a second instance, but that instance answers `/reconcile` with
 `409` immediately (the cluster-wide `lock:reconcile` starts with a 300 s lease, renewed by
 heartbeat) and a second `/worker` would merely drain the same batch twice. They therefore get
@@ -177,9 +177,9 @@ The two endpoints deliberately do not overlap, so neither can hide the other.
 Forwarded like any other safelisted route. The response is the backend's own liveness
 envelope, which is exactly why it can read healthy while a different origin is down.
 
-### 7.2 GET /healthz-worker — gateway aggregate
+### 7.2 GET /healthz-worker — load balancer aggregate
 
-Answered by the gateway itself. It never touches the forwarded route set.
+Answered by the load balancer itself. It never touches the forwarded route set.
 
 - Probes each origin's `/healthz` with the same request timeout as forwarding
   (`LB_REQUEST_TIMEOUT_MS`, default 10 s). Redirects are followed, so an origin that answers
@@ -195,7 +195,7 @@ Answered by the gateway itself. It never touches the forwarded route set.
   - no origins configured: HTTP `200`, `status: "no-backends"`
   - `version` is `LB_VERSION`, defaulting to the literal string `unknown`
 - Any method other than `GET`: `405` with `Allow: GET`.
-- The gateway does not proxy Redis or JMAP readiness. End-to-end backend readiness
+- The load balancer does not proxy Redis or JMAP readiness. End-to-end backend readiness
   (`ARCH-READY-BASELINE`: config completeness, Redis reachable, JMAP session, Telegram
   `getMe`) stays on the backend's `/ready`, which is passed through.
 
@@ -204,11 +204,11 @@ Answered by the gateway itself. It never touches the forwarded route set.
 The SPA registers callback URLs against **one** origin (`C-LB-SINGLE-REG-URL`). Origin only,
 no path:
 
-- Gateway enabled: the Worker URL, for example `https://lb.example`.
-- Gateway disabled: a backend origin, for example `https://a.example`.
+- Load balancer enabled: the Worker URL, for example `https://lb.example`.
+- Load balancer disabled: a backend origin, for example `https://a.example`.
 
 Whichever origin you register is where `/webhook/tg` and `/push/jmap` land. All three
-registration endpoints are safelisted and pass through the gateway, so registration works
+registration endpoints are safelisted and pass through the load balancer, so registration works
 through either front door. Registration is idempotent, and registering a new address retires
 the previous subscription — that is how you switch fronts.
 
@@ -266,7 +266,7 @@ curl https://<your-worker>.workers.dev/healthz-worker
 ```
 
 `npm run check` includes `wrangler deploy --dry-run --outdir=.build-check`, which bundles the
-four sources and reports the artifact size before anything is published. The gateway is
+four sources and reports the artifact size before anything is published. The load balancer is
 deployed from push, so a `curl` of `/healthz-worker` and a compare of its `version` is the
 acceptance check. Bump `LB_VERSION` in the same commit as any LB logic change, so you can tell
 which build answered.
@@ -276,7 +276,7 @@ Two production incidents worth keeping in mind:
 - **2026-09-30**: a build wrote `x-lb-backend` onto proxied responses. Cross-origin responses
   without `access-control-allow-*` headers have an immutable header guard, so `headers.set`
   threw and the surrounding handler logged a healthy backend as unavailable and burned its
-  retries — the gateway returned `503` while `GET /` actually returned `200`.
+  retries — the load balancer returned `503` while `GET /` actually returned `200`.
   `/healthz-worker` did not go through that code path, which is exactly what hid the outage.
   Fixed by making the header write best-effort.
 - **Object-shaped origin lists fail silently at parse time.** `parseBackendOrigins` throws and
@@ -290,18 +290,18 @@ Two production incidents worth keeping in mind:
   308
 - `C-LB-SINGLE-REG-URL` — one callback origin, unknown paths 404
 - `C-LB-SHARED-SECRETS` — every backend carries identical business credentials
-- `MOD-HEALTH-AGG` — TTL-cached aggregate probe owned by the gateway
-- `C-NO-DB`, `C-REDIS-ONLY-STATE` — no database or Redis access from the gateway
+- `MOD-HEALTH-AGG` — TTL-cached aggregate probe owned by the load balancer
+- `C-NO-DB`, `C-REDIS-ONLY-STATE` — no database or Redis access from the load balancer
 - `C-NO-LONG-CONN` — request-response only
 - `ARCH-READY-BASELINE` — end-to-end readiness stays on the backend's `/ready`
 - `SAF-LOG-PURITY` — method, path, origin and failure class only
-- `ARCH-LB-WORKER` — the gateway is the only edge component
+- `ARCH-LB-WORKER` — the load balancer is the only edge component
 - `NFR-HA-MULTI-INSTANCE` — multi-origin failover is how HA is realised
 
 ## References
 
-- `docs/deployment.md §10` — gateway deployment, configuration and rollout
-- `docs/reference.md §4` — gateway versus backend route matrix
+- `docs/deployment.md §10` — load balancer deployment, configuration and rollout
+- `docs/reference.md §4` — load balancer versus backend route matrix
 - `docs/reference.md §9.2` — backend configuration and secrets
 - `docs/reference.md §9.4` — health and release checks
 - `docs/design.md §11.3` — HA and multi-instance design

@@ -1,4 +1,4 @@
-# MessageWeave Cloudflare Worker 网关
+# MessageWeave Cloudflare Worker 负载均衡器
 
 > [English version / 英文版 → README.md](README.md)
 
@@ -6,9 +6,9 @@
 
 > 本组件是**针对 MessageWeave 需要放在同一个 URL 后面的一组固定路由的负载均衡器**：路由集合固定（19 个路径）、后端 origin 在部署时固定且仅允许 https、任何未知路径一律 `404`。它只把这些固定后端之间的请求做转发与故障转移，不接受任意目标主机，也不提供通用的流量中转能力。
 >
-> **它的用途是负载均衡，不是防护。** Cloudflare 的 Load Balancer 产品在免费套餐上不可用，所以这是免费套餐账户在它的那些 MessageWeave 后端前面做多 origin 负载分摊与故障转移的办法。这就是它存在的唯一理由，网关是可选的：后端有它和没有它跑起来完全一样。
+> **它的用途是负载均衡，不是防护。** Cloudflare 的 Load Balancer 产品在免费套餐上不可用，所以这是免费套餐账户在它的那些 MessageWeave 后端前面做多 origin 负载分摊与故障转移的办法。这就是它存在的唯一理由，负载均衡器是可选的：后端有它和没有它跑起来完全一样。
 >
-> **它不是安全特性。** 这里没有隐藏后端的意图，也没有加固后端的意图。网关在不在，origin 都同样可以直接访问，边缘上也没有加任何访问控制，所以路由白名单不是防火墙，本文档任何一处都不该被读成防护。
+> **它不是安全特性。** 这里没有隐藏后端的意图，也没有加固后端的意图。负载均衡器在不在，origin 都同样可以直接访问，边缘上也没有加任何访问控制，所以路由白名单不是防火墙，本文档任何一处都不该被读成防护。
 
 > 设计依据：`docs/design.md §11.3`（`NFR-HA-MULTI-INSTANCE`）与 `docs/deployment.md §10`。
 > 安全基线与禁令：`docs/charter.md §3`、`docs/charter.md §5`；稳定 ID 注册表 `docs/charter.md §8`。
@@ -22,7 +22,7 @@
 - **零运行时依赖。** 纯 ES2022 加平台提供的 `fetch`、`Headers`、`Request`、`Response`、`URL`。`wrangler` 是 devDependency，只用于 `check`、`deploy`、`dev`。
 - **零状态。** 不连 Redis、不连 JMAP、不连数据库（`C-NO-DB`、`C-REDIS-ONLY-STATE`）。唯一的可变状态是 isolate 内的健康探测缓存。
 - **无长连接**（`C-NO-LONG-CONN`）。纯请求-响应。请求体只读一次为 `arrayBuffer`，每次尝试重新挂上去，因此不需要流式。
-- **不是队列。** 除了下面那几轮有界尝试，不做任何重试。所有 origin 都失败时网关返回 `503`，靠 Telegram / Stalwart 的自身重投兜底。
+- **不是队列。** 除了下面那几轮有界尝试，不做任何重试。所有 origin 都失败时负载均衡器返回 `503`，靠 Telegram / Stalwart 的自身重投兜底。
 
 ## 2. 目录结构
 
@@ -39,9 +39,9 @@
 ## 3. 透传语义
 
 - method、headers、body 原样发出；后端响应的 status、body、headers 原样返回。
-- 网关唯一新增的 header 是尽力而为的观测头：`x-lb-backend`，标记应答的 origin。写入放在 `try/catch` 里。跨域且不带 `access-control-allow-*` 的响应，其 header guard 是 immutable，`headers.set` 会抛异常。一次会抛异常的观测写入绝不能把健康的 `2xx` 掩盖成 `503`，所以写不进去时静默放弃该 header。这个缺陷就是 2026-09-30 的生产事故根因。
+- 负载均衡器唯一新增的 header 是尽力而为的观测头：`x-lb-backend`，标记应答的 origin。写入放在 `try/catch` 里。跨域且不带 `access-control-allow-*` 的响应，其 header guard 是 immutable，`headers.set` 会抛异常。一次会抛异常的观测写入绝不能把健康的 `2xx` 掩盖成 `503`，所以写不进去时静默放弃该 header。这个缺陷就是 2026-09-30 的生产事故根因。
 - `GET` 和 `HEAD` 不带 body 转发：上游没有 body 的响应直接原样返回，不重算 `Content-Length`。
-- 后端的 `3xx` 由网关自己跟随（`redirect: "follow"`），跳转型的 origin 不会把第二跳甩给浏览器。
+- 后端的 `3xx` 由负载均衡器自己跟随（`redirect: "follow"`），跳转型的 origin 不会把第二跳甩给浏览器。
 - 日志与错误串只包含 method、path、origin、失败类别，绝不含 headers、body、认证 secret 或 App Password（`SAF-LOG-PURITY`）。
 
 ## 4. 路由白名单
@@ -70,10 +70,10 @@
 | `/healthz` | GET |
 | `/ready` | GET |
 
-- 未知路径：`404`，body 为 `route not forwarded: <path>`。因此网关永远不可能被当作跳板去访问后端的任意路径。
+- 未知路径：`404`，body 为 `route not forwarded: <path>`。因此负载均衡器永远不可能被当作跳板去访问后端的任意路径。
 - 路径已知但 method 不匹配：`405`，body 为 `method not allowed for <path>`，并附带 `Allow` header。
 - 引导接口（`POST /api/bootstrap`）与远程诊断面（`/debug/*`）刻意不在白名单内，两者都只保留在 origin 直连。
-- `/healthz-worker` 完全不在白名单里：它由网关自己应答，且只接受 `GET`。
+- `/healthz-worker` 完全不在白名单里：它由负载均衡器自己应答，且只接受 `GET`。
 
 ## 5. 超时与重试预算
 
@@ -89,7 +89,7 @@
 
 整数型 env 值用 `Math.floor` 解析。非有限数或非正值会被忽略并回落到默认值，所以手滑不会把预算关掉。
 
-`/reconcile` 与 `/worker` 是**单次尝试路由**，各自有独立的超时覆盖。两者都是后端耗时的同步长任务：按全局 10 s 超时，网关会判定它们失败并故障转移到第二个实例，但第二个实例对 `/reconcile` 会立刻返回 `409`（集群级 `lock:reconcile` 初始租约 300 s，靠心跳续租），而第二个 `/worker` 只会把同一批消息再排一遍。所以这两条路由拿到 `LB_RECONCILE_TIMEOUT_MS`（默认 320 s，比 300 s 租约加心跳多留余量）与 `LB_WORKER_TIMEOUT_MS`（默认 300 s，等于后端单条事件地板 `SINGLE_EVENT_CEILING_FLOOR_MS`），并且都是 `max_attempts = 1`。
+`/reconcile` 与 `/worker` 是**单次尝试路由**，各自有独立的超时覆盖。两者都是后端耗时的同步长任务：按全局 10 s 超时，负载均衡器会判定它们失败并故障转移到第二个实例，但第二个实例对 `/reconcile` 会立刻返回 `409`（集群级 `lock:reconcile` 初始租约 300 s，靠心跳续租），而第二个 `/worker` 只会把同一批消息再排一遍。所以这两条路由拿到 `LB_RECONCILE_TIMEOUT_MS`（默认 320 s，比 300 s 租约加心跳多留余量）与 `LB_WORKER_TIMEOUT_MS`（默认 300 s，等于后端单条事件地板 `SINGLE_EVENT_CEILING_FLOOR_MS`），并且都是 `max_attempts = 1`。
 
 如果 `/worker` 的批大小上调，`LB_WORKER_TIMEOUT_MS` 必须跟着加：后端批量的默认值与硬上限都是 10。
 
@@ -111,9 +111,9 @@
 
 与其他白名单路由一样被转发。响应是后端自己的 liveness envelope，这也正是它在另一个 origin 已挂时依然显示健康的原因。
 
-### 7.2 GET /healthz-worker — 网关聚合
+### 7.2 GET /healthz-worker — 负载均衡器聚合
 
-由网关自己应答，完全不接触被转发的路由集合。
+由负载均衡器自己应答，完全不接触被转发的路由集合。
 
 - 用与转发同源的请求超时（`LB_REQUEST_TIMEOUT_MS`，默认 10 s）探测每个 origin 的 `/healthz`。重定向会被跟随，所以返回 `3xx` 的 origin 同样计为 up。
 - origin 应答状态码低于 500 即为 `up`。探测失败记 `up: false` 且 `status: null`。
@@ -124,16 +124,16 @@
   - 未配置 origin：HTTP `200`，`status: "no-backends"`
   - `version` 即 `LB_VERSION`，未配置时为字面量 `unknown`
 - 任何非 `GET` 的 method：`405`，并带 `Allow: GET`。
-- 网关不代理 Redis 或 JMAP 的 readiness。端到端后端就绪判定（`ARCH-READY-BASELINE`：配置完整、Redis 可达、JMAP session、Telegram `getMe`）留在后端的 `/ready` 上，`/ready` 本身被透传。
+- 负载均衡器不代理 Redis 或 JMAP 的 readiness。端到端后端就绪判定（`ARCH-READY-BASELINE`：配置完整、Redis 可达、JMAP session、Telegram `getMe`）留在后端的 `/ready` 上，`/ready` 本身被透传。
 
 ## 8. 回调注册
 
 SPA 的回调 URL 只注册**一个** origin（`C-LB-SINGLE-REG-URL`）。只填 origin，不带路径：
 
-- 启用网关：填 Worker URL，例如 `https://lb.example`。
-- 不启用网关：填后端 origin，例如 `https://a.example`。
+- 启用负载均衡器：填 Worker URL，例如 `https://lb.example`。
+- 不启用负载均衡器：填后端 origin，例如 `https://a.example`。
 
-你注册的是哪个 origin，`/webhook/tg` 与 `/push/jmap` 就落在哪。三个注册接口都在白名单内、都会经过网关透传，所以两种前门都能注册。注册是幂等的，且注册新地址会注销旧订阅——换前门就靠这一步。
+你注册的是哪个 origin，`/webhook/tg` 与 `/push/jmap` 就落在哪。三个注册接口都在白名单内、都会经过负载均衡器透传，所以两种前门都能注册。注册是幂等的，且注册新地址会注销旧订阅——换前门就靠这一步。
 
 ## 9. 配置
 
@@ -168,11 +168,11 @@ npm run deploy
 curl https://<your-worker>.workers.dev/healthz-worker
 ```
 
-`npm run check` 内含 `wrangler deploy --dry-run --outdir=.build-check`，会在发布前把四个源文件打包并报告产物体积。网关由 push 触发部署，所以对 `/healthz-worker` 发一次 `curl` 并对比其 `version` 就是验收手段。改 LB 逻辑的提交要同时 bump `LB_VERSION`，这样才能判断线上是哪一次构建在应答。
+`npm run check` 内含 `wrangler deploy --dry-run --outdir=.build-check`，会在发布前把四个源文件打包并报告产物体积。负载均衡器由 push 触发部署，所以对 `/healthz-worker` 发一次 `curl` 并对比其 `version` 就是验收手段。改 LB 逻辑的提交要同时 bump `LB_VERSION`，这样才能判断线上是哪一次构建在应答。
 
 两起值得记住的生产事故：
 
-- **2026-09-30**：某次构建把 `x-lb-backend` 写进了代理响应。跨域且不带 `access-control-allow-*` 的响应 header guard 是 immutable，`headers.set` 抛异常，外层 catch 于是把一个健康的后端记成不可用并耗尽重试——网关返回 `503`，而 `GET /` 实际返回的是 `200`。`/healthz-worker` 不走那段代码，这正是事故被掩盖的原因。已改为把 header 写入做成尽力而为。
+- **2026-09-30**：某次构建把 `x-lb-backend` 写进了代理响应。跨域且不带 `access-control-allow-*` 的响应 header guard 是 immutable，`headers.set` 抛异常，外层 catch 于是把一个健康的后端记成不可用并耗尽重试——负载均衡器返回 `503`，而 `GET /` 实际返回的是 `200`。`/healthz-worker` 不走那段代码，这正是事故被掩盖的原因。已改为把 header 写入做成尽力而为。
 - **对象形式的 origin 列表在解析期静默失败。** `parseBackendOrigins` 抛异常后每个请求都是 `503 misconfigured backends`。`weight` 之类的 per-origin 调参不要写进列表，没有任何地方读它们。
 
 ## 12. 设计不变量
@@ -181,18 +181,18 @@ curl https://<your-worker>.workers.dev/healthz-worker
 - `C-HTTPS-INBOUND` — origin 仅允许 https，拒绝内嵌凭据与路径，HTTP 走 308
 - `C-LB-SINGLE-REG-URL` — 只注册一个回调 origin，未知路径 404
 - `C-LB-SHARED-SECRETS` — 所有后端携带同一组业务凭据
-- `MOD-HEALTH-AGG` — 由网关持有的带 TTL 健康聚合探测
-- `C-NO-DB`、`C-REDIS-ONLY-STATE` — 网关不访问数据库与 Redis
+- `MOD-HEALTH-AGG` — 由负载均衡器持有的带 TTL 健康聚合探测
+- `C-NO-DB`、`C-REDIS-ONLY-STATE` — 负载均衡器不访问数据库与 Redis
 - `C-NO-LONG-CONN` — 仅请求-响应
 - `ARCH-READY-BASELINE` — 端到端就绪判定留在后端的 `/ready`
 - `SAF-LOG-PURITY` — 仅 method、path、origin、失败类别
-- `ARCH-LB-WORKER` — 网关是唯一边缘组件
+- `ARCH-LB-WORKER` — 负载均衡器是唯一边缘组件
 - `NFR-HA-MULTI-INSTANCE` — 多 origin 故障转移即 HA 的实现方式
 
 ## References
 
-- `docs/deployment.md §10` — 网关部署、配置与上线
-- `docs/reference.md §4` — 网关与后端的路由矩阵
+- `docs/deployment.md §10` — 负载均衡器部署、配置与上线
+- `docs/reference.md §4` — 负载均衡器与后端的路由矩阵
 - `docs/reference.md §9.2` — 后端配置与 secret
 - `docs/reference.md §9.4` — 健康与发布检查
 - `docs/design.md §11.3` — HA 与多实例设计

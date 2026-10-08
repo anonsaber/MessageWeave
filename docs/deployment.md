@@ -5,7 +5,7 @@
 Use this guide to deploy a backend, configure mail delivery, and verify notifications.
 Choose any platform that can run the backend container, provide encrypted environment
 secrets, and connect to an externally managed Redis service. The optional Cloudflare Worker
-gateway adds a stable URL in front of one or more backends. Platform-specific settings are
+load balancer adds a stable URL in front of one or more backends. Platform-specific settings are
 in the [deployment platform reference](reference.md#9-deployment-platform-details).
 
 ## 0. Before deployment
@@ -42,7 +42,7 @@ only port `8080`. Do not mount a data or log volume. Full image contents are in 
 
 Open the backend's configuration page at its origin for initial setup. Use
 `CONFIG_ENCRYPTION_KEY` to establish the admin session, then complete the one-time bootstrap
-form. The bootstrap route is not in the gateway's route set, so it is only reachable at the
+form. The bootstrap route is not in the load balancer's route set, so it is only reachable at the
 backend's own address. The one-time bootstrap and
 admin-session handlers are `src/notify.rs:834` and `src/notify.rs:1187`; saving business
 configuration uses `src/notify.rs:694`. Later edits can use the protected page through the Worker URL.
@@ -69,7 +69,7 @@ Debian slim runtime stages; see [§8.2](#82-docker-image-details) for the runtim
 
 After saving business configuration, use the **Register Telegram and Stalwart callbacks**
 section in the configuration page. Enter the public HTTPS origin that receives callbacks:
-the Worker URL when the gateway is enabled, otherwise the backend origin. The page registers
+the Worker URL when the load balancer is enabled, otherwise the backend origin. The page registers
 `/webhook/tg` with Telegram and `/push/jmap` with Stalwart. Credentials remain in the backend;
 the browser sends only the callback URLs. The protected registration handlers are
 `src/notify.rs:1623` for Telegram and `src/notify.rs:1468` for Stalwart.
@@ -146,7 +146,7 @@ Check the backend first:
 | `GET /ready` | `200` | Configuration, Redis, JMAP, and Telegram probes are ready; dependency failures return `503`. |
 | `GET /api/status` | `ready: true` | Required boot settings are present; `missing` identifies absent names. |
 
-When the Worker gateway is enabled, also request `GET /healthz-worker`. Require
+When the Worker load balancer is enabled, also request `GET /healthz-worker`. Require
 `available >= 1` and check that `version` matches the deployed `LB_VERSION`; HTTP 200 alone
 can mean `no-backends`. The `cloudflare-worker/` directory's tests and deploy command are
 described in its README.
@@ -171,23 +171,23 @@ These deployment decisions are settled; they are not per-installation prerequisi
 ### 9.1 Public ingress and state
 
 The backend uses an external HTTPS ingress and external Redis. Telegram, JMAP Push, and
-scheduled requests use the selected public URL. When the Worker gateway is enabled, register
-that stable Worker URL with Telegram and Stalwart; do not expose credentials at the gateway.
+scheduled requests use the selected public URL. When the Worker load balancer is enabled, register
+that stable Worker URL with Telegram and Stalwart; do not expose credentials at the load balancer.
 The stable IDs in this section point to the project charter's registry.
 
-## 10. Optional Cloudflare Worker gateway
+## 10. Optional Cloudflare Worker load balancer
 
-The gateway is optional; nothing in the backend requires it. It provides one public HTTPS
+The load balancer is optional; nothing in the backend requires it. It provides one public HTTPS
 entry point for multiple backend origins. All backends must share the same Redis and business
 configuration. Detailed route facts are in the
-[gateway route matrix](reference.md#4-gateway-vs-backend-route-matrix).
+[load balancer route matrix](reference.md#4-load-balancer-vs-backend-route-matrix).
 
 Its purpose is load balancing, not protection. Cloudflare's Load Balancer product is not
 available on the free plan, and this is how a free-plan account puts load sharing and failover
 in front of several origins. There is no intent to hide the backends and no intent to harden
-them: the origins are directly reachable whether the gateway is present or not, and no access
+them: the origins are directly reachable whether the load balancer is present or not, and no access
 control is added at the edge. The fixed route allowlist is what bounds the paths the balancer
-forwards — bootstrap and `/debug/*` are not in it, so requests addressed to the gateway never
+forwards — bootstrap and `/debug/*` are not in it, so requests addressed to the load balancer never
 reach them — but it is not a firewall.
 
 ### 10.1 Topology
@@ -245,15 +245,15 @@ HTTP requests to the Worker receive a permanent `308` redirect to the same HTTPS
 route validation or forwarding. The Worker rejects unregistered routes with `404` and wrong
 methods with `405`. Ordinary requests try at most `LB_MAX_ATTEMPTS` origins (default two), and
 only a timeout or `5xx` triggers failover. `/reconcile` and `/worker` are single-attempt routes with longer timeout
-overrides. Use the route matrix and tuning values in the [reference](reference.md#4-gateway-vs-backend-route-matrix).
+overrides. Use the route matrix and tuning values in the [reference](reference.md#4-load-balancer-vs-backend-route-matrix).
 
 ### 10.5 Callback URLs
 
-When using the gateway, set Telegram's webhook and Stalwart's push callback to the Worker
+When using the load balancer, set Telegram's webhook and Stalwart's push callback to the Worker
 domain. The external scheduler can use the same URL for forwarded paths. Bootstrap and
 diagnostic endpoints still require the backend origin.
 
-### 10.6 Gateway health
+### 10.6 Load balancer health
 
 `GET /healthz-worker` reports the Worker version and backend availability. Use both
 `available` and `version` to verify a deployment; `status: no-backends` can be returned with

@@ -43,7 +43,7 @@ A JMAP email notification service deployed on Docker + externally hosted Redis:
 | Log | tracing + tracing-subscriber | 0.1 / 0.3 |
 | Scheduling | External cron → `POST /reconcile` | — |
 | Front-end | Native HTML + single-file JS + single-file CSS, **No build tools, no frameworks** | — |
-| Gateway | Cloudflare Worker (Pure JS, zero dependencies) | — |
+| Load balancer | Cloudflare Worker (Pure JS, zero dependencies) | — |
 
 ## 3. Security boundary (cannot be violated)
 
@@ -65,8 +65,8 @@ A JMAP email notification service deployed on Docker + externally hosted Redis:
 14. **AI requires user-level external authorization**: Only chats that have been explicitly authorized and have not expired will trigger LLM; authorization is an external behavior and the process does not authorize on behalf of it.
 15. **Business Whitelist**: Outbound Telegram chat must hit `CHAT_ALLOWLIST`.
 16. **The diagnostic interface is closed by default**: `/debug/*` requires `DEBUG_ENABLED` (or `--debug`) + `DEBUG_TOKEN` to be satisfied at the same time.
-17. **The diagnostic interface does not enter the gateway**: `/debug/*` is not in Worker `SAFE_ROUTES` and can only be directly connected to the backend origin.
-18. **The gateway only transparently transmits and does not make decisions**: Worker does not parse the request body, does not verify the business logic, and does not issue `Retry-After`.
+17. **The diagnostic interface does not enter the load balancer**: `/debug/*` is not in Worker `SAFE_ROUTES` and can only be directly connected to the backend origin.
+18. **The load balancer only transparently transmits and does not make decisions**: Worker does not parse the request body, does not verify the business logic, and does not issue `Retry-After`.
 19. **No retry for AI results**: Failure of LLM analysis will be regarded as "no notification", no retry, and no downgrade to no AI notification.
 20. **Stateless process**: Two container instances are safe to run concurrently; no local writes.
 21. **No long polling scheduling**: Scheduling is triggered by external cron `POST /reconcile`.
@@ -82,7 +82,7 @@ A JMAP email notification service deployed on Docker + externally hosted Redis:
 | 2 | Telegram channel self-built client (without introducing bot framework) | `ARCH-DEPS-STAGE4`, `MOD-TELEGRAM-NOTIFY` |
 | 3 | AI optional access | `REQ-AI-EXTERNAL-CONSENT`, `REQ-AI-FUSE` |
 | 4 | Redis implementation | `ARCH-DEPS-STAGE4` |
-| 5 | Production (debug surface, gateway, reconciliation) | `MOD-DEBUG`, `SAF-DEBUG-GATE` |
+| 5 | Production (debug surface, load balancer, reconciliation) | `MOD-DEBUG`, `SAF-DEBUG-GATE` |
 
 **Phase numbers are historical order, not current status statements. ** The current status is subject to `reference.md` and code.
 
@@ -92,7 +92,7 @@ A JMAP email notification service deployed on Docker + externally hosted Redis:
 2. **Do not delete tests, skip verification, relax inspection levels, or delete access controls in order to pass the access control. **
 3. **Do not reference non-existent dependencies, functions, types, Redis keys or line numbers in documentation or comments. **
 4. **You are not allowed to write "plan to implement X" comments** in the code; placeholder implementations must be explicitly marked as placeholders.
-5. **No build tools or frameworks may be introduced in SPA/Gateway**; `web/` maintains single-file JS + single-file CSS.
+5. **No build tools or frameworks may be introduced in SPA/Load balancer**; `web/` maintains single-file JS + single-file CSS.
 6. **The SPA must not be allowed to persist any credentials** (no `localStorage` / `sessionStorage` / Cookie assignments).
 7. **Unverified code shall not be submitted**; the access control results must come from the actual execution of this round.
 8. **Do not claim to have passed the real environment verification unless it is really connected this round. **
@@ -171,15 +171,14 @@ Answer only one question per document; **tables, lists and values must not be du
 |---|---|---|
 | [`../AGENTS.md`](../AGENTS.md) | Universal, language-independent code writing and environment building specifications | Quality rules |
 | `README.md` / `README.zh-CN.md` | User-oriented: what is it, how to run it, how to configure it | User-visible facts (information must be equivalent in Chinese and English) |
-| `docs/quickstart.md` / `docs/quickstart.zh-CN.md` | Hand-holding first run: create a Telegram bot, find the chat id, deploy one backend, fill the form, register callbacks | Steps and decisions (field semantics, defaults and TTLs stay in `docs/reference.md`) |
 | `docs/design.md` | Why it is designed this way: data flow, module boundaries, state machines, error handling | Architectural intent |
-| `docs/deployment.md` | How to deploy: Dockerfile, secrets, gateway, multiple instances, cron | Deployment and operation and maintenance |
+| `docs/deployment.md` | How to deploy: Dockerfile, secrets, load balancer, multiple instances, cron | Deployment and operation and maintenance |
 | `docs/reference.md` | The single authoritative source of verifiable facts: routing, Redis keys and TTLs, configuration items, error codes, outbound constants | **verifiable facts** |
 | `docs/opengaps.md` | Gaps, Blockages, Next Stage Goals | Open Items |
 | `docs/retired.md` | Records and alternative links to abandoned or renamed plans | Historical decisions |
 | `docs/charter.md` | This document: project constraints, technology selection, implementation stage, security invariants, stable ID registry | Project constraints |
 | `web/` (no documentation, 4 files) | Manage SPA sources: static configuration pages and front-end logic, covered by `web/config.test.mjs` | Front-end behavior (authoritative facts documented in `docs/design.md` and `docs/reference.md`) |
-| `cloudflare-worker/README.md` / `cloudflare-worker/README.zh-CN.md` | Configuration and semantics of the gateway itself | Gateway |
+| `cloudflare-worker/README.md` / `cloudflare-worker/README.zh-CN.md` | Configuration and semantics of the load balancer itself | Load balancer |
 
 **Cross-document citation rules**:
 
@@ -277,7 +276,7 @@ Answer only one question per document; **tables, lists and values must not be du
 | `SAF-DEBUG-GATE` | src/main.rs / src/debug.rs / docs/design.md §7.6 / docs/deployment.md §2.1 | Two-factor gate: "`DEBUG_ENABLED` is true or command line with `--debug`" **and** `DEBUG_TOKEN` Routes are mounted only if they are not empty; if any are missing, they are not mounted at all (the request fails with `404`), and it is absolutely closed by default. The start signal goes through env instead of argv, so that the startup command remains static, and the switch can be switched at a single point on the platform console | Security |
 | `SAF-DEBUG-AUTH` | src/debug.rs / docs/deployment.md §2.1 | After mounting `/debug/*` requires `Authorization: Bearer DEBUG_TOKEN` constant time comparison, fails with `401` and has no side effects | Security |
 | `REQ-DEBUG-ENDPOINTS` | src/debug.rs / docs/reference.md §3 / docs/deployment.md §2.1 | Endpoint contracts: `GET /debug/ping`, `/config`, `/redis`, `/jmap`, `/telegram`, `/worker` are all read-only; `POST /debug/notify` Send a test message through the real outbound link; the response body does not contain the original text of secret (the credential field only returns `*_configured` Boolean, and the non-ciphertext identity and budget fields are still returned in plain text) | Requirements |
-| `SAF-DEBUG-ORIGIN-ONLY` | docs/deployment.md §2.1 / docs/reference.md §4 | `/debug/*` is not among the 18 safe routes of the gateway, and the Worker will always receive `404 route not forwarded`; it can only be directly connected to the backend origin, and the public network is unreachable | Security |
+| `SAF-DEBUG-ORIGIN-ONLY` | docs/deployment.md §2.1 / docs/reference.md §4 | `/debug/*` is not among the 19 safe routes of the load balancer, and the Worker will always receive `404 route not forwarded`; it can only be directly connected to the backend origin, and the public network is unreachable | Security |
 | `SAF-DEBUG-ALLOWLIST` | src/debug.rs / docs/deployment.md §2.1 | `POST /debug/notify` only verifies `chat_id` when the chat whitelist** is not empty**; it will not intercept when the whitelist is not configured (empty), so to enable this page, you must confirm that the business whitelist has been configured | Security |
 | `NFR-HA-MULTI-INSTANCE` | docs/deployment.md §10.7 / §9.1 | Multi-instance high availability semantics; both active-active or active-standby; Redis single point of failure is not within the scope of the solution (user external solution) | Non-functional |
 | `C-NO-DB` | docs/deployment.md §0 / §9.1 / §3 | Production does not use any database (no SQLite/Postgres/MySQL/embedded), Redis is the only state store; the application does not connect to a second database | Constraints |

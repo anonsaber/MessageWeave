@@ -289,7 +289,7 @@ env var — 并且“DEBUG_TOKEN”非空**（“SAF-DEBUG-GATE”；门被读�
 
 ---
 
-## 4. 网关与后端路由对照表
+## 4. 负载均衡器与后端路由对照表
 
 > **独立验证。** 来源：`cloudflare-worker/src/backends.js` `SAFE_ROUTES`，
 > 共 19 条，并与 `ROUTE_METHODS`（`index.js`）一起定义每条路径允许的方法。Worker 入口文件是 `src/index.js`
@@ -311,7 +311,7 @@ env var — 并且“DEBUG_TOKEN”非空**（“SAF-DEBUG-GATE”；门被读�
 
 **已在后台注册但未转发（2）：**
 
-|路径|为什么网关上没有它 |
+|路径|为什么负载均衡器上没有它 |
 |---|---|
 | `POST /api/bootstrap` | 一次性信任引导；不在路由集内，只能在后端自己的地址上访问 |
 | `/debug/*`（7 条路由）| 选择加入的远程调试界面（`SAF-DEBUG-GATE`）；不在 `SAFE_ROUTES` 中，因此**只能**在后端源自己的地址上访问 |
@@ -326,7 +326,7 @@ env var — 并且“DEBUG_TOKEN”非空**（“SAF-DEBUG-GATE”；门被读�
 
 后果：没有任何剩余路由承载外部业务流量，所以后端实例前面不需要第二个入口。
 SPA 的首次启动流程仍然无法通过 Worker 的 `/api/bootstrap` 完成——引导要么必须
-直接针对后端 origin 执行，要么必须把 bootstrap 路径加入网关白名单。
+直接针对后端 origin 执行，要么必须把 bootstrap 路径加入负载均衡器白名单。
 
 `POST /api/push/register`、`POST /api/telegram/register-webhook` 和 `POST /api/push/disable` **被转发**。这些路由可以安全代理：
 回调 URL 由客户端在请求正文中提供，在写入任何内容之前就被校验为 URL，并且每个推送订阅记录
@@ -690,7 +690,7 @@ HostStack 部署不使用仓库的 Dockerfile；镜像构建和运行时由平�
 Telegram、JMAP、allowlist、worker、reconcile 和 LLM 业务设置驻留在 Redis 中，
 不是进程环境变量。 [§5.2](#52-存储在-redis-中的业务配置)中的字段列表和验证规则
 是权威的。成功的初始保存可以使用一次性 `/api/bootstrap` 端点，在后端
-自己的地址上完成；该路由不在网关路由集内，所以发给 Worker 的请求到不了它。
+自己的地址上完成；该路由不在负载均衡器路由集内，所以发给 Worker 的请求到不了它。
 后续编辑使用受保护的配置 API。
 
 ### 9.3 回调注册与定时任务
@@ -724,7 +724,7 @@ Telegram、JMAP、allowlist、worker、reconcile 和 LLM 业务设置驻留在 R
 
 ### 9.5 Cloudflare Worker 与控制面板
 
-Worker 是可选的 HTTPS 网关。后端来源必须是 HTTPS 字符串，不带任何内容
+Worker 是可选的 HTTPS 负载均衡器。后端来源必须是 HTTPS 字符串，不带任何内容
 路径、查询、片段或嵌入凭据。目前公开的来源清单和
 “LB_VERSION”在“[vars]”下的“cloudflare-worker/wrangler.toml”中声明。移动
 只有来源地址需要保密时，才将 `BACKEND_ORIGINS_JSON` 作为加密变量存储；从不存储

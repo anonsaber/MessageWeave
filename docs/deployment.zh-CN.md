@@ -5,7 +5,7 @@
 使用本指南部署后端、配置邮件传递并验证通知。
 选择任何可以运行后端容器的平台，提供加密环境
 密钥，并连接到外部管理的 Redis 服务。可选的 Cloudflare Worker
-gateway 在一个或多个后端前面添加一个稳定的 URL。特定于平台的设置是
+负载均衡器 在一个或多个后端前面添加一个稳定的 URL。特定于平台的设置是
 在[部署平台参考](reference.zh-CN.md#9-部署平台细节)中。
 
 ## 0. 部署前准备
@@ -41,7 +41,7 @@ docker run --rm --env-file .env -p 8080:8080 messageweave:latest
 
 在原点打开后端的配置页面进行初始设置。使用
 `CONFIG_ENCRYPTION_KEY` 建立管理会话，然后完成一次性引导
-表单。bootstrap 路由不在网关路由集内，因此只能在后端自己的地址上访问。bootstrap 和管理会话处理器位于
+表单。bootstrap 路由不在负载均衡器路由集内，因此只能在后端自己的地址上访问。bootstrap 和管理会话处理器位于
 `src/notify.rs:834` 与 `src/notify.rs:1187`；业务配置保存处理器位于
 `src/notify.rs:694`。后续修改可通过 Worker URL 打开受保护的配置页。
 
@@ -126,7 +126,7 @@ Worker 仅重试超时和后端“5xx”响应；它返回“4xx”响应
 |`GET /ready`|`200`|配置、Redis、JMAP 和 Telegram 探针均就绪；依赖故障返回 `503`。|
 |`GET /api/status`|`{"ready":true}`|必需的启动配置已就绪；`missing` 字段列出缺失变量名。|
 
-启用 Worker 网关后，还请求“GET /healthz-worker”。要求
+启用 Worker 负载均衡器后，还请求“GET /healthz-worker”。要求
 `available >= 1` 并检查 `version` 是否与部署的 `LB_VERSION` 匹配；仅 HTTP 200
 可能意味着“无后端”。 `cloudflare-worker/` 目录的测试和部署命令是
 在其自述文件中描述。
@@ -150,22 +150,22 @@ Worker 仅重试超时和后端“5xx”响应；它返回“4xx”响应
 ### 9.1 公共入口与状态存储
 
 后端使用外部 HTTPS 入口和外部 Redis。 Telegram、JMAP 推送和
-计划的请求使用选定的公共 URL。当Worker网关启用后，注册
-Telegram 和 Stalwart 的稳定 Worker URL；不要在网关处公开凭据。
+计划的请求使用选定的公共 URL。当Worker负载均衡器启用后，注册
+Telegram 和 Stalwart 的稳定 Worker URL；不要在负载均衡器处公开凭据。
 本节中的稳定 ID 指向项目章程的注册表。
 
-## 10. 可选的 Cloudflare Worker 网关
+## 10. 可选的 Cloudflare Worker 负载均衡器
 
-网关是可选项，后端没有任何东西依赖它。它为多个后端 origin
+负载均衡器是可选项，后端没有任何东西依赖它。它为多个后端 origin
 提供一个公共 HTTPS 入口。所有后端必须共享同一 Redis 和业务配置。
-详细的路由事实在[网关路由矩阵](reference.zh-CN.md#4-网关与后端路由对照表)中。
+详细的路由事实在[负载均衡器路由矩阵](reference.zh-CN.md#4-负载均衡器与后端路由对照表)中。
 
 它的用途是负载均衡，不是防护。Cloudflare 的 Load Balancer 产品在免费
 套餐上不可用，这就是免费套餐账户在多个 origin 前面做负载均衡与故障转移
-的办法。没有隐藏后端的意图，也没有加固后端的意图：网关在不在，origin
+的办法。没有隐藏后端的意图，也没有加固后端的意图：负载均衡器在不在，origin
 都同样可以直接访问，边缘上也没有加任何访问控制。固定的路由白名单只是
 限定负载均衡器转发哪些路径——bootstrap 和 `/debug/*` 不在其中，所以发给
-网关的请求到不了它们——但它不是防火墙。
+负载均衡器的请求到不了它们——但它不是防火墙。
 
 ### 10.1 部署拓扑
 
@@ -217,15 +217,15 @@ HTTP 请求访问 Worker 时，会先收到永久的 `308` 重定向，前往路
 HTTPS URL，之后才进行路由校验或转发。Worker 使用“404”拒绝未注册的路由，并使用“405”拒绝错误的方法。普通
 请求最多尝试“LB_MAX_ATTEMPTS”来源（默认两个），并且只有超时或“5xx”
 触发故障转移。 `/reconcile` 和 `/worker` 是具有较长超时时间的单次尝试路由
-覆盖。使用[参考](reference.zh-CN.md#4-网关与后端路由对照表)中的路由矩阵和调整值。
+覆盖。使用[参考](reference.zh-CN.md#4-负载均衡器与后端路由对照表)中的路由矩阵和调整值。
 
 ### 10.5 回调地址
 
-使用网关时，将 Telegram 的 webhook 和 Stalwart 的 push 回调都设置为 Worker URL。
+使用负载均衡器时，将 Telegram 的 webhook 和 Stalwart 的 push 回调都设置为 Worker URL。
 外部调度程序（cron/`systemd`/K8s CronJob）对已转发的路径使用相同的 URL。
 引导程序必须在后端源上执行；诊断端点需要后端源**和** debug token——Worker 都不转发它们。
 
-### 10.6 网关健康状态
+### 10.6 负载均衡器健康状态
 
 `GET /healthz-worker` 报告 Worker 的版本（`version`）和健康的 origin 数量
 （`available`）。两者都用于验证部署：`version` 告诉你当前是哪次部署在应答，

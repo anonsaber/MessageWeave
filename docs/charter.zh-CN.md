@@ -43,7 +43,7 @@
 | 日志 | tracing + tracing-subscriber | 0.1 / 0.3 |
 | 调度 | 外部 cron → `POST /reconcile` | — |
 | 前端 | 原生 HTML + 单文件 JS + 单文件 CSS，**无构建工具、无框架** | — |
-| 网关 | Cloudflare Worker（纯 JS，零依赖） | — |
+| 负载均衡器 | Cloudflare Worker（纯 JS，零依赖） | — |
 
 ## 3. 安全边界（不可违反）
 
@@ -65,8 +65,8 @@
 14. **AI 需用户级外部授权**：只有显式授权过且未过期的 chat 才触发 LLM；授权是外部行为，进程不代授权。
 15. **业务白名单**：出站 Telegram chat 必须命中 `CHAT_ALLOWLIST`。
 16. **诊断面默认关闭**：`/debug/*` 需要 `DEBUG_ENABLED`（或 `--debug`）+ `DEBUG_TOKEN` 双因子同时满足。
-17. **诊断面不进网关**：`/debug/*` 不在 Worker `SAFE_ROUTES`，只能直连后端 origin。
-18. **网关只透传、不决策**：Worker 不解析请求体、不校验业务逻辑、不下发 `Retry-After`。
+17. **诊断面不进负载均衡器**：`/debug/*` 不在 Worker `SAFE_ROUTES`，只能直连后端 origin。
+18. **负载均衡器只透传、不决策**：Worker 不解析请求体、不校验业务逻辑、不下发 `Retry-After`。
 19. **AI 结果不重试**：LLM 分析失败即视为「不通知」，不重试、不降级为无 AI 通知。
 20. **无状态进程**：两个容器实例并发安全；无本地写。
 21. **无长轮询调度**：调度由外部 cron 触发 `POST /reconcile`。
@@ -82,7 +82,7 @@
 | 2 | Telegram 渠道自建客户端（不引入 bot 框架） | `ARCH-DEPS-STAGE4`, `MOD-TELEGRAM-NOTIFY` |
 | 3 | AI 可选接入 | `REQ-AI-EXTERNAL-CONSENT`, `REQ-AI-FUSE` |
 | 4 | Redis 落地 | `ARCH-DEPS-STAGE4` |
-| 5 | 生产化（debug 面、网关、对账） | `MOD-DEBUG`, `SAF-DEBUG-GATE` |
+| 5 | 生产化（debug 面、负载均衡器、对账） | `MOD-DEBUG`, `SAF-DEBUG-GATE` |
 
 **阶段编号是历史顺序，不是当前状态声明。** 当前状态以 `reference.md` 与代码为准。
 
@@ -92,7 +92,7 @@
 2. **不得为通过门禁而删除测试、跳过校验、放宽检查级别、删除访问控制。**
 3. **不得在文档或注释中引用不存在的依赖、函数、类型、Redis 键或行号。**
 4. **不得在代码中写「计划实现 X」类注释**；占位实现必须显式标注为占位。
-5. **不得在 SPA / 网关引入构建工具或框架**；`web/` 保持单文件 JS + 单文件 CSS。
+5. **不得在 SPA / 负载均衡器引入构建工具或框架**；`web/` 保持单文件 JS + 单文件 CSS。
 6. **不得让 SPA 持久化任何凭据**（无 `localStorage` / `sessionStorage` / Cookie 赋值）。
 7. **不得提交未验证的代码**；门禁结果必须来自本轮实际执行。
 8. **不得声称已通过真实环境验证，除非本轮真的连过。**
@@ -171,15 +171,14 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 |---|---|---|
 | [`../AGENTS.md`](../AGENTS.md) | 通用、语言无关的代码编写与环境构建规范 | 质量规则 |
 | `README.md` / `README.zh-CN.md` | 面向使用者：是什么、怎么跑、怎么配置 | 用户可见事实（中英必须信息对等） |
-| `docs/quickstart.md` / `docs/quickstart.zh-CN.md` | 手把手首次运行：创建 Telegram bot、找到 chat id、部署一个后端、填表、注册回调 | 步骤与决策（字段语义、默认值、TTL 归 `docs/reference.md`） |
 | `docs/design.md` | 为什么这样设计：数据流、模块边界、状态机、错误处理 | 架构意图 |
-| `docs/deployment.md` | 怎么部署：Dockerfile、secrets、网关、多实例、cron | 部署与运维 |
+| `docs/deployment.md` | 怎么部署：Dockerfile、secrets、负载均衡器、多实例、cron | 部署与运维 |
 | `docs/reference.md` | 可核对事实的唯一权威来源：路由、Redis 键与 TTL、配置项、错误码、出站常量 | **可核对事实** |
 | `docs/opengaps.md` | 缺口、阻塞、下一阶段目标 | 未决项 |
 | `docs/retired.md` | 已废弃或已改名方案的记录与替代指向 | 历史决策 |
 | `docs/charter.md` | 本文件：项目约束、技术选型、实现阶段、安全不变量、稳定 ID 注册表 | 项目约束 |
 | `web/`（无文档，4 个文件） | 管理 SPA 源：静态配置页与前端逻辑，由 `web/config.test.mjs` 覆盖 | 前端行为（权威事实记在 `docs/design.md` 与 `docs/reference.md`） |
-| `cloudflare-worker/README.md` / `cloudflare-worker/README.zh-CN.md` | 网关自身的配置与语义 | 网关 |
+| `cloudflare-worker/README.md` / `cloudflare-worker/README.zh-CN.md` | 负载均衡器自身的配置与语义 | 负载均衡器 |
 
 **跨文档引用规则**：
 
@@ -266,7 +265,7 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 | `SAF-JMAP-URL` | docs/design.md §7.1 / §4 | JMAP URL 约束：仅 HTTPS、禁止内嵌凭据、拒绝危险 query | 安全 |
 | `REQ-JMAP-RAW-MULTIPART` | docs/design.md §3.2/§10.1 | `read_email` 多 part 原文：按 text_body 顺序拼接"有 part_id 且 bodyValue"的部分；无可用部分→明确错误 | 需求 |
 | `GATE-G1-JMAP-READONLY` | docs/design.md §10.1 / §6 | G1 门禁：只读 adapter **代码已实现**（mock + `#[ignore]` 真机测试），**待真实 `cargo test -- --ignored jmap::` 验证** | 流程 |
-| `ARCH-LB-WORKER` | docs/deployment.md §10 | 多实例 LB/HA：免费套餐 Cloudflare Worker 作唯一*注册*入口 + 故障转移；后端仍可直接访问，网关不加访问控制 | 架构 |
+| `ARCH-LB-WORKER` | docs/deployment.md §10 | 多实例 LB/HA：免费套餐 Cloudflare Worker 作唯一*注册*入口 + 故障转移；后端仍可直接访问，负载均衡器不加访问控制 | 架构 |
 | `C-LB-SINGLE-REG-URL` | docs/deployment.md §10.1 | Telegram/Push/Cron 只登记 Worker 的稳定 URL；后端平台入口不对外登记 | 约束 |
 | `C-LB-SHARED-SECRETS` | docs/deployment.md §10.3 | 多实例必须共享同一组 `SAF-AUTH-*` secret，否则随机 401 | 约束 |
 | `SAF-LB-PASSTHRU` | docs/deployment.md §10.3 / §3 | 信任模型=透传：Worker 不改写鉴权；后端必须继续 fail-closed 校验（后端可能被公网直连） | 安全 |
@@ -277,7 +276,7 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 | `SAF-DEBUG-GATE` | src/main.rs / src/debug.rs / docs/design.md §7.6 / docs/deployment.md §2.1 | 双因子门禁：「`DEBUG_ENABLED` 为真值或命令行带 `--debug`」**且** `DEBUG_TOKEN` 非空才挂载路由；缺任一完全不挂载（请求落通用 `404`），默认绝对关闭。开启信号走 env 而非 argv，使启动命令保持静态、开关可在平台控制台单点切换 | 安全 |
 | `SAF-DEBUG-AUTH` | src/debug.rs / docs/deployment.md §2.1 | 挂载后 `/debug/*` 须 `Authorization: Bearer DEBUG_TOKEN` 常数时间比较，失败 `401` 且无副作用 | 安全 |
 | `REQ-DEBUG-ENDPOINTS` | src/debug.rs / docs/reference.md §3 / docs/deployment.md §2.1 | 端点契约：`GET /debug/ping`、`/config`、`/redis`、`/jmap`、`/telegram`、`/worker` 均只读；`POST /debug/notify` 走真实出站链路发一条测试消息；响应体不含 secret 原文（凭据字段只出 `*_configured` 布尔，非密文的身份与预算字段仍明文返回） | 需求 |
-| `SAF-DEBUG-ORIGIN-ONLY` | docs/deployment.md §2.1 / docs/reference.md §4 | `/debug/*` 不在网关 18 条安全路由内，Worker 一律 `404 route not forwarded`；只能直连后端 origin，公网不可达 | 安全 |
+| `SAF-DEBUG-ORIGIN-ONLY` | docs/deployment.md §2.1 / docs/reference.md §4 | `/debug/*` 不在负载均衡器 19 条安全路由内，Worker 一律 `404 route not forwarded`；只能直连后端 origin，公网不可达 | 安全 |
 | `SAF-DEBUG-ALLOWLIST` | src/debug.rs / docs/deployment.md §2.1 | `POST /debug/notify` 仅在 chat 白名单**非空**时校验 `chat_id`；白名单未配置（空）时不拦截，故启用本面须确认业务白名单已配置 | 安全 |
 | `NFR-HA-MULTI-INSTANCE` | docs/deployment.md §10.7 / §9.1 | 多实例高可用语义；双活或主备均可；Redis 单点故障不在方案范围（用户外部解决） | 非功能 |
 | `C-NO-DB` | docs/deployment.md §0 / §9.1 / §3 | 生产不使用任何数据库（无 SQLite/Postgres/MySQL/嵌入式），Redis 为唯一状态存储；应用不连接第二个数据库 | 约束 |
