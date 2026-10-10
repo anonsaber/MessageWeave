@@ -25,10 +25,7 @@ State is an architectural boundary here, not a preference.
 - **No long-lived connections.** No SSE, no WebSocket, no long polling.
 - **Logs go to stdout only.** The platform's collector owns log storage and retention.
 - **What it is not.** It is not a mail client, not a proxy, and not a relay. It forwards
-  metadata to one bot; it does not read arbitrary URLs, open tunnels, or broker traffic. It has
-  no resident `server` mode flag, holds no EventSource/SSE or Telegram long-polling connection,
-  persists nothing to SQLite or a local volume, and is not bound to a specific serverless platform
-  — every notification path is a short request-response.
+  metadata to one bot; it does not read arbitrary URLs, open tunnels, or broker traffic. It has no resident `server` mode flag. It holds no EventSource/SSE or Telegram long-polling connection. It persists nothing to SQLite or a local volume. It is not bound to a serverless platform — every notification path is a short request-response.
 
 ## 2. Two ways to run it
 
@@ -40,9 +37,7 @@ backend runs identically with or without it. It exists for one reason: Cloudflar
 Balancer product is not available on the free plan, so a Worker is the way a free-plan account
 puts load sharing and failover in front of several backends.
 
-**It is also not a security layer, and it is not meant to be one.** There is no intent to hide
-the backends and no intent to harden them; the origins stay directly reachable whether the
-load balancer is present or not, and no access control is added at the edge. The fixed route safelist
+**It is also not a security layer, and it is not meant to be one.** There is no intent to hide or harden the backends. The origins stay directly reachable with or without the load balancer. No access control is added at the edge. The fixed route safelist
 is what makes it a load balancer for a bounded set of paths, not a firewall.
 
 | | Form A: backend origin only | Form B: behind the Cloudflare Worker load balancer |
@@ -59,21 +54,15 @@ is what makes it a load balancer for a bounded set of paths, not a firewall.
 Pick Form A for a single origin with no HA requirement. Pick Form B for two or more origins, or
 whenever you want one stable callback URL while you roll or rebuild an instance.
 
-Switching is a re-registration, not a migration. Registration is idempotent and registering a
-new address retires the previous subscription, so moving from Form A to Form B, or back, is one
-field in the SPA. Do not register both origins at once: there is a single registration slot, and
+Switching is a re-registration, not a migration. Registration is idempotent: registering a new address retires the previous subscription. So moving from Form A to Form B, or back, is one field in the SPA. Do not register both origins at once: there is a single registration slot, and
 the platform entrance must stay internal (`C-LB-SINGLE-REG-URL`).
 
 No secret moves to the load balancer in Form B. It holds no business credential and checks no auth
-header. Instead every backend must carry the same `SAF-AUTH-*` secrets and the same encrypted
-business config, because a callback can land on any instance and no instance can prove it was
-the one asked for (`C-LB-SHARED-SECRETS`). Mis-matched secrets show up as a random 401, not as
+header. Instead every backend must carry the same `SAF-AUTH-*` secrets and the same encrypted business config. A callback can land on any instance, and no instance can prove it was the one asked for (`C-LB-SHARED-SECRETS`). Mis-matched secrets show up as a random 401, not as
 a routing error.
 
 `POST /api/bootstrap` and `/debug/*` are not in the load balancer's route set, so requests addressed
-to the Worker URL never reach them. That is the safelist working as designed for the paths that
-need to be load balanced; it is not hiding anything, because the same origins are reachable at
-their own addresses in both forms.
+to the Worker URL never reach them. That is the safelist working as designed for the paths that need load balancing. It is not hiding anything: the same origins are reachable at their own addresses in both forms.
 
 ## 3. Setup, from zero
 
@@ -95,9 +84,7 @@ load-balancer operation live in §6 below.
 
 Nothing else is required: no Postgres, no message broker, no Kubernetes.
 
-The platform or proxy terminates TLS; the process listens on one HTTP port (`PORT`, default
-`8080`) and exposes no other TCP port, and the public HTTPS URL is provided by the platform, not
-the bot. The Docker image uses a Rust builder and a Debian slim runtime, links `rustls` with
+The platform or proxy terminates TLS. The process listens on one HTTP port (`PORT`, default `8080`) and exposes no other TCP port. The public HTTPS URL comes from the platform, not the bot. The Docker image uses a Rust builder and a Debian slim runtime, links `rustls` with
 native roots for outbound TLS, and carries no secret in its layers or build arguments. Back up
 Redis with AOF persistence — it is the only state store.
 
@@ -160,9 +147,7 @@ curl localhost:8080/healthz   # → ok
 
 For local builds without Docker: `cargo build --locked` produces the `message-weave` binary.
 
-`GET /healthz` is a static liveness reply and never touches Redis. The readiness report is
-`GET /ready`: it answers 503 until the configuration exists and every configured upstream is
-reachable, and 200 with a JSON component report once they are. Point your HTTPS reverse proxy or
+`GET /healthz` is a static liveness reply and never touches Redis. The readiness report is `GET /ready`. It answers 503 until the configuration exists and every configured upstream is reachable. Once they are, it returns 200 with a JSON component report. Point your HTTPS reverse proxy or
 tunnel at this port now — steps 6 and 7 need a public HTTPS origin.
 
 If the service answers requests but does nothing useful, check the logs for a startup warning:
@@ -304,20 +289,11 @@ secrets from the environment in normal operation.
 **Health.**
 `GET /healthz` returns 200 unconditionally — it is liveness, not readiness. `GET /ready`
 returns 503 until configuration, Redis, and both upstreams (a JMAP session `GET` and
-Telegram `getMe`, 3s each) are reachable. Probe `/ready`, not `/healthz`, when deciding
-whether to route traffic — but `/ready` is the heavier probe (~3s worst case), so a monitor
-that must stay cheap should watch the load balancer aggregate `GET /healthz-worker` when the load balancer
-is enabled.
+Telegram `getMe`, 3s each) are reachable. Probe `/ready`, not `/healthz`, when deciding whether to route traffic. But `/ready` is the heavier probe (~3s worst case). A monitor that must stay cheap should watch the load balancer aggregate `GET /healthz-worker` when the load balancer is enabled.
 
 **Remote debug (opt-in, off by default).**
 `/debug/*` is an optional remote-debug surface: live JMAP and Telegram probes, the current
-business config, and a single Telegram send. It sits behind a two-factor gate — the process
-must be started with `--debug` **and** `DEBUG_TOKEN` must be set; miss either and the routes
-do not exist at all (requests fall through to a generic 404). Nothing under `/debug/*` is on
-the load balancer allowlist, so it is reachable only on the backend origin itself. The only rule for
-running it is to keep it off: leave `--debug` out of the start command and leave `DEBUG_TOKEN`
-unset. If you do turn it on for a one-off diagnosis, configure the chat allowlist first — with
-an empty allowlist the test send is not restricted to any chat. See `docs/reference.md` §3 for
+business config, and a single Telegram send. It sits behind a two-factor gate: the process must be started with `--debug` **and** `DEBUG_TOKEN` must be set. Miss either and the routes do not exist at all (requests fall through to a generic 404). Nothing under `/debug/*` is on the load balancer allowlist. It is reachable only on the backend origin itself. The only rule for running it: keep it off. Leave `--debug` out of the start command and `DEBUG_TOKEN` unset. If you do turn it on for a one-off diagnosis, configure the chat allowlist first. With an empty allowlist the test send is not restricted to any chat. See `docs/reference.md` §3 for
 the endpoint contracts.
 
 ## 5. Security boundary, in one sentence
@@ -327,14 +303,10 @@ the endpoint contracts.
 
 One corollary matters for setup: the SPA admin credential — and therefore the bootstrap
 trust root — is `CONFIG_ENCRYPTION_KEY` itself, the single 32-byte hex value you supply at
-startup. It is only compared in constant time, and is never echoed, logged, or stored. The
-Redis ACL password, if you have one, authenticates the Redis connection alone and is not
-the credential for any HTTP endpoint.
+startup. It is only compared in constant time, and is never echoed, logged, or stored. The Redis ACL password (if you have one) authenticates the Redis connection alone. It is not the credential for any HTTP endpoint.
 
 The optional Cloudflare Worker load balancer in front of the backends is not part of this boundary.
-It holds no credential and checks no auth header, and the backends behind it are directly
-reachable either way, so nothing about it changes what stands between an attacker and your
-mail. See §2.
+It holds no credential and checks no auth header. The backends behind it are directly reachable either way. Nothing about it changes what stands between an attacker and your mail. See §2.
 
 ## 6. Operations and multi-instance
 
@@ -370,9 +342,7 @@ deploy a second instance pointed at a second Redis rather than distinguishing in
 
 Second, **`CONFIG_ENCRYPTION_KEY` must be byte-identical on every origin.** It is 64 hex
 characters (32 bytes) and is used directly as the AES-256-GCM key, with the AAD fixed at
-`message-weave/config:business/v1`. It also doubles as the SPA admin credential. An origin holding
-a different value can neither decrypt configuration written by another origin nor log in to the
-SPA, and both paths fail closed.
+`message-weave/config:business/v1`. It also doubles as the SPA admin credential. An origin holding a different value can neither decrypt configuration written by another origin nor log in to the SPA. Both paths fail closed.
 
 Extra origins buy failover rather than throughput. Delivery is spread across the shared consumer
 group, but `/reconcile` is serialized globally by `lock:reconcile` and the cursor is singular. If
@@ -397,14 +367,11 @@ The entry points are `/ready`, `/worker`, `/reconcile`, `/push/jmap`, `/webhook/
 above is an early exit, not a retry guard. When `build_worker` fails for one origin — a JMAP
 session URL that is unreachable, or an `llm_api_key` / `llm_base_url` that is missing or invalid —
 that origin advances its in-memory revision to the remote value and keeps the runtime it already
-had. The early-exit condition then holds forever for that origin, so it does not try again until a
-**new** revision is written. Every other failure inside the same function (Redis unreachable, blob
-missing, JSON parse failure, validation failure) leaves the local revision untouched and therefore
-does retry on the next request; those paths fail before a runtime is built, so no worker is
-rebuilt.
+had. The early-exit condition then holds forever for that origin; it does not try again until a **new** revision is written.
 
-The symptom is one origin running the new configuration and another still on the old one, with no
-error and no log line: the failed path returns silently. To detect it, compare the field values
+Every other failure inside the same function (Redis unreachable, blob missing, JSON parse failure, validation failure) leaves the local revision untouched and therefore does retry on the next request. Those paths fail before a runtime is built, so no worker is rebuilt.
+
+The symptom is one origin running the new configuration and another still on the old one — with no error and no log line. The failed path returns silently. To detect it, compare the field values
 reported by `GET /debug/config` on each origin — those come from the live in-memory runtime. Do not
 use its `revision` field for this: that value is read from Redis and shows the latest global
 revision even when the instance has not converged.
