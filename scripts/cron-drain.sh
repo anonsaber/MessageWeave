@@ -14,48 +14,65 @@
 #
 # 详设计说明见 docs/deployment.md 第 6.3 节与第 6.3.1 节。
 #
-# --- 凭据只从环境变量读 ---
-# 不读 .env、不读配置文件、不写盘（唯一例外是可选的 MW_LOG_FILE 运行日志）。
-# 所有 *_TOKEN 一律不打印、不写日志。
+# --- 凭据只从环境变量或命令行 flag 读取 ---
+# 不读 .env、不读配置文件、不写盘（唯一例外是可选的 --log-file / MW_LOG_FILE 运行日志）。
+# 所有 *_TOKEN 一律不打印、不写日志。命令行 flag 优先于同名 MW_* 环境变量。
 # <<HELP>>
-# --- 环境变量 ---
-#   MW_APP_URL            必填。对外平台 URL（走 LB 的域名），用于 GET /api/status、
-#                         GET /healthz、POST /reconcile。
-#   MW_WORKER_URL         可选，默认 = MW_APP_URL。POST /worker 的地址。/worker 已在 LB
-#                         路由白名单内，默认直接走 MW_APP_URL 即可；要跳过 LB 直连源站
-#                         时才需要覆盖（如想绕过 LB 的排空超时，或源站另有独立域名）。
-#   MW_DEBUG_URL          可选，默认 = MW_WORKER_URL。GET /debug/* 与 POST /debug/notify
-#                         的地址（需要后端以 --debug 启动且 DEBUG_TOKEN 非空，
-#                         且需直连源站）。
-#   MW_RECONCILE_TOKEN    可选。缺省时跳过 /reconcile（仅靠 Push 回调入队的部署可接受）。
-#   MW_WORKER_TOKEN       必填。/worker 的 Bearer token。
-#   MW_DEBUG_TOKEN        可选，仅 --diagnose / --test-notify 用。
-#   MW_BATCH              可选，默认不发（服务端默认 10，且上限 10，超出静默截断）。
-#   MW_TIMEOUT            可选，默认 60。单次请求超时秒数。
-#   MW_INTERVAL           可选，默认 30。仅 --loop 用，两次触发之间的秒数。
-#   MW_LOG_FILE           可选。给定时每次触发追加一行摘要（不含任何凭据）。
-#   MW_TEST_TEXT          可选，仅 --test-notify 用。直发测试的正文。
+# --- 配置项（flag 或环境变量，flag 优先） ---
+#   --app-domain DOMAIN / MW_APP_DOMAIN
+#                         必填。对外平台域名（走 LB 的域名），用于 GET /api/status、
+#                         GET /healthz、POST /reconcile。只写域名，无需 https:// 前缀
+#                         （脚本自动补 https://）。旧名 --app-url / MW_APP_URL 仍可用。
+#   --worker-domain DOMAIN / MW_WORKER_DOMAIN
+#                         可选，默认 = --app-domain。POST /worker 的地址。/worker 已在
+#                         LB 路由白名单内，默认直接走 --app-domain 即可；要跳过 LB 直连
+#                         源站时才需要覆盖。旧名 --worker-url / MW_WORKER_URL 仍可用。
+#   --debug-domain DOMAIN / MW_DEBUG_DOMAIN
+#                         可选，默认 = --worker-domain。GET /debug/* 与 POST /debug/notify
+#                         的地址（需要后端以 --debug 启动且 DEBUG_TOKEN 非空，且需直连源站）。
+#                         旧名 --debug-url / MW_DEBUG_URL 仍可用。
+#   --reconcile-token TOKEN / MW_RECONCILE_TOKEN
+#                         可选。缺省时跳过 /reconcile（仅靠 Push 回调入队的部署可接受）。
+#   --worker-token TOKEN / MW_WORKER_TOKEN
+#                         必填。/worker 的 Bearer token。
+#   --debug-token TOKEN / MW_DEBUG_TOKEN
+#                         可选，仅 --diagnose / --test-notify 用。
+#   --batch N / MW_BATCH  可选，默认不发（服务端默认 10，且上限 10，超出静默截断）。
+#   --timeout N / MW_TIMEOUT
+#                         可选，默认 60。单次请求超时秒数。
+#   --interval N / MW_INTERVAL
+#                         可选，默认 30。仅 --loop 用，两次触发之间的秒数。
+#   --log-file PATH / MW_LOG_FILE
+#                         可选。给定时每次触发追加一行摘要（不含任何凭据）。
+#   --test-text TEXT / MW_TEST_TEXT
+#                         可选，仅 --test-notify 用。直发测试的正文。
 #
 # --- 用法 ---
-#   MW_APP_URL=https://lb.example \
-#   MW_WORKER_URL=https://origin.example \
-#   MW_RECONCILE_TOKEN=reconcile-... \
-#   MW_WORKER_TOKEN=worker-... \
+#   # flag 风格（推荐交互式使用，只写域名）：
+#   bash scripts/cron-drain.sh --once \
+#     --app-domain messageweave.example \
+#     --reconcile-token reconcile-... --worker-token worker-...
+#
+#   # 环境变量风格（cron 推荐，凭据不出现在 ps）：
+#   MW_APP_DOMAIN=messageweave.example \
+#   MW_RECONCILE_TOKEN=reconcile-... MW_WORKER_TOKEN=worker-... \
 #     bash scripts/cron-drain.sh --once
 #
 #   # cron（每分钟，日志落盘便于事后排查）：
-#   #   * * * * * env MW_APP_URL=https://lb.example \
-#   #      MW_WORKER_URL=https://origin.example MW_RECONCILE_TOKEN=*** MW_WORKER_TOKEN=*** \
+#   #   * * * * * env MW_APP_DOMAIN=messageweave.example \
+#   #      MW_RECONCILE_TOKEN=*** MW_WORKER_TOKEN=*** \
 #   #      bash /opt/messageweave/scripts/cron-drain.sh --once >> /var/log/mw-drain.log 2>&1
 #
 #   # 常驻进程，不依赖 crontab：
-#   MW_INTERVAL=30 bash scripts/cron-drain.sh --loop
+#   bash scripts/cron-drain.sh --loop --app-domain messageweave.example \
+#     --reconcile-token <token> --worker-token <token> --interval 30
 #
 #   # 收不到提醒时先跑这个，自动定位原因：
-#   MW_APP_URL=... MW_DEBUG_URL=... MW_DEBUG_TOKEN=*** bash scripts/cron-drain.sh --diagnose
+#   bash scripts/cron-drain.sh --diagnose --app-domain messageweave.example --debug-token ***
 #
 #   # 绕过队列、复用生产出站路径直发一条，验证 bot token 与 chat_id 本身是否可用：
-#   MW_DEBUG_URL=... MW_DEBUG_TOKEN=*** bash scripts/cron-drain.sh --test-notify
+#   bash scripts/cron-drain.sh --test-notify --app-domain messageweave.example \
+#     --debug-token *** --test-text "probe"
 #
 # --- 退出码 ---
 #   0  成功（两个端点都返回 204，或 /reconcile 被主动跳过）
@@ -70,16 +87,17 @@ MODE="--once"
 DO_DIAGNOSE=0
 DO_TEST_NOTIFY=0
 
-APP_URL=""
-WORKER_URL=""
-DEBUG_URL=""
-RECONCILE_TOKEN=""
-WORKER_TOKEN=""
-DEBUG_TOKEN=""
-BATCH=""
+APP_URL="${MW_APP_DOMAIN:-${MW_APP_URL:-}}"
+WORKER_URL="${MW_WORKER_DOMAIN:-${MW_WORKER_URL:-}}"
+DEBUG_URL="${MW_DEBUG_DOMAIN:-${MW_DEBUG_URL:-}}"
+RECONCILE_TOKEN="${MW_RECONCILE_TOKEN:-}"
+WORKER_TOKEN="${MW_WORKER_TOKEN:-}"
+DEBUG_TOKEN="${MW_DEBUG_TOKEN:-}"
+BATCH="${MW_BATCH:-}"
 TIMEOUT="${MW_TIMEOUT:-60}"
 INTERVAL="${MW_INTERVAL:-30}"
 LOG_FILE="${MW_LOG_FILE:-}"
+TEST_TEXT="${MW_TEST_TEXT:-}"
 FAILURES=0
 
 # --- 基础输出 -----------------------------------------------------------------
@@ -114,13 +132,14 @@ usage_die() {
   usage 2
 }
 
-# 校验 URL 前缀；空值跳过（未设置的可选变量）。
-check_url() {
-  [ -n "$1" ] || return 0
-  case "$1" in
-    http://* | https://*) return 0 ;;
+# 规范化域名/URL：没有协议前缀时自动补 https://，返回完整 URL。
+normalize_url() {
+  local v="$1"
+  [ -n "$v" ] || { printf '%s' "$v"; return; }
+  case "$v" in
+    http://* | https://*) printf '%s' "$v" ;;
+    *) printf 'https://%s' "$v" ;;
   esac
-  die "$2 需要 http:// 或 https:// 前缀"
 }
 
 # --- JSON 取值（不依赖 jq）：json_field '<json>' <key> → 首个匹配键的值 -----------
@@ -214,7 +233,7 @@ run_reconcile() {
       FAILURES=$((FAILURES + 1))
       ;;
     404)
-      log "reconcile=404 $APP_URL/reconcile 不存在（MW_APP_URL 可能指错）"
+      log "reconcile=404 $APP_URL/reconcile 不存在（MW_APP_DOMAIN 可能指错）"
       FAILURES=$((FAILURES + 1))
       ;;
     *)
@@ -274,9 +293,9 @@ run_worker() {
       if printf '%s' "$BODY" | grep -q 'route not forwarded'; then
         log "worker=404 $WORKER_URL/worker 被 LB 拦截（route not forwarded）"
         log "      LB 版本太旧：/worker 需要 LB_VERSION >= 2026.10.3（见 /healthz-worker）"
-        log "      升级 LB，或把 MW_WORKER_URL 指向源站直连地址绕过 LB"
+        log "      升级 LB，或把 MW_WORKER_DOMAIN 指向源站直连地址绕过 LB"
       else
-        log "worker=404 $WORKER_URL/worker 不存在（MW_WORKER_URL 可能指错）"
+        log "worker=404 $WORKER_URL/worker 不存在（MW_WORKER_DOMAIN 可能指错）"
       fi
       FAILURES=$((FAILURES + 1))
       ;;
@@ -301,7 +320,7 @@ diagnose() {
 
   # 1) 公开端点，不用 token：先确认后端活着。
   if [ -z "$APP_URL" ]; then
-    say "  [1] 跳过（未设置 MW_APP_URL，本次诊断只用了 MW_DEBUG_URL）"
+    say "  [1] 跳过（未设置 MW_APP_DOMAIN，本次诊断只用了 MW_DEBUG_DOMAIN）"
   else
     request GET "$APP_URL/api/status"
     code="$CODE"
@@ -455,7 +474,7 @@ diagnose() {
 
 # --- --test-notify：绕过队列直发一条，验证 bot token 与 chat_id 本身是否可用 ------
 test_notify() {
-  local text="${MW_TEST_TEXT:-[messageweave] cron-drain direct-send test}"
+  local text="${TEST_TEXT:-[messageweave] cron-drain direct-send test}"
   local code rc body
 
   rc=0
@@ -474,7 +493,7 @@ test_notify() {
   code=$(cat "$BODY_FILE.code" 2>/dev/null)
   body=$(cat "$BODY_FILE" 2>/dev/null)
   if [ "$rc" -ne 0 ] || [ -z "$code" ]; then
-    say "--test-notify: 请求未发出（需要 MW_DEBUG_URL 与 MW_DEBUG_TOKEN）"
+    say "--test-notify: 请求未发出（需要 MW_DEBUG_DOMAIN 与 MW_DEBUG_TOKEN）"
     FAILURES=$((FAILURES + 1))
     return 0
   fi
@@ -516,33 +535,58 @@ main() {
       --diagnose) DO_DIAGNOSE=1 ;;
       --test-notify) DO_TEST_NOTIFY=1 ;;
       --help) usage 0 ;;
+      --app-domain=*) APP_URL="${1#--app-domain=}" ;;
+      --app-domain) shift; APP_URL="${1:?--app-domain 需要值}" ;;
+      --app-url=*) APP_URL="${1#--app-url=}" ;;
+      --app-url) shift; APP_URL="${1:?--app-url 需要值}" ;;
+      --worker-domain=*) WORKER_URL="${1#--worker-domain=}" ;;
+      --worker-domain) shift; WORKER_URL="${1:?--worker-domain 需要值}" ;;
+      --worker-url=*) WORKER_URL="${1#--worker-url=}" ;;
+      --worker-url) shift; WORKER_URL="${1:?--worker-url 需要值}" ;;
+      --debug-domain=*) DEBUG_URL="${1#--debug-domain=}" ;;
+      --debug-domain) shift; DEBUG_URL="${1:?--debug-domain 需要值}" ;;
+      --debug-url=*) DEBUG_URL="${1#--debug-url=}" ;;
+      --debug-url) shift; DEBUG_URL="${1:?--debug-url 需要值}" ;;
+      --reconcile-token=*) RECONCILE_TOKEN="${1#--reconcile-token=}" ;;
+      --reconcile-token) shift; RECONCILE_TOKEN="${1:?--reconcile-token 需要值}" ;;
+      --worker-token=*) WORKER_TOKEN="${1#--worker-token=}" ;;
+      --worker-token) shift; WORKER_TOKEN="${1:?--worker-token 需要值}" ;;
+      --debug-token=*) DEBUG_TOKEN="${1#--debug-token=}" ;;
+      --debug-token) shift; DEBUG_TOKEN="${1:?--debug-token 需要值}" ;;
+      --batch=*) BATCH="${1#--batch=}" ;;
+      --batch) shift; BATCH="${1:?--batch 需要值}" ;;
+      --timeout=*) TIMEOUT="${1#--timeout=}" ;;
+      --timeout) shift; TIMEOUT="${1:?--timeout 需要值}" ;;
+      --interval=*) INTERVAL="${1#--interval=}" ;;
+      --interval) shift; INTERVAL="${1:?--interval 需要值}" ;;
+      --log-file=*) LOG_FILE="${1#--log-file=}" ;;
+      --log-file) shift; LOG_FILE="${1:?--log-file 需要值}" ;;
+      --test-text=*) TEST_TEXT="${1#--test-text=}" ;;
+      --test-text) shift; TEST_TEXT="${1:?--test-text 需要值}" ;;
       *) die "未知参数：$1（--help 查看用法）" ;;
     esac
     shift
   done
 
-  APP_URL="${MW_APP_URL:-}"
-  WORKER_URL="${MW_WORKER_URL:-$APP_URL}"
-  DEBUG_URL="${MW_DEBUG_URL:-$WORKER_URL}"
-  RECONCILE_TOKEN="${MW_RECONCILE_TOKEN:-}"
-  WORKER_TOKEN="${MW_WORKER_TOKEN:-}"
-  DEBUG_TOKEN="${MW_DEBUG_TOKEN:-}"
-  BATCH="${MW_BATCH:-}"
+  # 命令行 flag 优先于环境变量；未显式指定时回退到默认值。
+  WORKER_URL="${WORKER_URL:-$APP_URL}"
+  DEBUG_URL="${DEBUG_URL:-$WORKER_URL}"
+  # 没有协议前缀的域名自动补 https://
+  APP_URL="$(normalize_url "$APP_URL")"
+  WORKER_URL="$(normalize_url "$WORKER_URL")"
+  DEBUG_URL="$(normalize_url "$DEBUG_URL")"
 
   [ -n "$APP_URL" ] || [ -n "$WORKER_URL" ] || [ -n "$DEBUG_URL" ] \
-    || usage_die "缺少 MW_APP_URL / MW_WORKER_URL / MW_DEBUG_URL 之一"
-  check_url "$APP_URL" MW_APP_URL
-  check_url "$WORKER_URL" MW_WORKER_URL
-  check_url "$DEBUG_URL" MW_DEBUG_URL
+    || usage_die "缺少 --app-domain / --worker-domain / --debug-domain 之一（或对应 MW_* 环境变量）"
   for pair in "TIMEOUT=$TIMEOUT" "INTERVAL=$INTERVAL" "BATCH=$BATCH"; do
     [ -n "${pair#*=}" ] || continue
     case "${pair#*=}" in
       *[!0-9]*) die "${pair%%=*} 必须是整数" ;;
     esac
   done
-  [ "$TIMEOUT" -ge 1 ] || die "MW_TIMEOUT 至少 1 秒"
+  [ "$TIMEOUT" -ge 1 ] || die "--timeout / MW_TIMEOUT 至少 1 秒"
   if [ -n "$BATCH" ]; then
-    [ "$BATCH" -ge 1 ] || die "MW_BATCH 至少 1"
+    [ "$BATCH" -ge 1 ] || die "--batch / MW_BATCH 至少 1"
     if [ "$BATCH" -gt 10 ]; then
       log "MW_BATCH=$BATCH 超过服务端上限 10，实际按 10 处理"
     fi
@@ -551,10 +595,10 @@ main() {
   # 诊断 / 直发测试是独立模式，不跑真正的排空。诊断缺 token 时也能降级跑公开端点。
   if [ "$DO_DIAGNOSE" -eq 1 ] || [ "$DO_TEST_NOTIFY" -eq 1 ]; then
     do_drain=0
-    [ "$DO_TEST_NOTIFY" -eq 1 ] && [ -z "$DEBUG_TOKEN" ] && die "直发测试需要 MW_DEBUG_TOKEN"
+    [ "$DO_TEST_NOTIFY" -eq 1 ] && [ -z "$DEBUG_TOKEN" ] && die "直发测试需要 --debug-token / MW_DEBUG_TOKEN"
   else
-    [ -n "$WORKER_URL" ] || usage_die "缺少 MW_WORKER_URL（默认取 MW_APP_URL）"
-    [ -n "$WORKER_TOKEN" ] || usage_die "缺少 MW_WORKER_TOKEN（/worker 是排空的唯一入口）"
+    [ -n "$WORKER_URL" ] || usage_die "缺少 --worker-domain / MW_WORKER_DOMAIN（默认取 --app-domain）"
+    [ -n "$WORKER_TOKEN" ] || usage_die "缺少 --worker-token / MW_WORKER_TOKEN（/worker 是排空的唯一入口）"
   fi
 
   BODY_FILE="$(mktemp -d 2>/dev/null)/body" || die "无法创建临时目录"
@@ -566,7 +610,7 @@ main() {
   if [ "$do_drain" -eq 1 ]; then
     if [ "$MODE" = "--loop" ]; then
       trap 'log "收到退出信号，循环结束"; exit 0' TERM INT
-      log "--loop 启动 MW_INTERVAL=${INTERVAL}s MW_TIMEOUT=${TIMEOUT}s 按 Ctrl-C 退出"
+      log "--loop 启动 --interval=${INTERVAL}s --timeout=${TIMEOUT}s 按 Ctrl-C 退出"
       while :; do
         run_reconcile
         run_worker
