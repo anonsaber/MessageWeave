@@ -78,8 +78,8 @@
             <span class="persist-label"><span class="persist-dot"></span><span data-i18n="business.persist">Encrypted in Redis</span></span>
           </div>
           <div class="callout callout-warning">
-            <strong data-i18n="callout.title">Business configuration is not read from the server.</strong>
-            <span data-i18n="callout.bodyPre"> To avoid secret echo, the API does not expose a business configuration GET. Every submission must re-fill the complete configuration, including all required secrets; optional LLM fields are sent as </span><code>null</code><span data-i18n="callout.bodyPost"> when left blank. The mailbox primary account is always used.</span>
+            <strong data-i18n="callout.title">Business configuration is encrypted in Redis.</strong>
+            <span data-i18n="callout.bodyPre"> Secret fields (app passwords, tokens) are not echoed and must be re-entered on each full save; non-secret fields are read back from the server. The first save must include all required secrets. Optional LLM fields are sent as </span><code>null</code><span data-i18n="callout.bodyPost"> when left blank. The mailbox primary account is always used.</span>
           </div>
 
           <form id="business-form" novalidate>
@@ -111,7 +111,7 @@
                 <div class="form-section-heading"><span class="section-number">03</span><div><h3 id="llm-title" data-i18n="llm.title">LLM service</h3><p data-i18n="llm.desc">When enabled, an HTTPS Base URL, model name and API key are required.</p></div></div>
                 <div class="toggle-grid">
                   <label class="toggle-card" for="llm-enabled"><input id="llm-enabled" name="llm_enabled" type="checkbox" /><span><strong data-i18n="llm.enableLabel">Enable LLM</strong><small data-i18n="llm.enableHint">Allow the bot to call OpenAI-compatible model services.</small></span></label>
-                  <label class="toggle-card" for="llm-allow-net"><input id="llm-allow-net" name="llm_allow_net" type="checkbox" /><span><strong data-i18n="llm.netLabel">Allow network calls</strong><small data-i18n="llm.netHint">When off, no LLM client is created.</small></span></label>
+                  <label class="toggle-card" for="llm-allow-net"><input id="llm-allow-net" name="llm_allow_net" type="checkbox" /><span><strong data-i18n="llm.netLabel">Enable LLM outbound requests</strong><small data-i18n="llm.netHint">When off, no LLM client is initialized and the bot will not call any external model service.</small></span></label>
                 </div>
                 <div class="field-grid llm-fields">
                   <div class="field"><label for="llm-base-url">LLM Base URL <span id="llm-url-required" class="optional-mark" data-i18n="common.optional">Optional</span></label><input id="llm-base-url" name="llm_base_url" type="url" inputmode="url" autocomplete="url" placeholder="https://api.example.com/v1" /><small data-i18n="llm.urlHint">HTTPS is required when LLM is enabled.</small></div>
