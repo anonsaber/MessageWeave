@@ -196,6 +196,10 @@ Then, in order:
 Secrets are write-only: the page never shows a stored secret again, and submitting an empty secret
 field keeps the previously stored value — clear a secret deliberately in a separate edit.
 
+If you run multiple backends behind a load balancer, configure on **any one node** — all backends
+share one Redis and read the same configuration. See [the multi-instance section of the deployment
+guide](docs/deployment.md#102-multi-instance-prerequisites) for the full model.
+
 ### 3.7 Register the callbacks
 
 Still on the same page, under **External callbacks**:
