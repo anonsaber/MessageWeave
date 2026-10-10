@@ -1069,4 +1069,51 @@ mod tests {
         assert_eq!(merged.reconcile_token, "stored-reconcile");
         assert_eq!(merged.worker_token, "stored-worker");
     }
+
+    /// Build a complete `BusinessConfigPatch` whose every field equals the corresponding field
+    /// of `wire`. Used to test idempotence: re-applying an identical complete patch over the
+    /// wire it came from must produce an equal wire.
+    fn patch_from_wire(wire: &BusinessConfigWire) -> BusinessConfigPatch {
+        BusinessConfigPatch {
+            bot_token: Some(wire.bot_token.clone()),
+            telegram_chat_id: Some(wire.telegram_chat_id),
+            chat_allowlist: Some(wire.chat_allowlist.clone()),
+            telegram_webhook_secret: Some(wire.telegram_webhook_secret.clone()),
+            timezone: Some(wire.timezone.clone()),
+            jmap_session_url: Some(wire.jmap_session_url.clone()),
+            jmap_username: Some(wire.jmap_username.clone()),
+            jmap_password: Some(wire.jmap_password.clone()),
+            account_id: Some(wire.account_id.clone()),
+            llm_enabled: Some(wire.llm_enabled),
+            llm_allow_net: Some(wire.llm_allow_net),
+            llm_api_key: Some(wire.llm_api_key.clone()),
+            llm_base_url: Some(wire.llm_base_url.clone()),
+            llm_model: Some(wire.llm_model.clone()),
+            reconcile_token: Some(wire.reconcile_token.clone()),
+            worker_token: Some(wire.worker_token.clone()),
+            revision: None,
+        }
+    }
+
+    #[test]
+    fn apply_is_idempotent_when_a_complete_patch_matches_the_stored_wire() {
+        // Idempotence: re-submitting a complete patch whose values equal the already-stored
+        // wire must yield an equal wire. Guards against a future change to `apply` that makes a
+        // same-value re-save drift (e.g. an accidental default on the merge branch, or the
+        // first-save branch diverging from the merge branch for a same-value complete patch).
+        let first = complete_first_save_patch()
+            .apply(None)
+            .expect("a complete first-save patch yields a wire");
+        let same = patch_from_wire(&first);
+        let reapplied = same
+            .apply(Some(&first))
+            .expect("re-applying an identical complete patch yields a wire");
+        // `BusinessConfigWire` does not derive `PartialEq`; the serialized form covers all 16
+        // fields and only matches when every one is equal (struct field order is deterministic).
+        assert_eq!(
+            serde_json::to_string(&reapplied).unwrap(),
+            serde_json::to_string(&first).unwrap(),
+            "re-applying an identical complete patch must not change the wire"
+        );
+    }
 }
