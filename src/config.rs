@@ -440,9 +440,35 @@ impl BusinessConfigPatch {
         if stored.is_none() && !self.is_complete() {
             return None;
         }
-        // `stored` is `None` only with a complete patch, where every field below is present, so the
-        // fallback is only ever read when it exists.
-        let fallback = stored.expect("an omitted field implies a stored configuration exists");
+        let fallback = match stored {
+            Some(stored) => stored,
+            None => {
+                // First save: `is_complete()` above has just proved every required field below is
+                // named by the patch, so each `.expect("is_complete()")` here is unreachable. Only
+                // the four `Option<Option<String>>` fields are exempt from `is_complete()`; for
+                // them `None` on the patch side means "not named", whose stored value on a first
+                // save is `None`. Building the wire straight from the patch avoids the eager
+                // `stored.expect(...)` that used to panic at bind time, before any field was read.
+                return Some(BusinessConfigWire {
+                    bot_token: self.bot_token.expect("is_complete()"),
+                    telegram_chat_id: self.telegram_chat_id.expect("is_complete()"),
+                    chat_allowlist: self.chat_allowlist.expect("is_complete()"),
+                    telegram_webhook_secret: self.telegram_webhook_secret.expect("is_complete()"),
+                    timezone: self.timezone.expect("is_complete()"),
+                    jmap_session_url: self.jmap_session_url.expect("is_complete()"),
+                    jmap_username: self.jmap_username.expect("is_complete()"),
+                    jmap_password: self.jmap_password.expect("is_complete()"),
+                    account_id: self.account_id.unwrap_or(None),
+                    llm_enabled: self.llm_enabled.expect("is_complete()"),
+                    llm_allow_net: self.llm_allow_net.expect("is_complete()"),
+                    llm_api_key: self.llm_api_key.unwrap_or(None),
+                    llm_base_url: self.llm_base_url.unwrap_or(None),
+                    llm_model: self.llm_model.unwrap_or(None),
+                    reconcile_token: self.reconcile_token.expect("is_complete()"),
+                    worker_token: self.worker_token.expect("is_complete()"),
+                });
+            }
+        };
         Some(BusinessConfigWire {
             bot_token: self.bot_token.unwrap_or_else(|| fallback.bot_token.clone()),
             telegram_chat_id: self.telegram_chat_id.unwrap_or(fallback.telegram_chat_id),
@@ -908,5 +934,139 @@ mod tests {
             .unwrap()
             .telegram_chat_id
             .is_none());
+    }
+
+    /// A complete first-save patch: every field `is_complete()` requires is named. The four
+    /// optional `Option<Option<String>>` fields are mixed (two named, two omitted) so the
+    /// first-save branch also exercises "patch did not name it" for them.
+    fn complete_first_save_patch() -> BusinessConfigPatch {
+        BusinessConfigPatch {
+            bot_token: Some("bot-token-A".into()),
+            telegram_chat_id: Some(111_111),
+            chat_allowlist: Some(vec![111_111, 222_222]),
+            telegram_webhook_secret: Some("hook-secret-A".into()),
+            timezone: Some("Asia/Shanghai".into()),
+            jmap_session_url: Some("https://jmap.example.invalid".into()),
+            jmap_username: Some("jmap-user-A".into()),
+            jmap_password: Some("jmap-pass-A".into()),
+            account_id: None,
+            llm_enabled: Some(true),
+            llm_allow_net: Some(true),
+            llm_api_key: None,
+            llm_base_url: Some(Some("https://llm.example.invalid".into())),
+            llm_model: Some(Some("gpt-oss".into())),
+            reconcile_token: Some("reconcile-A".into()),
+            worker_token: Some("worker-A".into()),
+            revision: None,
+        }
+    }
+
+    #[test]
+    fn apply_builds_a_wire_from_a_complete_first_save_patch_without_panicking() {
+        // Regression for the config.rs:445 panic: `apply(None, complete_patch)` used to hit
+        // `stored.expect(...)` eagerly and abort before any field was read. A fresh Redis with
+        // no stored configuration must accept a complete first save.
+        let wire = complete_first_save_patch()
+            .apply(None)
+            .expect("a complete first-save patch yields a wire");
+        // The 12 fields `is_complete()` checks are all named by the patch.
+        assert_eq!(wire.bot_token, "bot-token-A");
+        assert_eq!(wire.telegram_chat_id, 111_111);
+        assert_eq!(wire.chat_allowlist, vec![111_111, 222_222]);
+        assert_eq!(wire.telegram_webhook_secret, "hook-secret-A");
+        assert_eq!(wire.timezone, "Asia/Shanghai");
+        assert_eq!(wire.jmap_session_url, "https://jmap.example.invalid");
+        assert_eq!(wire.jmap_username, "jmap-user-A");
+        assert_eq!(wire.jmap_password, "jmap-pass-A");
+        assert!(wire.llm_enabled);
+        assert!(wire.llm_allow_net);
+        assert_eq!(wire.reconcile_token, "reconcile-A");
+        assert_eq!(wire.worker_token, "worker-A");
+        // The four `Option<Option<String>>` fields are exempt from `is_complete()`. The two
+        // named ones carry their patch value; the two omitted ones fall back to `None`, which
+        // is the correct stored value on a first save.
+        assert_eq!(wire.account_id, None);
+        assert_eq!(wire.llm_api_key, None);
+        assert_eq!(
+            wire.llm_base_url.as_deref(),
+            Some("https://llm.example.invalid")
+        );
+        assert_eq!(wire.llm_model.as_deref(), Some("gpt-oss"));
+    }
+
+    #[test]
+    fn apply_returns_none_when_a_first_save_patch_is_incomplete() {
+        // `is_complete()` gates the first-save branch: a patch missing a required field must
+        // early-return `None` so the handler reports it rather than persisting a half-empty wire.
+        let mut patch = complete_first_save_patch();
+        patch.jmap_password = None;
+        assert!(patch.apply(None).is_none());
+    }
+
+    #[test]
+    fn apply_merges_a_partial_patch_into_the_stored_wire_keeping_unmentioned_fields() {
+        // The stored-configuration merge path is unchanged: fields the patch names take the
+        // patch value, every other field keeps the stored value.
+        let stored = BusinessConfigWire {
+            bot_token: "bot-stored".into(),
+            telegram_chat_id: 999,
+            chat_allowlist: vec![999],
+            telegram_webhook_secret: "hook-stored".into(),
+            timezone: "Etc/UTC".into(),
+            jmap_session_url: "https://stored.example.invalid".into(),
+            jmap_username: "stored-user".into(),
+            jmap_password: "stored-pass".into(),
+            account_id: Some("stored-account".into()),
+            llm_enabled: false,
+            llm_allow_net: false,
+            llm_api_key: Some("stored-key".into()),
+            llm_base_url: Some("https://stored-llm.example.invalid".into()),
+            llm_model: Some("stored-model".into()),
+            reconcile_token: "stored-reconcile".into(),
+            worker_token: "stored-worker".into(),
+        };
+        let patch = BusinessConfigPatch {
+            bot_token: Some("bot-new".into()),
+            timezone: Some("Asia/Shanghai".into()),
+            telegram_chat_id: None,
+            chat_allowlist: None,
+            telegram_webhook_secret: None,
+            jmap_session_url: None,
+            jmap_username: None,
+            jmap_password: None,
+            account_id: None,
+            llm_enabled: None,
+            llm_allow_net: None,
+            llm_api_key: None,
+            llm_base_url: None,
+            llm_model: None,
+            reconcile_token: None,
+            worker_token: None,
+            revision: None,
+        };
+        let merged = patch
+            .apply(Some(&stored))
+            .expect("a partial patch over a stored wire yields a merged wire");
+        // Named fields take the patch value.
+        assert_eq!(merged.bot_token, "bot-new");
+        assert_eq!(merged.timezone, "Asia/Shanghai");
+        // Unmentioned fields keep the stored value.
+        assert_eq!(merged.telegram_chat_id, 999);
+        assert_eq!(merged.chat_allowlist, vec![999]);
+        assert_eq!(merged.telegram_webhook_secret, "hook-stored");
+        assert_eq!(merged.jmap_session_url, "https://stored.example.invalid");
+        assert_eq!(merged.jmap_username, "stored-user");
+        assert_eq!(merged.jmap_password, "stored-pass");
+        assert_eq!(merged.account_id.as_deref(), Some("stored-account"));
+        assert!(!merged.llm_enabled);
+        assert!(!merged.llm_allow_net);
+        assert_eq!(merged.llm_api_key.as_deref(), Some("stored-key"));
+        assert_eq!(
+            merged.llm_base_url.as_deref(),
+            Some("https://stored-llm.example.invalid")
+        );
+        assert_eq!(merged.llm_model.as_deref(), Some("stored-model"));
+        assert_eq!(merged.reconcile_token, "stored-reconcile");
+        assert_eq!(merged.worker_token, "stored-worker");
     }
 }
