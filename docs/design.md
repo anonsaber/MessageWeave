@@ -41,7 +41,7 @@
 Build a Telegram robot written in Rust as a **personal email assistant** for Stalwart JMAP mailbox:
 
 - Query/read emails, view folders, send emails, manage keywords, etc. through Telegram commands.
-- Leverage JMAP's **Push HTTPS callback** (+ external Cron reconciliation) to **proactively push to Telegram** when new emails arrive. (EventSource/SSE/long polling is non-target, see deployment.md ``NG-POLLING-SSE``/`NG-LONG-POLLING`/`C-NO-LONG-CONN`.)
+- Leverage JMAP's **Push HTTPS callback** (+ external Cron reconciliation) to **proactively push to Telegram** when new emails arrive. (EventSource/SSE/long polling is non-target, see `NG-POLLING-SSE`/`NG-LONG-POLLING`/`C-NO-LONG-CONN`.)
 - Single-user or multi-account deployment (the default is for single-account self-hosting scenarios).
 
 ### 1.2 Scope (this stage)
@@ -99,8 +99,8 @@ client_ws/        WebSocket 客户端（feature = "websockets"）
 | Send email (2 steps) | ① `email_set`/`email_import` create draft ② `email_submission_set` send | submission associate identityId |
 | Delete/Archive | `email_set` (keywords `$seen`/`$flagged`), `mailbox_destroy` | JMAP has no real "delete", relying on keyword/move |
 | Search | `email_query` (`Filter::text`) + `SearchSnippet/get` highlighting | `Filter` is a serde single-label enumeration, **no comparator syntax**; `SearchSnippet/get` only returns `emailId`/`subject`/`preview`, **no `bodyProperties`/`parts`**, body-level highlighting in locked version `0.4.2` can't do it (downgraded to a pure list of IDs) |
-| Real-time notification (Push + reconciliation) | Push HTTPS callback → `StateChange`; external Cron calls `/reconcile` and uses `Email/changes` to make up the difference | Requires public HTTPS entrance (deployment.md ``C-HTTPS-INBOUND``/`FLOW-NEW-MAIL`); Push is not the only reliable source |
-| SSE / WebSocket (non-target) | `event_source` / `client_ws` | This deployment **does not use** (deployment.md ``NG-POLLING-SSE``/`NG-LONG-POLLING`/`C-NO-LONG-CONN`); only crate capabilities are listed for investigation |
+| Real-time notification (Push + reconciliation) | Push HTTPS callback → `StateChange`; external Cron calls `/reconcile` and uses `Email/changes` to make up the difference | Requires public HTTPS entrance (`C-HTTPS-INBOUND`/`FLOW-NEW-MAIL`); Push is not the only reliable source |
+| SSE / WebSocket (non-target) | `event_source` / `client_ws` | This deployment **does not use** (`NG-POLLING-SSE`/`NG-LONG-POLLING`/`C-NO-LONG-CONN`); only crate capabilities are listed for investigation |
 
 ### 2.4 Authentication mechanism (`stalwartlabs/jmap-client/src/client.rs`)
 - `Credentials::Basic { username, secret }` — username/password, natively supported by Stalwart.
@@ -124,7 +124,7 @@ WebSocket(...)              ws 错误（feature 开启时）
 
 ### 2.6 Real-time channel decision-making (determined, see docs/charter.md §8)
 
-> Deployment target = **Generic HTTPS-only Docker, no long connections** (deployment.md ``C-NO-LONG-CONN``/`C-HTTPS-INBOUND`).
+> Deployment target = **Generic HTTPS-only Docker, no long connections** (`C-NO-LONG-CONN`/`C-HTTPS-INBOUND`).
 > Current channel = JMAP Push HTTPS callback (first explicitly registered by the administrator via `POST /api/push/register`, see §7.3) + external Cron `/reconcile` reconciliation. Push subscriptions are not created automatically, and Push cannot be regarded as the only reliable source.
 > EventSource/SSE and WebSocket are both marked as **non-target** (`NG-POLLING-SSE`). Only the following table is retained for reference for crate capability research.
 
@@ -134,7 +134,7 @@ WebSocket(...)              ws 错误（feature 开启时）
 | EventSource/SSE | ❌ non-target | long connection, conflicts with `C-NO-LONG-CONN` (`NG-POLLING-SSE`) |
 | WebSocket (RFC 8887) | ❌ Non-target | Long connection, conflicts with `C-NO-LONG-CONN`; and needs server support |
 
-Reconciliation: External HTTPS Cron periodically adjusts `/reconcile` (deployment.md ``FLOW-RECONCILE``), uses `Email/changes` + Redis `sinceState` to make up for the difference, and also serves as cursor reconstruction after Redis is lost.
+Reconciliation: External HTTPS Cron periodically adjusts `/reconcile` (`FLOW-RECONCILE`), uses `Email/changes` + Redis `sinceState` to make up for the difference, and also serves as cursor reconstruction after Redis is lost.
 
 ---
 
@@ -207,7 +207,7 @@ Candidate comparison (`teloxide` / `grammers` / old `telegram-bot`), 6 reasons w
             │  worker: Email/changes → 通知 → 发往 TG → 推进游标│
             └───────────────────────────────────────────────────┘
 ```
-> Deployment form = **General HTTPS-only Docker, no long connection** (deployment.md ``C-NO-LONG-CONN``/`C-HTTPS-INBOUND`):
+> Deployment form = **General HTTPS-only Docker, no long connection** (`C-NO-LONG-CONN`/`C-HTTPS-INBOUND`):
 > Telegram is Webhook only; JMAP real-time is Push callback only; slow tasks are asynchronously stepped into Redis Streams; reconciliation is triggered by **External HTTPS Cron**.
 > EventSource/SSE and long polling are non-targets (`NG-POLLING-SSE`/`NG-LONG-POLLING`).
 > Channel decoupling (see §5.2): The domain layer interacts with the channel layer through domain Command/Notification, and no specific channel SDK type appears in the domain layer; DingTalk/Feishu only retains extension bits and does not implement them in advance.
@@ -373,7 +373,7 @@ Testing: **No integrated test directory**, and no stand-alone util tool module. 
 > Therefore **the current code reads zero variable names in the following table**; the `RUN_MODE` variable itself has also been deleted entirely (the identifier is no longer in the code),
 > `webhook` and `reconcile` already share the same set of routing tables, `NG-SERVER-MODE` is retained as a design non-target in `docs/charter.md` §8.
 
-> ⚠️ **The following table is the complete variable table of business configuration fields** (the variable names are named after the original environment variables to facilitate comparison with the deployment document, but there is no longer any reading method in the code**). **The current production deployment only requires `REDIS_URL` + `CONFIG_ENCRYPTION_KEY` two startup variables** (`src/main.rs`); all other business fields are written by `PUT /api/business-config` through Redis business configuration (`C-REDIS-ONLY-STATE`). "Required" in the table refers to the fail-closed constraint (`validate_nonblank`, blank means rejection) of **Redis business configuration**, which is no longer required for the environment variable boot path.
+> ⚠️ **The following table is the complete variable table of business configuration fields** (the variable names are named after the original environment variables to facilitate comparison with the deployment reference, but there is no longer any reading method in the code**). **The current production deployment only requires `REDIS_URL` + `CONFIG_ENCRYPTION_KEY` two startup variables** (`src/main.rs`); all other business fields are written by `PUT /api/business-config` through Redis business configuration (`C-REDIS-ONLY-STATE`). "Required" in the table refers to the fail-closed constraint (`validate_nonblank`, blank means rejection) of **Redis business configuration**, which is no longer required for the environment variable boot path.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
@@ -442,7 +442,7 @@ Testing: **No integrated test directory**, and no stand-alone util tool module. 
 ### 7.4 TLS (code/dependent behavior)
 - The TLS provider is determined by the dependent feature: **jmap-client 0.4.2 contains `aws_lc_rs` by default (and introduces `rustls`)**, and `default-features = true` is not "rustls default". **The actual `default-features = false, features = ["async","rustls"]`** of this project (`aws_lc_rs`/`websockets` is not enabled), and will ultimately be subject to `Cargo.toml`.
 - Certificate verification is **mandatory by default** and can be turned off only for testing.
-- For operation and maintenance details such as the system CA trust store in the image, internal CA injection, inbound webhook TLS termination, etc., see deployment.md.
+- For operation and maintenance details such as the system CA trust store in the image, internal CA injection, inbound webhook TLS termination, etc., see `README.md` §3.0.
 
 ### 7.5 Production red line: no database / no local writing / standard output log (README.md §3.0 / docs/reference.md §9.1)
 
@@ -692,7 +692,7 @@ Single authority table, this section only retains four "whys" that affect design
 
 ### 11.3 Deployment form (confirmed, architecture related)
 - **Confirmed**: **Single account implementation** (`REQ-SINGLE-ACCOUNT`); multiple accounts temporarily use **multiple bot instances** (respective tokens/configurations), **no multiple accounts single instance** (so no need for chat→account routing and `JmapService` pooling). 2026-09-28 Users have made this decision, and the boundaries and future changes to be made are registered in `docs/opengaps.md` §3.
-- Deployment shape = **webhook-only + universal HTTPS-only Docker + external Cron reconciliation** (deployment.md ``C-NO-LONG-CONN``/`NG-LONG-POLLING`/`NFR-RECONCILE-INTERVAL`).
+- Deployment shape = **webhook-only + universal HTTPS-only Docker + external Cron reconciliation** (`C-NO-LONG-CONN`/`NG-LONG-POLLING`/`NFR-RECONCILE-INTERVAL`).
 - **Multi-instance LB/HA (confirmed, `ARCH-LB-WORKER`)**: You can optionally deploy the same image on multiple serverless platforms, share the same Redis, and use free Cloudflare Worker as the only entrance and failover; the Worker code is located in the subdirectory [`cloudflare-worker/`](../cloudflare-worker/) (not a native Rust binary). For deployment, see `cloudflare-worker/README.md`. The trust model is **transparent transmission** (the backend still fails-closed verification, `SAF-LB-PASSTHRU`), the backends share the same set of secrets** (`C-LB-SHARED-SECRETS`), `/reconcile` **Redis lock** single instance (`SAF-RECONCILE-LOCK`), and the Worker provides **aggregated health view** (`MOD-HEALTH-AGG`). **Redis single point of failure is not within the scope of this solution** (`NFR-HA-MULTI-INSTANCE`, solved externally by the user). Both active-active and active-standby are available. See README.md §6.1 for details.
 
 ### 11.4 Early questions answered by code (no longer pending confirmation)
@@ -799,4 +799,4 @@ The original set of Q25-Q30 design questions in this section have also been inva
 - crates.io: `jmap-client` metadata.
 - `stalwartlabs/mail-server` main branch: `stalwartlabs/mail-server/crates/common/src/auth/credential.rs` (Password/AppPassword/ApiKey), `stalwartlabs/mail-server/crates/http/src/auth/authenticate.rs` (AccessScope Permission tailoring), `stalwartlabs/mail-server/crates/jmap/src/push/`, `stalwartlabs/mail-server/api/v1/openapi.yml` (`securitySchemes`: basicAuth/bearerAuth/liveToken 60s).
 - Project directory `/home/okabe/Repo/messageweave/` (see §10.0 and `../AGENTS.md §3.3` for toolchain requirements).
-- For deployment/platform related research basis (lambda_runtime/worker/aws-sdk, etc.), see deployment.md.
+- For deployment/platform related research basis (lambda_runtime/worker/aws-sdk, etc.), see `docs/reference.md` §9.
