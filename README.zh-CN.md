@@ -175,10 +175,10 @@ curl -s "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
 Push 投递可能延迟或丢失；外部调度器是兜底。在任意一台能访问你源站的机器上，每 5–10 分钟跑一次：
 
 ```sh
-MW_APP_DOMAIN=mw.example.com \
-MW_WORKER_TOKEN=<worker token> \
-MW_RECONCILE_TOKEN=<reconcile token> \
-scripts/cron-drain.sh --once
+scripts/cron-drain.sh --once \
+  --app-domain mw.example.com \
+  --worker-token <worker token> \
+  --reconcile-token <reconcile token>
 ```
 
 脚本会排空队列（`/worker`）并重扫漏掉的 push（`/reconcile`）；两者成功都回答 204 空 body。`MW_RECONCILE_TOKEN` 是可选的——省略时跳过 reconcile 步骤，只排空队列。如果你把负载均衡器放在前面，`/worker` 必须直达后端源站——原因见 §6.3。
