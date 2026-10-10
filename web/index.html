@@ -79,7 +79,7 @@
           </div>
           <div class="callout callout-warning">
             <strong data-i18n="callout.title">Business configuration is encrypted in Redis.</strong>
-            <span data-i18n="callout.bodyPre"> Secret fields (app passwords, tokens) are not echoed and must be re-entered on each full save; non-secret fields are read back from the server. The first save must include all required secrets. Optional LLM fields are sent as </span><code>null</code><span data-i18n="callout.bodyPost"> when left blank. The mailbox primary account is always used.</span>
+            <span data-i18n="callout.bodyPre"> Secrets are stored server-side and never echoed. Leave a secret blank to keep its saved value; secrets are required only on first setup.</span><span data-i18n="callout.bodyPost"> Other fields are read back automatically.</span>
           </div>
 
           <form id="business-form" novalidate>
