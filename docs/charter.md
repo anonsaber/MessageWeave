@@ -170,9 +170,8 @@ Answer only one question per document; **tables, lists and values must not be du
 | Documentation | What to answer | Scope of authority |
 |---|---|---|
 | [`../AGENTS.md`](../AGENTS.md) | Universal, language-independent code writing and environment building specifications | Quality rules |
-| `README.md` / `README.zh-CN.md` | User-oriented: what is it, how to run it, how to configure it | User-visible facts (information must be equivalent in Chinese and English) |
+| `README.md` / `README.zh-CN.md` | User-oriented: what is it, how to run it, how to configure it, and operational and multi-instance reference | User-visible facts (information must be equivalent in Chinese and English) |
 | `docs/design.md` | Why it is designed this way: data flow, module boundaries, state machines, error handling | Architectural intent |
-| `docs/deployment.md` | How to deploy: Dockerfile, secrets, load balancer, multiple instances, cron | Deployment and operation and maintenance |
 | `docs/reference.md` | The single authoritative source of verifiable facts: routing, Redis keys and TTLs, configuration items, error codes, outbound constants | **verifiable facts** |
 | `docs/opengaps.md` | Gaps, Blockages, Next Stage Goals | Open Items |
 | `docs/retired.md` | Records and alternative links to abandoned or renamed plans | Historical decisions |
@@ -203,29 +202,29 @@ Answer only one question per document; **tables, lists and values must not be du
 
 | ID | Definition file | One sentence | Category |
 |---|---|---|---|
-| `C-DOCKER` | docs/deployment.md §0 | Docker deployment required | Deployment constraints |
-| `C-DEBIAN-SLIM` | docs/deployment.md §0 | Debian slim, disable Alpine | Deployment constraints |
-| `C-NO-SECRET-IN-IMAGE` | docs/deployment.md §0 | secrets are not included in the image | Deployment constraints |
-| `C-RUSTLS` | docs/deployment.md §0 | rustls + native-roots | Deployment constraints |
-| `C-HTTPS-INBOUND` | docs/deployment.md §0 | HTTPS-only inbound, plaintext HTTP within the container | Deployment constraints |
-| `C-HTTPS-URL` | docs/deployment.md §0 | Public HTTPS URL is provided by the platform (bot does not hold a certificate) | Deployment constraints |
-| `C-AUTH-APP-BASIC` | docs/deployment.md §9 / docs/design.md §3.1 | Stalwart Authentication = App Password + Basic | Deployment Constraints |
-| `C-NO-TCP-EXPOSE` | docs/deployment.md §0 | Single listener `PORT`, no additional TCP ports exposed | Deployment constraints |
-| `C-NO-LONG-CONN` | docs/deployment.md §0 | No SSE/WS/long-polling equal-length connections | Deployment constraints |
-| `C-REDIS-ONLY-STATE` | docs/deployment.md §0 | State only external Redis, not SQLite/local volumes | Deployment constraints |
-| `C-REDIS-MANAGED-AOF` | docs/deployment.md §0 | Redis user hosting + enable AOF persistence | Deployment constraints |
-| `C-PORT` | docs/deployment.md §0 | Common PORT conventions | Deployment constraints |
-| `NG-SERVER-MODE` | docs/deployment.md §1 | `RUN_MODE=server` resident, non-target (this variable has been removed with `Config::from_env()`, this identifier is no longer in the code) | non-target |
-| `NG-POLLING-SSE` | docs/deployment.md §1 | EventSource/SSE long-lived, non-target | non-target |
-| `NG-LONG-POLLING` | docs/deployment.md §1 | Telegram long polling, non-target | non-target |
-| `NG-SQLITE-PERSIST` | docs/deployment.md §1 | SQLite persistence, non-target | non-target |
-| `NG-LOCAL-VOLUME` | docs/deployment.md §1 | Local volume persistence, non-target | non-target |
-| `NG-SERVERLESS-BIND` | docs/deployment.md §1 | Bind to specific serverless platform, non-target | non-target |
-| `MOD-DEDUP` | docs/deployment.md §6 | Redis `SET NX` idempotent key | Components |
-| `MOD-STREAMS` | docs/deployment.md §6 | Redis Streams queue + worker | Components |
-| `MOD-SINCESTATE` | docs/deployment.md §6 | sinceState cursor (stored in Redis) | Components |
-| `FLOW-NEW-MAIL` | docs/design.md §5.4 / docs/deployment.md §6 | Push new mail flow | Data flow |
-| `FLOW-RECONCILE` | docs/deployment.md §6 | External Cron reconciliation + Redis loss recovery | Data flow |
+| `C-DOCKER` | README.md §3.0 | Docker deployment required | Deployment constraints |
+| `C-DEBIAN-SLIM` | README.md §3.0 | Debian slim, disable Alpine | Deployment constraints |
+| `C-NO-SECRET-IN-IMAGE` | README.md §3.0 | secrets are not included in the image | Deployment constraints |
+| `C-RUSTLS` | README.md §3.0 | rustls + native-roots | Deployment constraints |
+| `C-HTTPS-INBOUND` | README.md §3.0 | HTTPS-only inbound, plaintext HTTP within the container | Deployment constraints |
+| `C-HTTPS-URL` | README.md §3.0 | Public HTTPS URL is provided by the platform (bot does not hold a certificate) | Deployment constraints |
+| `C-AUTH-APP-BASIC` | docs/design.md §3.1 | Stalwart Authentication = App Password + Basic | Deployment Constraints |
+| `C-NO-TCP-EXPOSE` | README.md §3.0 | Single listener `PORT`, no additional TCP ports exposed | Deployment constraints |
+| `C-NO-LONG-CONN` | README.md §1 | No SSE/WS/long-polling equal-length connections | Deployment constraints |
+| `C-REDIS-ONLY-STATE` | README.md §3.0 | State only external Redis, not SQLite/local volumes | Deployment constraints |
+| `C-REDIS-MANAGED-AOF` | README.md §3.0 | Redis user hosting + enable AOF persistence | Deployment constraints |
+| `C-PORT` | README.md §3.0 | Common PORT conventions | Deployment constraints |
+| `NG-SERVER-MODE` | README.md §1 | `RUN_MODE=server` resident, non-target (this variable has been removed with `Config::from_env()`, this identifier is no longer in the code) | non-target |
+| `NG-POLLING-SSE` | README.md §1 | EventSource/SSE long-lived, non-target | non-target |
+| `NG-LONG-POLLING` | README.md §1 | Telegram long polling, non-target | non-target |
+| `NG-SQLITE-PERSIST` | README.md §1 | SQLite persistence, non-target | non-target |
+| `NG-LOCAL-VOLUME` | README.md §1 | Local volume persistence, non-target | non-target |
+| `NG-SERVERLESS-BIND` | README.md §1 | Bind to specific serverless platform, non-target | non-target |
+| `MOD-DEDUP` | README.md §6.1 | Redis `SET NX` idempotent key | Components |
+| `MOD-STREAMS` | README.md §6.1 | Redis Streams queue + worker | Components |
+| `MOD-SINCESTATE` | README.md §6.1 | sinceState cursor (stored in Redis) | Components |
+| `FLOW-NEW-MAIL` | docs/design.md §5.4 | Push new mail flow | Data flow |
+| `FLOW-RECONCILE` | README.md §3.10 | External Cron reconciliation + Redis loss recovery | Data flow |
 | `REQ-AI-CONFIRM` | docs/design.md §12 | AI only touches text after explicit request + confirmation | Requirements |
 | `REQ-VIEW-DIRECT` | docs/design.md §12 | View original text always JMAP direct fetch | Requirements |
 | `REQ-LONG-EMAIL` | docs/design.md §12 | It is forbidden to send the full text of long emails, AI abstract ~300 words | Requirements |
@@ -239,8 +238,8 @@ Answer only one question per document; **tables, lists and values must not be du
 | `REQ-PUSH-TYPES` | src/domain/jmap/client.rs:110 Comments | `PushSubscription/set` create does not have the `types` parameter in jmap-client 0.4.2; the subscription id must be narrowed to `Email` + `EmailDelivery` by `push_subscription_update_types` before being exposed to the outside world | Requirements |
 | `REQ-RECONCILE-IDEMPOTENCY` | src/state.rs `claim_dedup` + `get_reconcile_state` / docs/design.md §8.2 | JMAP reconciliation cursor is only advanced after all paging events are successfully enqueued (XADD); a single reconciliation is guaranteed to fly solo (TTL) by Redis SET NX EX lock `lock:reconcile` 300s, owner token is renewed for 90s, only the holder can renew/release); the processing end then goes through `claim_dedup` (SET NX EX, 86400s) to ensure that the same flow message is not delivered repeatedly | Requirements |
 | `REQ-TIMEZONE-DISPLAY` | src/config.rs `SUPPORTED_TIMEZONES` / docs/reference.md §5.4 | Notification receipt time is configured by business `timezone` (IANA, default `Asia/Shanghai`) is rendered as `%Y-%m-%d %H:%M`; only 16 non-daylight saving time zones are accepted, no match is returned 422, no time zone library inference | Requirements |
-| `NFR-NOTIFY-SLA` | docs/deployment.md §6.5 | Notification availability ≥99.9%, minor latency allowed | Non-functional |
-| `NFR-RECONCILE-INTERVAL` | docs/deployment.md §6.3 | External cron reconciliation interval 5–10 minutes | Non-functional |
+| `NFR-NOTIFY-SLA` | README.md §6.3 | Notification availability ≥99.9%, minor latency allowed | Non-functional |
+| `NFR-RECONCILE-INTERVAL` | README.md §3.10 | External cron reconciliation interval 5–10 minutes | Non-functional |
 | `SAF-NOTIFY-META` | §3 | New email notifications only contain metadata, and the text is not included in the notification | Security |
 | `SAF-CHAT-ALLOWLIST` | §3/docs/design.md §7.3 | CHAT_ALLOWLIST hard constraint, reject non-whitelist before processing | Security |
 | `SAF-AUTH-RECONCILE` | §3/docs/design.md §7.3 | `/reconcile` requires `Authorization: Bearer RECONCILE_TOKEN`, fail-closed | Security |
@@ -265,27 +264,27 @@ Answer only one question per document; **tables, lists and values must not be du
 | `SAF-JMAP-URL` | docs/design.md §7.1 / §4 | JMAP URL constraints: HTTPS only, disallow inline credentials, deny dangerous query | Security |
 | `REQ-JMAP-RAW-MULTIPART` | docs/design.md §3.2/§10.1 | `read_email` Multi-part Original text: Splice the parts "with part_id and bodyValue" in text_body order; no available part → clear error | Requirements |
 | `GATE-G1-JMAP-READONLY` | docs/design.md §10.1 / §6 | G1 access control: read-only adapter **Code has been implemented** (mock + `#[ignore]` real machine test), **to be real `cargo test -- --ignored jmap::` verification** | Process |
-| `ARCH-LB-WORKER` | docs/deployment.md §10 | Multi-instance LB/HA: a free-plan Cloudflare Worker as the only *registered* entrance, plus failover. The backends stay directly reachable and it adds no access control | Architecture |
-| `C-LB-SINGLE-REG-URL` | docs/deployment.md §10.1 | Telegram/Push/Cron only registers the stable URL of the Worker; the backend platform entrance does not register externally | Constraints |
-| `C-LB-SHARED-SECRETS` | docs/deployment.md §10.3 | Multiple instances must share the same set of `SAF-AUTH-*` secrets, otherwise a random 401 | Constraints |
-| `SAF-LB-PASSTHRU` | docs/deployment.md §10.3 / §3 | Trust model = transparent transmission: Worker does not overwrite authentication; the backend must continue fail-closed verification (the backend may be directly connected to the public network) | Security |
-| `SAF-RECONCILE-LOCK` | docs/deployment.md §10.5 | `/reconcile` does not fan out, Redis lock guarantees single instance execution and avoids repeated reconciliation | Security |
-| `MOD-STREAMS-GROUP` | docs/deployment.md §10.5 | Multiple instances use the same Streams consumer group name, and Redis will automatically allocate it (at-least-once will not repeat processing) | Components |
-| `MOD-HEALTH-AGG` | docs/deployment.md §10.6 | Worker aggregate health view, reporting the survival of each backend for external monitoring | Components |
-| `MOD-DEBUG` | src/debug.rs / docs/deployment.md §2.1 / docs/design.md §7.6 / docs/reference.md §3 | Remote joint debugging read-only surface: `DEBUG_ENABLED` (or `--debug`) + `DEBUG_TOKEN` mounted after double factor is enabled `/debug/*`, otherwise it will not be mounted | component |
-| `SAF-DEBUG-GATE` | src/main.rs / src/debug.rs / docs/design.md §7.6 / docs/deployment.md §2.1 | Two-factor gate: "`DEBUG_ENABLED` is true or command line with `--debug`" **and** `DEBUG_TOKEN` Routes are mounted only if they are not empty; if any are missing, they are not mounted at all (the request fails with `404`), and it is absolutely closed by default. The start signal goes through env instead of argv, so that the startup command remains static, and the switch can be switched at a single point on the platform console | Security |
-| `SAF-DEBUG-AUTH` | src/debug.rs / docs/deployment.md §2.1 | After mounting `/debug/*` requires `Authorization: Bearer DEBUG_TOKEN` constant time comparison, fails with `401` and has no side effects | Security |
-| `REQ-DEBUG-ENDPOINTS` | src/debug.rs / docs/reference.md §3 / docs/deployment.md §2.1 | Endpoint contracts: `GET /debug/ping`, `/config`, `/redis`, `/jmap`, `/telegram`, `/worker` are all read-only; `POST /debug/notify` Send a test message through the real outbound link; the response body does not contain the original text of secret (the credential field only returns `*_configured` Boolean, and the non-ciphertext identity and budget fields are still returned in plain text) | Requirements |
-| `SAF-DEBUG-ORIGIN-ONLY` | docs/deployment.md §2.1 / docs/reference.md §4 | `/debug/*` is not among the 19 safe routes of the load balancer, and the Worker will always receive `404 route not forwarded`; it can only be directly connected to the backend origin, and the public network is unreachable | Security |
-| `SAF-DEBUG-ALLOWLIST` | src/debug.rs / docs/deployment.md §2.1 | `POST /debug/notify` only verifies `chat_id` when the chat whitelist** is not empty**; it will not intercept when the whitelist is not configured (empty), so to enable this page, you must confirm that the business whitelist has been configured | Security |
-| `NFR-HA-MULTI-INSTANCE` | docs/deployment.md §10.7 / §9.1 | Multi-instance high availability semantics; both active-active or active-standby; Redis single point of failure is not within the scope of the solution (user external solution) | Non-functional |
-| `C-NO-DB` | docs/deployment.md §0 / §9.1 / §3 | Production does not use any database (no SQLite/Postgres/MySQL/embedded), Redis is the only state store; the application does not connect to a second database | Constraints |
-| `C-NO-LOCAL-WRITE` | docs/deployment.md §0 / §9.1 / §3 | Disable local file/directory writes (log/data/tempcache/local volumes) | Constraints |
-| `C-LOG-STDOUT-ONLY` | docs/deployment.md §0 / §9.1 / §3 | The log only writes stdout/stderr, collected by the platform; disables the file log backend | Constraints |
-| `SAF-LOG-PURITY` | docs/deployment.md §0 / §9.1 / §3 | Log and Redis write content is limited to structured events/counts/timestamps/masked summaries; keys/email bodies/AI request responses/attachment content are prohibited | Security |
+| `ARCH-LB-WORKER` | README.md §2 | Multi-instance LB/HA: a free-plan Cloudflare Worker as the only *registered* entrance, plus failover. The backends stay directly reachable and it adds no access control | Architecture |
+| `C-LB-SINGLE-REG-URL` | README.md §2 | Telegram/Push/Cron only registers the stable URL of the Worker; the backend platform entrance does not register externally | Constraints |
+| `C-LB-SHARED-SECRETS` | README.md §2 | Multiple instances must share the same set of `SAF-AUTH-*` secrets, otherwise a random 401 | Constraints |
+| `SAF-LB-PASSTHRU` | §3 | Trust model = transparent transmission: Worker does not overwrite authentication; the backend must continue fail-closed verification (the backend may be directly connected to the public network) | Security |
+| `SAF-RECONCILE-LOCK` | README.md §6.1 | `/reconcile` does not fan out, Redis lock guarantees single instance execution and avoids repeated reconciliation | Security |
+| `MOD-STREAMS-GROUP` | README.md §6.1 | Multiple instances use the same Streams consumer group name, and Redis will automatically allocate it (at-least-once will not repeat processing) | Components |
+| `MOD-HEALTH-AGG` | README.md §2 | Worker aggregate health view, reporting the survival of each backend for external monitoring | Components |
+| `MOD-DEBUG` | src/debug.rs / docs/design.md §7.6 / docs/reference.md §3 | Remote joint debugging read-only surface: `DEBUG_ENABLED` (or `--debug`) + `DEBUG_TOKEN` mounted after double factor is enabled `/debug/*`, otherwise it will not be mounted | component |
+| `SAF-DEBUG-GATE` | src/main.rs / src/debug.rs / docs/design.md §7.6 | Two-factor gate: "`DEBUG_ENABLED` is true or command line with `--debug`" **and** `DEBUG_TOKEN` Routes are mounted only if they are not empty; if any are missing, they are not mounted at all (the request fails with `404`), and it is absolutely closed by default. The start signal goes through env instead of argv, so that the startup command remains static, and the switch can be switched at a single point on the platform console | Security |
+| `SAF-DEBUG-AUTH` | src/debug.rs | After mounting `/debug/*` requires `Authorization: Bearer DEBUG_TOKEN` constant time comparison, fails with `401` and has no side effects | Security |
+| `REQ-DEBUG-ENDPOINTS` | src/debug.rs / docs/reference.md §3 | Endpoint contracts: `GET /debug/ping`, `/config`, `/redis`, `/jmap`, `/telegram`, `/worker` are all read-only; `POST /debug/notify` Send a test message through the real outbound link; the response body does not contain the original text of secret (the credential field only returns `*_configured` Boolean, and the non-ciphertext identity and budget fields are still returned in plain text) | Requirements |
+| `SAF-DEBUG-ORIGIN-ONLY` | docs/reference.md §4 | `/debug/*` is not among the 19 safe routes of the load balancer, and the Worker will always receive `404 route not forwarded`; it can only be directly connected to the backend origin, and the public network is unreachable | Security |
+| `SAF-DEBUG-ALLOWLIST` | src/debug.rs | `POST /debug/notify` only verifies `chat_id` when the chat whitelist** is not empty**; it will not intercept when the whitelist is not configured (empty), so to enable this page, you must confirm that the business whitelist has been configured | Security |
+| `NFR-HA-MULTI-INSTANCE` | README.md §6.1 | Multi-instance high availability semantics; both active-active or active-standby; Redis single point of failure is not within the scope of the solution (user external solution) | Non-functional |
+| `C-NO-DB` | §3 | Production does not use any database (no SQLite/Postgres/MySQL/embedded), Redis is the only state store; the application does not connect to a second database | Constraints |
+| `C-NO-LOCAL-WRITE` | §3 | Disable local file/directory writes (log/data/tempcache/local volumes) | Constraints |
+| `C-LOG-STDOUT-ONLY` | §3 | The log only writes stdout/stderr, collected by the platform; disables the file log backend | Constraints |
+| `SAF-LOG-PURITY` | §3 | Log and Redis write content is limited to structured events/counts/timestamps/masked summaries; keys/email bodies/AI request responses/attachment content are prohibited | Security |
 | `SAF-ENABLE-FLAG` | src/notify.rs `put_enabled` / src/state.rs `config:enabled` | The global switch is Redis single key `config:enabled`; if it is not written, it is regarded as closed, and `business_enabled` will be treated as closed if an error occurs (fail-closed); writing requires admin-session Bearer | Security |
-| `C-NO-STATEFUL-RECOVERY` | docs/deployment.md §0 / §9.1 / §3 | It is prohibited to rely on in-process status for production recovery; all recovery will use Redis + JMAP reconciliation; in-process caching is only for performance optimization, and loss must be safe and reentrant | Constraints |
+| `C-NO-STATEFUL-RECOVERY` | §3 | It is prohibited to rely on in-process status for production recovery; all recovery will use Redis + JMAP reconciliation; in-process caching is only for performance optimization, and loss must be safe and reentrant | Constraints |
 | `ARCH-STATE-REDIS` | docs/design.md §10.0 / Redis is the only state source | The state layer uses Redis (Streams/SET NX/Lock/Abstract), and the process does not hold recoverable state | Architecture |
-| `C-REDIS-EXTERNAL` | docs/deployment.md §8.1 | Redis is provided by an external certified instance and is not in the same container as this service | Deployment constraints |
-| `GATE-UPTIME-KUMA` | docs/deployment.md §10.1 | `/healthz` stable semantics can be directly connected to external probes such as Uptime Kuma | Access Control |
-| `GATE-DOCS` | scripts/docs_check/run_all.sh / docs/deployment.md | Document access control: All validators must have 0 error and exit 0 to be considered passed | Access control |
+| `C-REDIS-EXTERNAL` | README.md §3.0 | Redis is provided by an external certified instance and is not in the same container as this service | Deployment constraints |
+| `GATE-UPTIME-KUMA` | docs/reference.md §9.4 | `/healthz` stable semantics can be directly connected to external probes such as Uptime Kuma | Access Control |
+| `GATE-DOCS` | scripts/docs_check/run_all.sh | Document access control: All validators must have 0 error and exit 0 to be considered passed | Access control |

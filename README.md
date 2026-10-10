@@ -25,7 +25,10 @@ State is an architectural boundary here, not a preference.
 - **No long-lived connections.** No SSE, no WebSocket, no long polling.
 - **Logs go to stdout only.** The platform's collector owns log storage and retention.
 - **What it is not.** It is not a mail client, not a proxy, and not a relay. It forwards
-  metadata to one bot; it does not read arbitrary URLs, open tunnels, or broker traffic.
+  metadata to one bot; it does not read arbitrary URLs, open tunnels, or broker traffic. It has
+  no resident `server` mode flag, holds no EventSource/SSE or Telegram long-polling connection,
+  persists nothing to SQLite or a local volume, and is not bound to a specific serverless platform
+  — every notification path is a short request-response.
 
 ## 2. Two ways to run it
 
@@ -51,7 +54,7 @@ is what makes it a load balancer for a bounded set of paths, not a firewall.
 | Load balancer route set | n/a — there is no load balancer | fixed at 19 paths; unknown paths answer `404` |
 | Health to watch | `GET /ready` on the origin | `GET /ready` proxied, plus `GET /healthz-worker` for the load balancer aggregate |
 | Extra moving parts | none | one Worker deploy, one origin list |
-| Docs | `docs/deployment.md §2` | `docs/deployment.md §10`, `cloudflare-worker/README.md` |
+| Docs | §3 below | §2 above, §6, `cloudflare-worker/README.md` |
 
 Pick Form A for a single origin with no HA requirement. Pick Form B for two or more origins, or
 whenever you want one stable callback URL while you roll or rebuild an instance.
@@ -76,8 +79,8 @@ their own addresses in both forms.
 
 This section is a hand-holding walkthrough: create a Telegram bot, deploy one backend, fill
 the configuration page, register the callbacks, get the first notification. Field semantics,
-defaults, TTLs and error codes live in `docs/reference.md`; production, scaling and load
-balancer operations live in `docs/deployment.md`.
+defaults, TTLs and error codes live in `docs/reference.md`; production, scaling and
+load-balancer operation live in §6 below.
 
 ### 3.0 What you need
 
@@ -91,6 +94,12 @@ balancer operations live in `docs/deployment.md`.
 - Optional: an OpenAI-compatible LLM key, a Cloudflare account if you want the load balancer.
 
 Nothing else is required: no Postgres, no message broker, no Kubernetes.
+
+The platform or proxy terminates TLS; the process listens on one HTTP port (`PORT`, default
+`8080`) and exposes no other TCP port, and the public HTTPS URL is provided by the platform, not
+the bot. The Docker image uses a Rust builder and a Debian slim runtime, links `rustls` with
+native roots for outbound TLS, and carries no secret in its layers or build arguments. Back up
+Redis with AOF persistence — it is the only state store.
 
 ### 3.1 Create the Telegram bot
 
@@ -197,8 +206,7 @@ Secrets are write-only: the page never shows a stored secret again, and submitti
 field keeps the previously stored value — clear a secret deliberately in a separate edit.
 
 If you run multiple backends behind a load balancer, configure on **any one node** — all backends
-share one Redis and read the same configuration. See [the multi-instance section of the deployment
-guide](docs/deployment.md#102-multi-instance-prerequisites) for the full model.
+share one Redis and read the same configuration. See [§6.1](#61-multi-instance-prerequisites) for the full model.
 
 ### 3.7 Register the callbacks
 
@@ -257,7 +265,7 @@ scripts/cron-drain.sh
 The script drains the queue (`/worker`) and rescans for missed pushes (`/reconcile`); both return
 204 with an empty body on success. `MW_RECONCILE_TOKEN` is optional — if omitted, the reconcile
 step is skipped and only the queue is drained. If you put the load balancer in front, `/worker`
-must reach the backend origin directly — see `docs/deployment.md` §10 for why.
+must reach the backend origin directly — see §6.3 for why.
 
 ### 3.11 When something is wrong
 
@@ -309,8 +317,8 @@ do not exist at all (requests fall through to a generic 404). Nothing under `/de
 the load balancer allowlist, so it is reachable only on the backend origin itself. The only rule for
 running it is to keep it off: leave `--debug` out of the start command and leave `DEBUG_TOKEN`
 unset. If you do turn it on for a one-off diagnosis, configure the chat allowlist first — with
-an empty allowlist the test send is not restricted to any chat. See
-`docs/deployment.md` §2.1.
+an empty allowlist the test send is not restricted to any chat. See `docs/reference.md` §3 for
+the endpoint contracts.
 
 ## 5. Security boundary, in one sentence
 
@@ -328,12 +336,100 @@ It holds no credential and checks no auth header, and the backends behind it are
 reachable either way, so nothing about it changes what stands between an attacker and your
 mail. See §2.
 
-## 6. Where to read more
+## 6. Operations and multi-instance
+
+Production, scaling and load-balancer operation reference. The walkthrough in §3 covers a single
+instance; this section covers what differs when more than one backend runs behind one or more
+HTTPS origins.
+
+### 6.1 Multi-instance prerequisites
+
+Multiple backends can share traffic because request state is stored in Redis, duplicate
+deliveries are deduplicated, and reconciliation repairs missed push events. No sticky session or
+application code change is required.
+
+All Redis keys are named globally and carry no instance, hostname, or origin suffix. Sharing one
+Redis is not a compromise here: several origins hold a single copy of each item below.
+
+| Data | Key | Semantics |
+|---|---|---|
+| Business configuration | `config:business` | one global ciphertext blob (AES-256-GCM), with no per-instance slot |
+| Configuration revision | `config:business:revision` | one global monotonic counter, bumped in the same Lua transaction as the write (`CONFIG_STORE_REV_SCRIPT`) |
+| Enable gate | `config:enabled` | one global boolean |
+| Reconcile cursor | `state:jmap:since` | one global cursor, with no account dimension |
+| Delivery streams | `stalwart:jmap:events` / `stalwart:telegram:events` | shared through a consumer group; the group is created lazily and `XAUTOCLAIM` reclaims idle messages |
+| Reconcile lock | `lock:reconcile` | one global single-flight lock, mutual exclusion across instances |
+
+Two consequences matter in practice.
+
+First, **the business configuration exists once, and an SPA edit from any origin writes the same
+copy.** There is no way to change only one instance: no key carries an instance dimension and
+`refresh_business_config` takes no instance argument. This is intended behavior. If two genuinely
+independent configurations are needed, for example production alongside a pre-production twin,
+deploy a second instance pointed at a second Redis rather than distinguishing inside one Redis.
+
+Second, **`CONFIG_ENCRYPTION_KEY` must be byte-identical on every origin.** It is 64 hex
+characters (32 bytes) and is used directly as the AES-256-GCM key, with the AAD fixed at
+`message-weave/config:business/v1`. It also doubles as the SPA admin credential. An origin holding
+a different value can neither decrypt configuration written by another origin nor log in to the
+SPA, and both paths fail closed.
+
+Extra origins buy failover rather than throughput. Delivery is spread across the shared consumer
+group, but `/reconcile` is serialized globally by `lock:reconcile` and the cursor is singular. If
+one instance dies mid-batch, the next instance picks the messages up once they pass the
+`XAUTOCLAIM` idle window; the cost is possible duplicate delivery, guarded by the `dedup:*` keys,
+never message loss.
+
+### 6.2 Configuration convergence across origins
+
+One SPA edit writes once to Redis. The origins converge **lazily, at the request boundary**: each
+entry point that calls `refresh_business_config` re-reads the global revision from Redis and
+returns immediately when `remote_revision <= local_revision`. There is no polling loop and no
+watch, so an origin that receives no traffic keeps the configuration it already had.
+
+The entry points are `/ready`, `/worker`, `/reconcile`, `/push/jmap`, `/webhook/tg`,
+`/api/config`, `/api/business-config` and `/api/telegram/register-webhook`. `GET /healthz` is
+**not** among them — it is a static `200 "ok"` and never refreshes — and neither does
+`GET /api/status`, `/api/enabled`, `/api/push/register`, `/api/push/disable` or the
+`/api/admin/session` pair.
+
+**Known behavior: a failed rebuild is not retried until the next revision.** The revision check
+above is an early exit, not a retry guard. When `build_worker` fails for one origin — a JMAP
+session URL that is unreachable, or an `llm_api_key` / `llm_base_url` that is missing or invalid —
+that origin advances its in-memory revision to the remote value and keeps the runtime it already
+had. The early-exit condition then holds forever for that origin, so it does not try again until a
+**new** revision is written. Every other failure inside the same function (Redis unreachable, blob
+missing, JSON parse failure, validation failure) leaves the local revision untouched and therefore
+does retry on the next request; those paths fail before a runtime is built, so no worker is
+rebuilt.
+
+The symptom is one origin running the new configuration and another still on the old one, with no
+error and no log line: the failed path returns silently. To detect it, compare the field values
+reported by `GET /debug/config` on each origin — those come from the live in-memory runtime. Do not
+use its `revision` field for this: that value is read from Redis and shows the latest global
+revision even when the instance has not converged.
+
+To recover, touch the configuration again from the SPA so that the revision moves; the stuck origin
+will attempt the rebuild once. If the origin is still in the Worker's origin list, remove it in the
+meanwhile so requests are not split between two configurations.
+
+### 6.3 Reliability and delivery objective
+
+The Worker retries only timeouts and backend `5xx` responses; it returns `4xx` responses directly.
+`/reconcile` and `/worker` have longer per-route timeouts and do not fail over to a second backend,
+avoiding duplicate work. Backend queue processing is at least once and relies on Redis-backed
+idempotency. See the route and state reference for the complete behavior.
+
+The service permits short notification delays and targets at least 99.9% notification availability.
+Redis availability and the external scheduling interval are outside the application's control;
+exact delivery guarantees are described in `NFR-NOTIFY-SLA` and `NFR-RECONCILE-INTERVAL` in the
+project charter.
+
+## 7. Where to read more
 
 | Document | What it answers |
 |---|---|
 | [`docs/design.md`](docs/design.md) | Why the system is shaped this way: data flow, JMAP semantics, Redis streams, AI consent rules |
-| [`docs/deployment.md`](docs/deployment.md) | How to deploy: Dockerfile, secrets, Redis hosting, webhook/push/reconcile routing, multi-instance load balancing |
 | [`docs/reference.md`](docs/reference.md) | **Single source of truth for verifiable facts** — Redis keys and TTLs, error codes, routes, environment layers, budgets |
 | [`docs/opengaps.md`](docs/opengaps.md) | Gaps, blockers and the next phase |
 | [`docs/retired.md`](docs/retired.md) | What was tried and dropped — abandoned routes, unreleased designs, and names that never existed |

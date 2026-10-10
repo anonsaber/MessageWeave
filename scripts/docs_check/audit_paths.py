@@ -110,11 +110,11 @@ EXEMPT_EXTERNAL = ("stalwartlabs/",)
 # have it". Each entry carries its justification so the list cannot grow
 # silently.
 CONVENTIONAL = {
-    "docker-compose.yml": "docker compose's default filename; deployment.md "
+    "docker-compose.yml": "docker compose's default filename; README.md "
                           "states the repo ships no compose file and gives the "
                           "image-based command instead",
     "hoststack.yml": "second filename HostStack's yaml-parser accepts alongside "
-                     "hoststack.yaml; deployment.md names both while the repo "
+                     "hoststack.yaml; README.md names both while the repo "
                      "ships only the .yaml variant",
 }
 

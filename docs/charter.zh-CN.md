@@ -170,9 +170,8 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 | 文档 | 回答什么 | 权威范围 |
 |---|---|---|
 | [`../AGENTS.md`](../AGENTS.md) | 通用、语言无关的代码编写与环境构建规范 | 质量规则 |
-| `README.md` / `README.zh-CN.md` | 面向使用者：是什么、怎么跑、怎么配置 | 用户可见事实（中英必须信息对等） |
+| `README.md` / `README.zh-CN.md` | 面向使用者：是什么、怎么跑、怎么配置、以及运维与多实例参考 | 用户可见事实（中英必须信息对等） |
 | `docs/design.md` | 为什么这样设计：数据流、模块边界、状态机、错误处理 | 架构意图 |
-| `docs/deployment.md` | 怎么部署：Dockerfile、secrets、负载均衡器、多实例、cron | 部署与运维 |
 | `docs/reference.md` | 可核对事实的唯一权威来源：路由、Redis 键与 TTL、配置项、错误码、出站常量 | **可核对事实** |
 | `docs/opengaps.md` | 缺口、阻塞、下一阶段目标 | 未决项 |
 | `docs/retired.md` | 已废弃或已改名方案的记录与替代指向 | 历史决策 |
@@ -203,29 +202,29 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 
 | ID | 定义文件 | 一句话 | 类别 |
 |---|---|---|---|
-| `C-DOCKER` | docs/deployment.md §0 | 必须 Docker 部署 | 部署约束 |
-| `C-DEBIAN-SLIM` | docs/deployment.md §0 | Debian slim，禁 Alpine | 部署约束 |
-| `C-NO-SECRET-IN-IMAGE` | docs/deployment.md §0 | secrets 不进镜像 | 部署约束 |
-| `C-RUSTLS` | docs/deployment.md §0 | rustls + native-roots | 部署约束 |
-| `C-HTTPS-INBOUND` | docs/deployment.md §0 | HTTPS-only 入站，容器内明文 HTTP | 部署约束 |
-| `C-HTTPS-URL` | docs/deployment.md §0 | 公网 HTTPS URL 由平台提供（bot 不持证书） | 部署约束 |
-| `C-AUTH-APP-BASIC` | docs/deployment.md §9 / docs/design.md §3.1 | Stalwart 认证 = App Password + Basic | 部署约束 |
-| `C-NO-TCP-EXPOSE` | docs/deployment.md §0 | 单监听 `PORT`，不暴露附加 TCP 端口 | 部署约束 |
-| `C-NO-LONG-CONN` | docs/deployment.md §0 | 无 SSE/WS/长轮询等长连接 | 部署约束 |
-| `C-REDIS-ONLY-STATE` | docs/deployment.md §0 | 状态仅外部 Redis，不用 SQLite/本地卷 | 部署约束 |
-| `C-REDIS-MANAGED-AOF` | docs/deployment.md §0 | Redis 用户托管 + 开启 AOF 持久化 | 部署约束 |
-| `C-PORT` | docs/deployment.md §0 | 通用 PORT 约定 | 部署约束 |
-| `NG-SERVER-MODE` | docs/deployment.md §1 | `RUN_MODE=server` 常驻，非目标（该变量已随 `Config::from_env()` 删除，代码中已无此标识符） | 非目标 |
-| `NG-POLLING-SSE` | docs/deployment.md §1 | EventSource/SSE 长连接，非目标 | 非目标 |
-| `NG-LONG-POLLING` | docs/deployment.md §1 | Telegram 长轮询，非目标 | 非目标 |
-| `NG-SQLITE-PERSIST` | docs/deployment.md §1 | SQLite 持久化，非目标 | 非目标 |
-| `NG-LOCAL-VOLUME` | docs/deployment.md §1 | 本地卷持久化，非目标 | 非目标 |
-| `NG-SERVERLESS-BIND` | docs/deployment.md §1 | 绑定具体 serverless 平台，非目标 | 非目标 |
-| `MOD-DEDUP` | docs/deployment.md §6 | Redis `SET NX` 幂等键 | 组件 |
-| `MOD-STREAMS` | docs/deployment.md §6 | Redis Streams 队列 + worker | 组件 |
-| `MOD-SINCESTATE` | docs/deployment.md §6 | sinceState 游标（存 Redis） | 组件 |
-| `FLOW-NEW-MAIL` | docs/design.md §5.4 / docs/deployment.md §6 | Push 新邮件流 | 数据流 |
-| `FLOW-RECONCILE` | docs/deployment.md §6 | 外部 Cron 对账补差 + Redis 丢失恢复 | 数据流 |
+| `C-DOCKER` | README.md §3.0 | 必须 Docker 部署 | 部署约束 |
+| `C-DEBIAN-SLIM` | README.md §3.0 | Debian slim，禁 Alpine | 部署约束 |
+| `C-NO-SECRET-IN-IMAGE` | README.md §3.0 | secrets 不进镜像 | 部署约束 |
+| `C-RUSTLS` | README.md §3.0 | rustls + native-roots | 部署约束 |
+| `C-HTTPS-INBOUND` | README.md §3.0 | HTTPS-only 入站，容器内明文 HTTP | 部署约束 |
+| `C-HTTPS-URL` | README.md §3.0 | 公网 HTTPS URL 由平台提供（bot 不持证书） | 部署约束 |
+| `C-AUTH-APP-BASIC` | docs/design.md §3.1 | Stalwart 认证 = App Password + Basic | 部署约束 |
+| `C-NO-TCP-EXPOSE` | README.md §3.0 | 单监听 `PORT`，不暴露附加 TCP 端口 | 部署约束 |
+| `C-NO-LONG-CONN` | README.md §1 | 无 SSE/WS/长轮询等长连接 | 部署约束 |
+| `C-REDIS-ONLY-STATE` | README.md §3.0 | 状态仅外部 Redis，不用 SQLite/本地卷 | 部署约束 |
+| `C-REDIS-MANAGED-AOF` | README.md §3.0 | Redis 用户托管 + 开启 AOF 持久化 | 部署约束 |
+| `C-PORT` | README.md §3.0 | 通用 PORT 约定 | 部署约束 |
+| `NG-SERVER-MODE` | README.md §1 | `RUN_MODE=server` 常驻，非目标（该变量已随 `Config::from_env()` 删除，代码中已无此标识符） | 非目标 |
+| `NG-POLLING-SSE` | README.md §1 | EventSource/SSE 长连接，非目标 | 非目标 |
+| `NG-LONG-POLLING` | README.md §1 | Telegram 长轮询，非目标 | 非目标 |
+| `NG-SQLITE-PERSIST` | README.md §1 | SQLite 持久化，非目标 | 非目标 |
+| `NG-LOCAL-VOLUME` | README.md §1 | 本地卷持久化，非目标 | 非目标 |
+| `NG-SERVERLESS-BIND` | README.md §1 | 绑定具体 serverless 平台，非目标 | 非目标 |
+| `MOD-DEDUP` | README.md §6.1 | Redis `SET NX` 幂等键 | 组件 |
+| `MOD-STREAMS` | README.md §6.1 | Redis Streams 队列 + worker | 组件 |
+| `MOD-SINCESTATE` | README.md §6.1 | sinceState 游标（存 Redis） | 组件 |
+| `FLOW-NEW-MAIL` | docs/design.md §5.4 | Push 新邮件流 | 数据流 |
+| `FLOW-RECONCILE` | README.md §3.10 | 外部 Cron 对账补差 + Redis 丢失恢复 | 数据流 |
 | `REQ-AI-CONFIRM` | docs/design.md §12 | AI 仅在明确要求+确认后接触正文 | 需求 |
 | `REQ-VIEW-DIRECT` | docs/design.md §12 | 查看原文始终 JMAP 直取 | 需求 |
 | `REQ-LONG-EMAIL` | docs/design.md §12 | 长邮件禁止发全文，AI 摘要 ~300 字 | 需求 |
@@ -239,8 +238,8 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 | `REQ-PUSH-TYPES` | src/domain/jmap/client.rs:110 注释 | `PushSubscription/set` create 在 jmap-client 0.4.2 中没有 `types` 参数；订阅 id 对外暴露前须经 `push_subscription_update_types` 收窄为 `Email` + `EmailDelivery` | 需求 |
 | `REQ-RECONCILE-IDEMPOTENCY` | src/state.rs `claim_dedup` + `get_reconcile_state` / docs/design.md §8.2 | JMAP 对账游标只有在全部分页事件成功入队（XADD）后才推进；单次对账由 Redis SET NX EX 锁 `lock:reconcile` 保证单飞（TTL 300s，owner token 续期 90s，仅持有者可续期/释放）；处理端再经 `claim_dedup`（SET NX EX，86400s）保证同一流消息不重复投递 | 需求 |
 | `REQ-TIMEZONE-DISPLAY` | src/config.rs `SUPPORTED_TIMEZONES` / docs/reference.md §5.4 | 通知的收件时间按业务配置 `timezone`（IANA，默认 `Asia/Shanghai`）渲染为 `%Y-%m-%d %H:%M`；仅接受 16 个无夏令时区域，未匹配返回 422，不做时区库推断 | 需求 |
-| `NFR-NOTIFY-SLA` | docs/deployment.md §6.5 | 通知可用性 ≥99.9%，允许少量延迟 | 非功能 |
-| `NFR-RECONCILE-INTERVAL` | docs/deployment.md §6.3 | 外部 Cron 对账间隔 5–10 分钟 | 非功能 |
+| `NFR-NOTIFY-SLA` | README.md §6.3 | 通知可用性 ≥99.9%，允许少量延迟 | 非功能 |
+| `NFR-RECONCILE-INTERVAL` | README.md §3.10 | 外部 Cron 对账间隔 5–10 分钟 | 非功能 |
 | `SAF-NOTIFY-META` | §3 | 新邮件通知只含元数据，正文不入通知 | 安全 |
 | `SAF-CHAT-ALLOWLIST` | §3 / docs/design.md §7.3 | CHAT_ALLOWLIST 硬约束，处理前先拒绝非白名单 | 安全 |
 | `SAF-AUTH-RECONCILE` | §3 / docs/design.md §7.3 | `/reconcile` 需 `Authorization: Bearer RECONCILE_TOKEN`，fail-closed | 安全 |
@@ -265,27 +264,27 @@ Stalwart 与 Telegram 的业务凭据已在真机联调通过——出站、查�
 | `SAF-JMAP-URL` | docs/design.md §7.1 / §4 | JMAP URL 约束：仅 HTTPS、禁止内嵌凭据、拒绝危险 query | 安全 |
 | `REQ-JMAP-RAW-MULTIPART` | docs/design.md §3.2/§10.1 | `read_email` 多 part 原文：按 text_body 顺序拼接"有 part_id 且 bodyValue"的部分；无可用部分→明确错误 | 需求 |
 | `GATE-G1-JMAP-READONLY` | docs/design.md §10.1 / §6 | G1 门禁：只读 adapter **代码已实现**（mock + `#[ignore]` 真机测试），**待真实 `cargo test -- --ignored jmap::` 验证** | 流程 |
-| `ARCH-LB-WORKER` | docs/deployment.md §10 | 多实例 LB/HA：免费套餐 Cloudflare Worker 作唯一*注册*入口 + 故障转移；后端仍可直接访问，负载均衡器不加访问控制 | 架构 |
-| `C-LB-SINGLE-REG-URL` | docs/deployment.md §10.1 | Telegram/Push/Cron 只登记 Worker 的稳定 URL；后端平台入口不对外登记 | 约束 |
-| `C-LB-SHARED-SECRETS` | docs/deployment.md §10.3 | 多实例必须共享同一组 `SAF-AUTH-*` secret，否则随机 401 | 约束 |
-| `SAF-LB-PASSTHRU` | docs/deployment.md §10.3 / §3 | 信任模型=透传：Worker 不改写鉴权；后端必须继续 fail-closed 校验（后端可能被公网直连） | 安全 |
-| `SAF-RECONCILE-LOCK` | docs/deployment.md §10.5 | `/reconcile` 不扇出，Redis 锁保证单实例执行，避免重复对账 | 安全 |
-| `MOD-STREAMS-GROUP` | docs/deployment.md §10.5 | 多实例用同一 Streams 消费组名，Redis 自动分摊（at-least-once 不重复处理） | 组件 |
-| `MOD-HEALTH-AGG` | docs/deployment.md §10.6 | Worker 聚合健康视图，报告各后端存活供外部监控 | 组件 |
-| `MOD-DEBUG` | src/debug.rs / docs/deployment.md §2.1 / docs/design.md §7.6 / docs/reference.md §3 | 远程联调只读表面：`DEBUG_ENABLED`（或 `--debug`）+ `DEBUG_TOKEN` 双因子开启后挂载 `/debug/*`，否则不挂载 | 组件 |
-| `SAF-DEBUG-GATE` | src/main.rs / src/debug.rs / docs/design.md §7.6 / docs/deployment.md §2.1 | 双因子门禁：「`DEBUG_ENABLED` 为真值或命令行带 `--debug`」**且** `DEBUG_TOKEN` 非空才挂载路由；缺任一完全不挂载（请求落通用 `404`），默认绝对关闭。开启信号走 env 而非 argv，使启动命令保持静态、开关可在平台控制台单点切换 | 安全 |
-| `SAF-DEBUG-AUTH` | src/debug.rs / docs/deployment.md §2.1 | 挂载后 `/debug/*` 须 `Authorization: Bearer DEBUG_TOKEN` 常数时间比较，失败 `401` 且无副作用 | 安全 |
-| `REQ-DEBUG-ENDPOINTS` | src/debug.rs / docs/reference.md §3 / docs/deployment.md §2.1 | 端点契约：`GET /debug/ping`、`/config`、`/redis`、`/jmap`、`/telegram`、`/worker` 均只读；`POST /debug/notify` 走真实出站链路发一条测试消息；响应体不含 secret 原文（凭据字段只出 `*_configured` 布尔，非密文的身份与预算字段仍明文返回） | 需求 |
-| `SAF-DEBUG-ORIGIN-ONLY` | docs/deployment.md §2.1 / docs/reference.md §4 | `/debug/*` 不在负载均衡器 19 条安全路由内，Worker 一律 `404 route not forwarded`；只能直连后端 origin，公网不可达 | 安全 |
-| `SAF-DEBUG-ALLOWLIST` | src/debug.rs / docs/deployment.md §2.1 | `POST /debug/notify` 仅在 chat 白名单**非空**时校验 `chat_id`；白名单未配置（空）时不拦截，故启用本面须确认业务白名单已配置 | 安全 |
-| `NFR-HA-MULTI-INSTANCE` | docs/deployment.md §10.7 / §9.1 | 多实例高可用语义；双活或主备均可；Redis 单点故障不在方案范围（用户外部解决） | 非功能 |
-| `C-NO-DB` | docs/deployment.md §0 / §9.1 / §3 | 生产不使用任何数据库（无 SQLite/Postgres/MySQL/嵌入式），Redis 为唯一状态存储；应用不连接第二个数据库 | 约束 |
-| `C-NO-LOCAL-WRITE` | docs/deployment.md §0 / §9.1 / §3 | 禁止本地文件/目录写入（日志/数据/临时缓存/本地卷） | 约束 |
-| `C-LOG-STDOUT-ONLY` | docs/deployment.md §0 / §9.1 / §3 | 日志只写 stdout/stderr，由平台采集；禁用文件日志后端 | 约束 |
-| `SAF-LOG-PURITY` | docs/deployment.md §0 / §9.1 / §3 | 日志与 Redis 写入内容仅限结构化事件/计数/时间戳/脱敏摘要；禁止密钥/邮件正文/AI 请求响应/附件内容 | 安全 |
+| `ARCH-LB-WORKER` | README.md §2 | 多实例 LB/HA：免费套餐 Cloudflare Worker 作唯一*注册*入口 + 故障转移；后端仍可直接访问，负载均衡器不加访问控制 | 架构 |
+| `C-LB-SINGLE-REG-URL` | README.md §2 | Telegram/Push/Cron 只登记 Worker 的稳定 URL；后端平台入口不对外登记 | 约束 |
+| `C-LB-SHARED-SECRETS` | README.md §2 | 多实例必须共享同一组 `SAF-AUTH-*` secret，否则随机 401 | 约束 |
+| `SAF-LB-PASSTHRU` | §3 | 信任模型=透传：Worker 不改写鉴权；后端必须继续 fail-closed 校验（后端可能被公网直连） | 安全 |
+| `SAF-RECONCILE-LOCK` | README.md §6.1 | `/reconcile` 不扇出，Redis 锁保证单实例执行，避免重复对账 | 安全 |
+| `MOD-STREAMS-GROUP` | README.md §6.1 | 多实例用同一 Streams 消费组名，Redis 自动分摊（at-least-once 不重复处理） | 组件 |
+| `MOD-HEALTH-AGG` | README.md §2 | Worker 聚合健康视图，报告各后端存活供外部监控 | 组件 |
+| `MOD-DEBUG` | src/debug.rs / docs/design.md §7.6 / docs/reference.md §3 | 远程联调只读表面：`DEBUG_ENABLED`（或 `--debug`）+ `DEBUG_TOKEN` 双因子开启后挂载 `/debug/*`，否则不挂载 | 组件 |
+| `SAF-DEBUG-GATE` | src/main.rs / src/debug.rs / docs/design.md §7.6 | 双因子门禁：「`DEBUG_ENABLED` 为真值或命令行带 `--debug`」**且** `DEBUG_TOKEN` 非空才挂载路由；缺任一完全不挂载（请求落通用 `404`），默认绝对关闭。开启信号走 env 而非 argv，使启动命令保持静态、开关可在平台控制台单点切换 | 安全 |
+| `SAF-DEBUG-AUTH` | src/debug.rs | 挂载后 `/debug/*` 须 `Authorization: Bearer DEBUG_TOKEN` 常数时间比较，失败 `401` 且无副作用 | 安全 |
+| `REQ-DEBUG-ENDPOINTS` | src/debug.rs / docs/reference.md §3 | 端点契约：`GET /debug/ping`、`/config`、`/redis`、`/jmap`、`/telegram`、`/worker` 均只读；`POST /debug/notify` 走真实出站链路发一条测试消息；响应体不含 secret 原文（凭据字段只出 `*_configured` 布尔，非密文的身份与预算字段仍明文返回） | 需求 |
+| `SAF-DEBUG-ORIGIN-ONLY` | docs/reference.md §4 | `/debug/*` 不在负载均衡器 19 条安全路由内，Worker 一律 `404 route not forwarded`；只能直连后端 origin，公网不可达 | 安全 |
+| `SAF-DEBUG-ALLOWLIST` | src/debug.rs | `POST /debug/notify` 仅在 chat 白名单**非空**时校验 `chat_id`；白名单未配置（空）时不拦截，故启用本面须确认业务白名单已配置 | 安全 |
+| `NFR-HA-MULTI-INSTANCE` | README.md §6.1 | 多实例高可用语义；双活或主备均可；Redis 单点故障不在方案范围（用户外部解决） | 非功能 |
+| `C-NO-DB` | §3 | 生产不使用任何数据库（无 SQLite/Postgres/MySQL/嵌入式），Redis 为唯一状态存储；应用不连接第二个数据库 | 约束 |
+| `C-NO-LOCAL-WRITE` | §3 | 禁止本地文件/目录写入（日志/数据/临时缓存/本地卷） | 约束 |
+| `C-LOG-STDOUT-ONLY` | §3 | 日志只写 stdout/stderr，由平台采集；禁用文件日志后端 | 约束 |
+| `SAF-LOG-PURITY` | §3 | 日志与 Redis 写入内容仅限结构化事件/计数/时间戳/脱敏摘要；禁止密钥/邮件正文/AI 请求响应/附件内容 | 安全 |
 | `SAF-ENABLE-FLAG` | src/notify.rs `put_enabled` / src/state.rs `config:enabled` | 全局开关是 Redis 单键 `config:enabled`；未写入即视为关闭，`business_enabled` 出错也按关闭处理（fail-closed）；写入须 admin-session Bearer | 安全 |
-| `C-NO-STATEFUL-RECOVERY` | docs/deployment.md §0 / §9.1 / §3 | 禁止依赖进程内状态做生产恢复；恢复一律走 Redis + JMAP 对账；进程内缓存仅为性能优化，丢失须安全可重入 | 约束 |
+| `C-NO-STATEFUL-RECOVERY` | §3 | 禁止依赖进程内状态做生产恢复；恢复一律走 Redis + JMAP 对账；进程内缓存仅为性能优化，丢失须安全可重入 | 约束 |
 | `ARCH-STATE-REDIS` | docs/design.md §10.0 / Redis 为唯一状态来源 | 状态层统一走 Redis（Streams/SET NX/锁/摘要），进程不持有可恢复状态 | 架构 |
-| `C-REDIS-EXTERNAL` | docs/deployment.md §8.1 | Redis 由外部已认证实例提供，不与本服务同容器 | 部署约束 |
-| `GATE-UPTIME-KUMA` | docs/deployment.md §10.1 | `/healthz` 稳定语义可直接接 Uptime Kuma 等外部探针 | 门禁 |
-| `GATE-DOCS` | scripts/docs_check/run_all.sh / docs/deployment.md | 文档门禁：校验器全部 0 error、exit 0 才算通过 | 门禁 |
+| `C-REDIS-EXTERNAL` | README.md §3.0 | Redis 由外部已认证实例提供，不与本服务同容器 | 部署约束 |
+| `GATE-UPTIME-KUMA` | docs/reference.md §9.4 | `/healthz` 稳定语义可直接接 Uptime Kuma 等外部探针 | 门禁 |
+| `GATE-DOCS` | scripts/docs_check/run_all.sh | 文档门禁：校验器全部 0 error、exit 0 才算通过 | 门禁 |

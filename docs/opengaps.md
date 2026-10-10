@@ -4,7 +4,7 @@
 
 There are currently **no unfinished items** in this document: all four stage goals have been closed, and the only pending product decision (multiple accounts) has been determined not to be made by the user on 2026-09-28 (§3). Keep closing records to facilitate tracing why and how each gap was closed.
 
-The implemented interface and architecture design can be found in `docs/reference.md`, `docs/design.md`, `docs/deployment.md`, and the retired capabilities can be found in `docs/retired.md`. The verification baseline is based on the "P0 Access Control" section of `docs/design.md`.
+The implemented interface and architecture design can be found in `docs/reference.md`, `docs/design.md`, and the retired capabilities can be found in `docs/retired.md`. The verification baseline is based on the "P0 Access Control" section of `docs/design.md`.
 
 ## What you have to do
 
@@ -18,8 +18,8 @@ The TTL green light for real machines has already been passed using the Upstash 
 | --- | --- | --- |
 | 1 | `newState` semantics for `Email/changes` | Closed (commit `269c8f6`) |
 | 2 | TTL actual measurement | Closed (code closing `0890eb1` + real machine `ttl` two assertions run through) |
-| 3 | Telegram inbound / Stalwart `PushSubscription` joint debugging | Closed (real traffic has been driven, please see `docs/deployment.md` §4.1 for operation steps) |
-| 4 | `/worker` is not in the deployment document | Closed (`docs/deployment.md` §6.3.1 has been added) |
+| 3 | Telegram inbound / Stalwart `PushSubscription` joint debugging | Closed (real traffic has been driven, please see `README.md` §3.7 for operation steps) |
+| 4 | `/worker` is not in the deployment document | Closed (`README.md` §3.10 has been added) |
 
 Access control: `cargo fmt --check` / `cargo check --locked` / `cargo clippy --locked --all-targets -- -D warnings` all green; `cargo test --locked` **94 passed / 0 failed / 4 ignored** (2 TTL assertions out of 4 `#[ignore]` have been run with real Upstash: `REDIS_TEST_URL=… cargo test --locked -- --ignored ttl` → **2 passed / 0 failed**; the remaining 2 require real JMAP servers, this capability has been verified in staging joint debugging); documentation gate is 6/6 PASS, including 72 line number anchor non-null verifications.
 
@@ -93,12 +93,12 @@ The actual behavior of the code is worse than the entry describes: `Err` is thro
 
 ### 3. Multiple accounts (decided: not to do, 2026-09-28 user decision)
 
-Single accounts are fixed by requirement (`REQ-SINGLE-ACCOUNT`) and never enter the stage target. The user made it clear on 2026-09-28 that "no multiple accounts will be made for the time being" and this gap was closed. `docs/design.md` §11.3, the `REQ-SINGLE-ACCOUNT` line of `docs/charter.md` and the environment variable table/requirements mapping table of `docs/deployment.md` were originally expressed in this way, and these three places have not been changed in this round.
+Single accounts are fixed by requirement (`REQ-SINGLE-ACCOUNT`) and never enter the stage target. The user made it clear on 2026-09-28 that "no multiple accounts will be made for the time being" and this gap was closed. `docs/design.md` §11.3, the `REQ-SINGLE-ACCOUNT` line of `docs/charter.md` and the environment variable table/requirements mapping table of `docs/reference.md` were originally expressed in this way, and these three places have not been changed in this round.
 
 **This article determines the scope of coverage**
 
 - **No multi-account single instance** - One bot instance serves multiple JMAP accounts at the same time. Therefore there is no need for chat→account routing, per-domain/per-folder routing, or `JmapService` pooling.
-- **Existing path when second mailbox is required**: Deploy a second bot instance, each with independent `BOT_TOKEN` / `ACCOUNT_ID` / `JMAP_SESSION_URL` and Redis prefix. This is an existing capability that is documented and requires no new code (`docs/deployment.md`).
+- **Existing path when second mailbox is required**: Deploy a second bot instance, each with independent `BOT_TOKEN` / `ACCOUNT_ID` / `JMAP_SESSION_URL` and Redis prefix. This is an existing capability that is documented and requires no new code (`README.md` §6.1).
 - **Trigger condition for re-opening**: When there is a routing requirement within a single instance such as "the same TG session needs to be routed according to the source mailbox", then dismantle `REQ-SINGLE-ACCOUNT`.
 
 **Minimum changes if necessary in the future** (The current situation has been verified in this round and will be used directly when disassembly is needed)
@@ -112,6 +112,6 @@ This item is not skipped, but explicitly rejected: the deployment unit saved by 
 
 ## Deployment document defects discovered and fixed in this round
 
-`docs/deployment.md` §6.3.1 Originally, only the scheduling example of `/reconcile` was given, and `/worker` - the only queue consumption entry in the entire code base - was described as "manual triggering of operation and maintenance" and was deliberately not included in the Worker whitelist. **Copying the deployment according to the document = emails continue to be queued and notifications are never sent out**. This is the reason why the joint debugging environment is backlogged for several days before being emptied manually. §6.3.1 The description of `/worker`’s scheduling steps, sequence requirements, batch limit and "204 cannot be used as a success signal" has been added.
+`README.md` §3.10 Originally, only the scheduling example of `/reconcile` was given, and `/worker` - the only queue consumption entry in the entire code base - was described as "manual triggering of operation and maintenance" and was deliberately not included in the Worker whitelist. **Copying the deployment according to the document = emails continue to be queued and notifications are never sent out**. This is the reason why the joint debugging environment is backlogged for several days before being emptied manually. `README.md` §3.10 The description of `/worker`’s scheduling steps, sequence requirements, batch limit and "204 cannot be used as a success signal" has been added.
 
 At the same time, the anchor points of `/worker` in `docs/reference.md` and `docs/retired.md` are corrected: the original value `notify.rs:340` falls in the `reconcile` function body, and the anchor point audit will not report an error (the line exists and is not empty), but the semantics are wrong; the correct value is `notify.rs:390`.

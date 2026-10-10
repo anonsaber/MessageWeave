@@ -7,8 +7,8 @@
 >
 > **根据设计，该文件不包含源行号。** 它们不属于
 > 验证：此文件记录*哪个符号*执行*什么*，行号是
-> 对同一文件的每次不相关的编辑都会重新编号。 `docs/deployment.md` 保留其
-> 行号，因为该文件是操作员在事件中读取的运行手册。
+> 对同一文件的每次不相关的编辑都会重新编号。 `README.md` 也仅用符号名引用代码；原
+> `docs/deployment.md` 运行手册（保留行号）已于 2026-10 合并入 README。
 >
 > **维护责任。** 对 `src/config.rs` 公共 API 的任何更改，
 > `src/state.rs`、`src/worker.rs` 或 `src/notify.rs`，或 **任何 Redis 键名称或 TTL**，
@@ -648,7 +648,7 @@ Redis 打嗝永远不会折叠窗口。仅在多实例上重复
 
 ## 9. 部署平台细节
 
-面向操作员的序列位于 [`deployment.md`](deployment.zh-CN.md) 中。本节保留
+面向操作员的序列位于 [README.zh-CN.md](../README.zh-CN.md) 中。本节保留
 配置或诊断时有用的特定于平台的行为和设置
 部署。
 
@@ -673,7 +673,7 @@ HostStack 部署不使用仓库的 Dockerfile；镜像构建和运行时由平�
 
 该映像没有 Redis 进程、数据库或持久数据卷。运行时配置是
 由主机注入；敏感凭据不会进入构建参数或镜像层。 Docker 平台
-运行状况检查应调用 [`deployment.md`](deployment.zh-CN.md) 中描述的 HTTP 端点。
+运行状况检查应调用下文 §9.4 中描述的 HTTP 端点。
 
 ### 9.2 后端配置与密钥
 

@@ -7,8 +7,8 @@
 >
 > **This file carries no source line numbers, by design.** They are not part of the
 > verification: this file documents *which symbol* does *what*, and line numbers are
-> renumbered by every unrelated edit to the same file. `docs/deployment.md` keeps its
-> line numbers, because that file is an operator runbook read mid-incident.
+> renumbered by every unrelated edit to the same file. `README.md` references code by symbol name only; the former
+> `docs/deployment.md` runbook (which kept line numbers) was merged into README in 2026-10.
 >
 > **Maintenance responsibility.** Any change to the public API of `src/config.rs`,
 > `src/state.rs`, `src/worker.rs`, or `src/notify.rs`, or to **any Redis key name or TTL**,
@@ -659,7 +659,7 @@ dependency as OpenAI-compatible and documents it through `reqwest` instead.
 
 ## 9. Deployment platform details
 
-The operator-facing sequence is in [`deployment.md`](deployment.md). This section keeps
+The operator-facing sequence is in [README.md](../README.md). This section keeps
 platform-specific behavior and settings that are useful when configuring or diagnosing a
 deployment.
 
@@ -687,7 +687,7 @@ managed by the platform. The Dockerfile is for local container runs and Docker-b
 
 The image has no Redis process, database, or persistent data volume. Runtime configuration is
 injected by the host; secrets do not enter build arguments or image layers. Docker-platform
-health checks should call the HTTP endpoints described in [`deployment.md`](deployment.md).
+health checks should call the HTTP endpoints described in §9.4 below.
 
 ### 9.2 Backend configuration and secrets
 

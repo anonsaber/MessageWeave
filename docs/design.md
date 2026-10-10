@@ -10,9 +10,9 @@
 > **Related documents** (separation of responsibilities to avoid duplication):
 > - [docs/charter.md](charter.md) — Project charter: project goals, technology selection, security invariants, implementation phases, prohibited matters, test acceptance and stable ID registry
 > - [AGENTS.md](../AGENTS.md) — Universal, language-independent code writing and environment building specifications (excluding project-specific content)
-> - [docs/deployment.md](deployment.md) — Deployment, operation, maintenance and release: general HTTPS-only Docker container, Secrets, Redis (the only carrier of status), short request Webhook/Push/reconciliation routing, health check, CI release and items that still need to be confirmed
+> - [README.md](../README.md) — Deployment, operation and maintenance: HTTPS-only Docker, secrets, Redis (the only state carrier), short-request webhook/push/reconciliation routing, health checks, multi-instance operation
 >
-> This document only retains content directly related to **product behavior, code architecture, module interfaces, state machines, data flow, error handling, testing and implementation phases**. Deployment operations and Docker/universal container platform details have been moved to `deployment.md`; project constraints and security invariants are in `docs/charter.md`; general, language-agnostic code writing and environment building specifications are in `../AGENTS.md`.
+> This document only retains content directly related to **product behavior, code architecture, module interfaces, state machines, data flow, error handling, testing and implementation phases**. Deployment operations and Docker/universal container platform details have been moved to [README.md §6](../README.md); project constraints and security invariants are in `docs/charter.md`; general, language-agnostic code writing and environment building specifications are in `../AGENTS.md`.
 
 ---
 
@@ -31,7 +31,7 @@
 11. [Historical issues and decision-making archives (product/architecture category, both have been concluded)] (#11-Historical issues and decision-making archives, product architecture category have been concluded)
 12. [AI auxiliary capabilities: architecture, confirmation threshold, failure fallback] (#12-ai-auxiliary capability architecture confirmation threshold failure fallback)
 
-> Deployment/platform decisions confirmed (Single Account, App Password+Basic, Redis Hosting+AOF, Platform HTTPS URL, External Cron) and **all converged archive** (including `Q-DEP-A`/`Q-DEP-B`, see the Confirmed Decisions section of `docs/deployment.md`); **Unfinished code gaps can be found in `docs/opengaps.md`**.
+> Deployment/platform decisions confirmed (Single Account, App Password+Basic, Redis Hosting+AOF, Platform HTTPS URL, External Cron) and **all converged archive** (including `Q-DEP-A`/`Q-DEP-B`, see the Confirmed Decisions section of `docs/charter.md` §8); **Unfinished code gaps can be found in `docs/opengaps.md`**.
 
 ---
 
@@ -41,7 +41,7 @@
 Build a Telegram robot written in Rust as a **personal email assistant** for Stalwart JMAP mailbox:
 
 - Query/read emails, view folders, send emails, manage keywords, etc. through Telegram commands.
-- Leverage JMAP's **Push HTTPS callback** (+ external Cron reconciliation) to **proactively push to Telegram** when new emails arrive. (EventSource/SSE/long polling is non-target, see deployment.md `NG-POLLING-SSE`/`NG-LONG-POLLING`/`C-NO-LONG-CONN`.)
+- Leverage JMAP's **Push HTTPS callback** (+ external Cron reconciliation) to **proactively push to Telegram** when new emails arrive. (EventSource/SSE/long polling is non-target, see deployment.md ``NG-POLLING-SSE``/`NG-LONG-POLLING`/`C-NO-LONG-CONN`.)
 - Single-user or multi-account deployment (the default is for single-account self-hosting scenarios).
 
 ### 1.2 Scope (this stage)
@@ -99,8 +99,8 @@ client_ws/        WebSocket 客户端（feature = "websockets"）
 | Send email (2 steps) | ① `email_set`/`email_import` create draft ② `email_submission_set` send | submission associate identityId |
 | Delete/Archive | `email_set` (keywords `$seen`/`$flagged`), `mailbox_destroy` | JMAP has no real "delete", relying on keyword/move |
 | Search | `email_query` (`Filter::text`) + `SearchSnippet/get` highlighting | `Filter` is a serde single-label enumeration, **no comparator syntax**; `SearchSnippet/get` only returns `emailId`/`subject`/`preview`, **no `bodyProperties`/`parts`**, body-level highlighting in locked version `0.4.2` can't do it (downgraded to a pure list of IDs) |
-| Real-time notification (Push + reconciliation) | Push HTTPS callback → `StateChange`; external Cron calls `/reconcile` and uses `Email/changes` to make up the difference | Requires public HTTPS entrance (deployment.md `C-HTTPS-INBOUND`/`FLOW-NEW-MAIL`); Push is not the only reliable source |
-| SSE / WebSocket (non-target) | `event_source` / `client_ws` | This deployment **does not use** (deployment.md `NG-POLLING-SSE`/`NG-LONG-POLLING`/`C-NO-LONG-CONN`); only crate capabilities are listed for investigation |
+| Real-time notification (Push + reconciliation) | Push HTTPS callback → `StateChange`; external Cron calls `/reconcile` and uses `Email/changes` to make up the difference | Requires public HTTPS entrance (deployment.md ``C-HTTPS-INBOUND``/`FLOW-NEW-MAIL`); Push is not the only reliable source |
+| SSE / WebSocket (non-target) | `event_source` / `client_ws` | This deployment **does not use** (deployment.md ``NG-POLLING-SSE``/`NG-LONG-POLLING`/`C-NO-LONG-CONN`); only crate capabilities are listed for investigation |
 
 ### 2.4 Authentication mechanism (`stalwartlabs/jmap-client/src/client.rs`)
 - `Credentials::Basic { username, secret }` — username/password, natively supported by Stalwart.
@@ -122,9 +122,9 @@ WebSocket(...)              ws 错误（feature 开启时）
 ```
 - `MethodErrorType` fine-grained: `ServerUnavailable`/`ServerFail`/`RateLimit`/`InvalidArguments`/`Forbidden`/`StateMismatch`/`TooManyChanges`… → Can directly drive Bot’s retry/current limiting/state reset strategy.
 
-### 2.6 Real-time channel decision-making (determined, see deployment.md)
+### 2.6 Real-time channel decision-making (determined, see docs/charter.md §8)
 
-> Deployment target = **Generic HTTPS-only Docker, no long connections** (deployment.md `C-NO-LONG-CONN`/`C-HTTPS-INBOUND`).
+> Deployment target = **Generic HTTPS-only Docker, no long connections** (deployment.md ``C-NO-LONG-CONN``/`C-HTTPS-INBOUND`).
 > Current channel = JMAP Push HTTPS callback (first explicitly registered by the administrator via `POST /api/push/register`, see §7.3) + external Cron `/reconcile` reconciliation. Push subscriptions are not created automatically, and Push cannot be regarded as the only reliable source.
 > EventSource/SSE and WebSocket are both marked as **non-target** (`NG-POLLING-SSE`). Only the following table is retained for reference for crate capability research.
 
@@ -134,7 +134,7 @@ WebSocket(...)              ws 错误（feature 开启时）
 | EventSource/SSE | ❌ non-target | long connection, conflicts with `C-NO-LONG-CONN` (`NG-POLLING-SSE`) |
 | WebSocket (RFC 8887) | ❌ Non-target | Long connection, conflicts with `C-NO-LONG-CONN`; and needs server support |
 
-Reconciliation: External HTTPS Cron periodically adjusts `/reconcile` (deployment.md `FLOW-RECONCILE`), uses `Email/changes` + Redis `sinceState` to make up for the difference, and also serves as cursor reconstruction after Redis is lost.
+Reconciliation: External HTTPS Cron periodically adjusts `/reconcile` (deployment.md ``FLOW-RECONCILE``), uses `Email/changes` + Redis `sinceState` to make up for the difference, and also serves as cursor reconstruction after Redis is lost.
 
 ---
 
@@ -144,7 +144,7 @@ Reconciliation: External HTTPS Cron periodically adjusts `/reconcile` (deploymen
 - **Confirm adoption** (`C-AUTH-APP-BASIC`): `Credentials::Basic` (Stalwart account email + **App Password**). App Password can be revoked/expired independently without using a master password. Configuration injection, no code required.
 - **Not used**: OAuth/OIDC `Bearer` (increases complexity when there is no OIDC requirement, do not select); master password Basic.
 - **Security**: The password is only saved in the configuration or key manager; wrapped with `secrecy::SecretString` during runtime, the log will never print plain text (see §7.2).
-- For runtime injection methods, see deployment.md (`C-NO-SECRET-IN-IMAGE`).
+- For runtime injection methods, see README.md §3.0 (`C-NO-SECRET-IN-IMAGE`).
 - **Single Account** (`REQ-SINGLE-ACCOUNT`): This instance only connects to one Stalwart account; multiple accounts = deploy multiple bot instances.
 
 ### 3.2 Mailbox operation adaptation layer (JMAP ↔ Bot semantics)
@@ -207,7 +207,7 @@ Candidate comparison (`teloxide` / `grammers` / old `telegram-bot`), 6 reasons w
             │  worker: Email/changes → 通知 → 发往 TG → 推进游标│
             └───────────────────────────────────────────────────┘
 ```
-> Deployment form = **General HTTPS-only Docker, no long connection** (deployment.md `C-NO-LONG-CONN`/`C-HTTPS-INBOUND`):
+> Deployment form = **General HTTPS-only Docker, no long connection** (deployment.md ``C-NO-LONG-CONN``/`C-HTTPS-INBOUND`):
 > Telegram is Webhook only; JMAP real-time is Push callback only; slow tasks are asynchronously stepped into Redis Streams; reconciliation is triggered by **External HTTPS Cron**.
 > EventSource/SSE and long polling are non-targets (`NG-POLLING-SSE`/`NG-LONG-POLLING`).
 > Channel decoupling (see §5.2): The domain layer interacts with the channel layer through domain Command/Notification, and no specific channel SDK type appears in the domain layer; DingTalk/Feishu only retains extension bits and does not implement them in advance.
@@ -237,8 +237,8 @@ Candidate comparison (`teloxide` / `grammers` / old `telegram-bot`), 6 reasons w
   4. Start **Redis Streams worker** (background task) to consume Push events → `Email/changes` → Notification → Send to TG → Push sinceState → XACK.
   5. **Does not hold any long connections and does not build self-timers** (`C-NO-LONG-CONN`); reconciliation is triggered by **external HTTPS Cron** `/reconcile` (`FLOW-RECONCILE`).
 - Notification sending and command processing share `Arc<JmapService>`, and internal `tokio::sync::RwLock` protects the variable cache; cross-request status always falls to external Redis (`C-REDIS-ONLY-STATE`).
-- **Multiple instances and load balancing (deployment form, `ARCH-LB-WORKER`)**: Since the state is all external Redis (`C-REDIS-ONLY-STATE`) and the delivery is idempotent (`MOD-DEDUP`), **the same image can be instantiated across multiple serverless platforms**, free Cloudflare Worker is used as the only entrance and failover (`C-LB-SINGLE-REG-URL`); `/reconcile` Use Redis to lock a single instance (`SAF-RECONCILE-LOCK`), and Streams to automatically amortize using the same consumer group (`MOD-STREAMS-GROUP`). See deployment.md §10 for details. **Field/channel logic does not need to be changed. **
-- **Production redline (`C-NO-DB` / `C-NO-LOCAL-WRITE` / `C-LOG-STDOUT-ONLY` / `SAF-LOG-PURITY` / `C-NO-STATEFUL-RECOVERY`, see deployment.md §0 / §8.2)**:
+- **Multiple instances and load balancing (deployment form, `ARCH-LB-WORKER`)**: Since the state is all external Redis (`C-REDIS-ONLY-STATE`) and the delivery is idempotent (`MOD-DEDUP`), **the same image can be instantiated across multiple serverless platforms**, free Cloudflare Worker is used as the only entrance and failover (`C-LB-SINGLE-REG-URL`); `/reconcile` Use Redis to lock a single instance (`SAF-RECONCILE-LOCK`), and Streams to automatically amortize using the same consumer group (`MOD-STREAMS-GROUP`). See README.md §6.1 for details. **Field/channel logic does not need to be changed. **
+- **Production redline (`C-NO-DB` / `C-NO-LOCAL-WRITE` / `C-LOG-STDOUT-ONLY` / `SAF-LOG-PURITY` / `C-NO-STATEFUL-RECOVERY`, see docs/charter.md §3 / docs/reference.md §9.1)**:
   - **Production uses no database** (`C-NO-DB`): No SQLite/Postgres/MySQL/embedded database; Redis is the only production state store.
   - **Disable local file/directory writing** (`C-NO-LOCAL-WRITE`): no log files, no data files, no temporary cache, no local volumes mounted.
   - **Log only writes to stdout/stderr** (`C-LOG-STDOUT-ONLY`): The container/platform is responsible for collecting and placing disk; disable the file log backend.
@@ -306,7 +306,7 @@ message-weave/
 ├── Cargo.toml                    # jmap-client 0.4.2 / redis 0.27 / reqwest 0.13；不含 teloxide
 ├── .env.example                  # 仅 2 个必填项的占位样例（REDIS_URL / CONFIG_ENCRYPTION_KEY），不含业务配置
 ├── .gitignore
-├── Dockerfile                    # 仅本地开发用；生产不执行（C-DEBIAN-SLIM，边界见 deployment.md §3）
+├── Dockerfile                    # 仅本地开发用；生产不执行（C-DEBIAN-SLIM，边界见 README.md §3.4）
 ├── hoststack.yaml                # 生产部署真源（runtime/build/start/healthCheck），非负载均衡器清单，见 §5.1
 ├── src/
 │   ├── main.rs                   # tokio main：读 PORT/REDIS_URL/CONFIG_ENCRYPTION_KEY 后启动 webhook HTTP 入口（单入口，无 CLI 子命令）
@@ -348,7 +348,7 @@ Testing: **No integrated test directory**, and no stand-alone util tool module. 
 | `web` | axum | `/config` static page + `include_str!` embedding + CSP | Front-end covered by `web/config.test.mjs` | Implemented |
 | `debug` | reqwest 0.13; redis 0.27 | Remote diagnostic surface `/debug/*` (`src/debug.rs`): 6 read-only probes `/debug/ping`, `/debug/config`, `/debug/redis`, `/debug/jmap`, `/debug/telegram`, `/debug/worker` + `POST /debug/notify` (sends a test message through the production outbound path, no independent implementation) | Only `DEBUG_ENABLED` (or `--debug`) + `DEBUG_TOKEN` mounts the route when both factors are present; the module itself is compiled unconditionally | Implemented, does not enter the Worker whitelist (`SAF-DEBUG-ORIGIN-ONLY`) |
 
-> Note: The "Current Status" column is **module level** (the module has been implemented), which does not mean that the behavior is complete. Behavioral gaps are not included in this list: `/search`, Telegram 429 backoff, and multi-instance re-delivery windows have all been implemented. `SAF-DEBUG-ALLOWLIST` (`POST /debug/notify` does not intercept any `chat_id` when the list is empty) has never been counted as a behavioral gap and was moved from `docs/opengaps.md` on 2026-09-29: its exposure in production deployments is provided by `SAF-DEBUG-GATE` two-factor mount with Worker routing safelist Hold on, **the two doors are sufficient on their own**, and there is no need for a third layer of lists, so there is no gap. This behavior and residual risks (direct connection to the backend origin can bypass both layers) are described in `docs/deployment.md` §2.1 and `docs/design.md` §7.6. The `/search` path of the `worker` module has been implemented with `bfe0fd8`.
+> Note: The "Current Status" column is **module level** (the module has been implemented), which does not mean that the behavior is complete. Behavioral gaps are not included in this list: `/search`, Telegram 429 backoff, and multi-instance re-delivery windows have all been implemented. `SAF-DEBUG-ALLOWLIST` (`POST /debug/notify` does not intercept any `chat_id` when the list is empty) has never been counted as a behavioral gap and was moved from `docs/opengaps.md` on 2026-09-29: its exposure in production deployments is provided by `SAF-DEBUG-GATE` two-factor mount with Worker routing safelist Hold on, **the two doors are sufficient on their own**, and there is no need for a third layer of lists, so there is no gap. This behavior and residual risks (direct connection to the backend origin can bypass both layers) are described in `docs/reference.md` §3 and `docs/design.md` §7.6. The `/search` path of the `worker` module has been implemented with `bfe0fd8`.
 
 ---
 
@@ -403,7 +403,7 @@ Testing: **No integrated test directory**, and no stand-alone util tool module. 
 - Only 2 process-level variables are read during startup (`REDIS_URL`, `CONFIG_ENCRYPTION_KEY`, directly `std::env::var` from `src/main.rs`; if any one is missing, it will be downgraded to read-only setup mode); the business configuration is deserialized from Redis through the `config` layer (**None** `${VAR}` interpolation/figment/config files, `ARCH-CONFIG-ENV`).
 - Use `secrecy::SecretString` to wrap it during runtime, and `Debug` to implement `***`.
 - Log filtering: `tracing` field layer shielding `Authorization`/`password`/`token`.
-- For the runtime secret injection method (env / `*_FILE` / orchestrator secret), see deployment.md (`C-NO-SECRET-IN-IMAGE`).
+- For the runtime secret injection method (env / `*_FILE` / orchestrator secret), see README.md §3.0 (`C-NO-SECRET-IN-IMAGE`).
 
 ### 7.3 Access control
 - **Entry authentication (hard constraints `SAF-AUTH-RECONCILE`/`SAF-AUTH-TG-WEBHOOK`/`SAF-AUTH-JMAP-PUSH`)**: The three write paths must be authenticated first, **fail-closed**——
@@ -413,7 +413,7 @@ Testing: **No integrated test directory**, and no stand-alone util tool module. 
   The comparison uses the **constant time** algorithm (`subtle`, anti-timing side channel); verification failure will always be `401` and **will not produce any side effects/status changes** before the authentication is passed. After the business configuration is completed, the credentials for Webhook, Push, Reconcile and Push registration interfaces must be valid; when the startup boot variable is missing, the configuration boot mode will be entered and authentication will not be bypassed (§7.1).
 - **Health probe (`SAF-PROBE-PUBLIC`)**: `/healthz` (`ARCH-HEALTHZ`) and `/ready` are **public probes** - no authentication, only returns health status, **does not contain any sensitive information** (does not echo configuration/key/internal error details).
   - `/healthz` = liveness (process survival), long-term stable semantics.
-  - `/ready` does end-to-end probing: configuration integrity + Redis reachability + outbound read-only probing (`GET {jmap_origin}/.well-known/jmap`, Basic authentication with configuration; `GET https://api.telegram.org/bot<token>/getMe`; each `PROBE_TIMEOUT` = 3000ms, **Parallel** (`tokio::join!`), worst-case scenario 3s); all four pass `200` and readiness report (`{"status":"ready","configured":...,"jmap":...,"telegram":...}`, where `jmap`/`telegram` is the real probe result), any one fails `503` (standard error envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`). The probe is read-only, read-only configuration status, and will not trigger business side effects such as email synchronization, nor will it echo token or third-party response content; `refresh_business_config` only reads Redis, and has no state to write. Therefore `/ready` requires the outbound egress to the JMAP host and `api.telegram.org:443` to be reachable (if the egress requires a proxy, `/ready` is not available, see deployment.md).
+  - `/ready` does end-to-end probing: configuration integrity + Redis reachability + outbound read-only probing (`GET {jmap_origin}/.well-known/jmap`, Basic authentication with configuration; `GET https://api.telegram.org/bot<token>/getMe`; each `PROBE_TIMEOUT` = 3000ms, **Parallel** (`tokio::join!`), worst-case scenario 3s); all four pass `200` and readiness report (`{"status":"ready","configured":...,"jmap":...,"telegram":...}`, where `jmap`/`telegram` is the real probe result), any one fails `503` (standard error envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`). The probe is read-only, read-only configuration status, and will not trigger business side effects such as email synchronization, nor will it echo token or third-party response content; `refresh_business_config` only reads Redis, and has no state to write. Therefore `/ready` requires the outbound egress to the JMAP host and `api.telegram.org:443` to be reachable (if the egress requires a proxy, `/ready` is not available, see README.md §3.0).
 - **chat whitelist (hard constraint `SAF-CHAT-ALLOWLIST`)**: `CHAT_ALLOWLIST` is a **required** configuration; any inbound event (action triggered by TG command/callback) must verify `chat.id ∈ CHAT_ALLOWLIST` before **making any JMAP call, AI call or status change**. If it is not in the whitelist, **directly reject and terminate** (prevent token can be called by anyone after being leaked). Phase 0 has completed the `CHAT_ALLOWLIST` parsing skeleton; the forced rejection logic has been implemented with Telegram channel access (`telegram_webhook` of `src/notify.rs` verifies the whitelist before any JMAP/AI/status operation, and terminates if rejected).
 - **Command Minimization**: Only necessary commands are exposed; writing operations such as sending emails must be confirmed twice (sending emails is not currently implemented, see §10.3).
 - **Rate**: No local token bucket is built on the outbound side; Telegram's outbound sending is retried according to the Redis operating parameter `max_retries` (see `docs/reference.md` §6.1 for default values and hard upper limits); currently only Redis current limiting is done for Push verification code writing (`ratelimit:push-verify:*`). 429 under the 30 msg/s limit of the Telegram server **Automatic backoff in `parameters.retry_after` seconds** (`channel.rs`, `f4cae00`): `retry_after_ms` is truncated to the 60s budget limit after parsing, and the exponential backoff is used when this field is missing or non-numeric `backoff_delay_ms` (starting from 250ms, capped 4s), the overall retry budget is 60s. There is still no local token bucket current limit - if the budget is exceeded, a failure will be returned directly and the upstream will try again.
@@ -444,7 +444,7 @@ Testing: **No integrated test directory**, and no stand-alone util tool module. 
 - Certificate verification is **mandatory by default** and can be turned off only for testing.
 - For operation and maintenance details such as the system CA trust store in the image, internal CA injection, inbound webhook TLS termination, etc., see deployment.md.
 
-### 7.5 Production red line: no database / no local writing / standard output log (deployment.md §0/§8.2)
+### 7.5 Production red line: no database / no local writing / standard output log (README.md §3.0 / docs/reference.md §9.1)
 
 This section summarizes the absolute red lines across code and deployment that you must not introduce any "seemingly convenient" local state into your code:
 
@@ -456,11 +456,11 @@ This section summarizes the absolute red lines across code and deployment that y
 | `SAF-LOG-PURITY` | Log and Redis writing content is limited to structured events, counts, timestamps, desensitized summaries | Log printing JMAP text, AI prompt/completion, key original text, attachment content |
 | `C-NO-STATEFUL-RECOVERY` | Production recovery does not rely on in-process state | Use `static Mutex<HashSet>` to store dedup and use memory LRU to store sinceState as the only recovery source |
 
-**Verification**: No local path constants / `std::fs` non-test calls / file log backends appear in the static inspection code; during runtime, the container `/proc/mounts` and `docker inspect` are used to confirm that there is no local volume mounting; see deployment.md §8.2 for the deployment checklist.
+**Verification**: No local path constants / `std::fs` non-test calls / file log backends appear in the static inspection code; during runtime, the container `/proc/mounts` and `docker inspect` are used to confirm that there is no local volume mounting; see docs/reference.md §9.1 for the deployment checklist.
 
 ### 7.6 Why is the remote joint debugging interface absolutely closed by default?
 
-The only reason for this surface to exist is to shorten the production troubleshooting path: when you cannot log in to the container and can only rely on external requests to observe the system, someone needs to be able to detect the JMAP/Telegram connectivity and current business configuration without releasing the version. The price is that its entry softness must be higher than the three write paths - in addition to read-only detection, it also retains a **real outbound send**, and reuses the business whitelist instead of an independent whitelist. Therefore, the design choice is "closed by default" instead of "enabled by default and blocked by the load balancer": the process will only mount this set of routes (`SAF-DEBUG-GATE`) when "`DEBUG_ENABLED` is true or the command line has `--debug`"** and **a non-empty `DEBUG_TOKEN` is set; when the route is missing, the route does not exist at all in the router, and the request falls to axum general `404`, not "Exists but 401" - the latter would leak the route's existence. There is no third state: there is no "open without configuration" fallback, and there is no configuration item to set it to be enabled by default. `DEBUG_ENABLED` uses environment variables instead of startup commands so that the switch can be changed once from the platform console without releasing the version - the startup command remains static. Add another layer of location constraints: it is not in the load balancer's safe routing whitelist. Even if the backend is opened incorrectly, the platform entrance will be rejected by fail-closed. The only reachable path is to directly connect to the backend origin. These four things—two-factor mounting, 404 instead of 401, no default enabled fallback, and unreachable load balancer—together form the architectural decision of “exposure is zero by default.” See deployment.md §2.1 for the enablement method, per-endpoint status code, and deployment confirmation checklist.
+The only reason for this surface to exist is to shorten the production troubleshooting path: when you cannot log in to the container and can only rely on external requests to observe the system, someone needs to be able to detect the JMAP/Telegram connectivity and current business configuration without releasing the version. The price is that its entry softness must be higher than the three write paths - in addition to read-only detection, it also retains a **real outbound send**, and reuses the business whitelist instead of an independent whitelist. Therefore, the design choice is "closed by default" instead of "enabled by default and blocked by the load balancer": the process will only mount this set of routes (`SAF-DEBUG-GATE`) when "`DEBUG_ENABLED` is true or the command line has `--debug`"** and **a non-empty `DEBUG_TOKEN` is set; when the route is missing, the route does not exist at all in the router, and the request falls to axum general `404`, not "Exists but 401" - the latter would leak the route's existence. There is no third state: there is no "open without configuration" fallback, and there is no configuration item to set it to be enabled by default. `DEBUG_ENABLED` uses environment variables instead of startup commands so that the switch can be changed once from the platform console without releasing the version - the startup command remains static. Add another layer of location constraints: it is not in the load balancer's safe routing whitelist. Even if the backend is opened incorrectly, the platform entrance will be rejected by fail-closed. The only reachable path is to directly connect to the backend origin. These four things—two-factor mounting, 404 instead of 401, no default enabled fallback, and unreachable load balancer—together form the architectural decision of “exposure is zero by default.” See docs/reference.md §3 for the enablement method, per-endpoint status code, and deployment confirmation checklist.
 
 ---
 
@@ -503,7 +503,7 @@ The design target form once included six additional variants: `Jmap(#[from] jmap
 - `tracing` (direct dependency) + `tracing-subscriber` (fmt + EnvFilter). **Currently only recording startup events**: `src/main.rs` 5 `info!`/`warn!` in total (missing startup variables, downgrade to setup mode, startup banner, debug endpoint enabled, JMAP service unavailable, downgrade × 2). Request-level events (Push callbacks, Reconcile pulls, channel pushes, LLM elapsed times) **not implemented yet** - there are no tracing calls in `src/` except `main.rs`, and no named spans (no `#[instrument]` / `span!`).
 - Metrics (optional `metrics` crate): Number of Push callback arrivals, deduplication hit rate, Redis Streams backlog depth (pending), number of DLQ items, number of reconciliation items, JMAP request delay, push failure rate. **Currently not connected to any metrics backend** (`metrics` is not in `Cargo.toml`).
 - Graceful exit: **Currently not implemented** - There is no signal processing in `src/` (no `tokio::signal` / `ctrl_c`), and there is no flush logic for Streams pending entries; the process is terminated when the container stops. Redis side `C-NO-STATEFUL-RECOVERY` ensures reconstruction from Redis after restart and does not rely on in-process state.
-- **Reliability goals and strategies** (Streams ACK/retry, idempotent deduplication, Push retry, reconciliation recovery, indicators/alarms, **≥99.9% notification availability and boundaries**) see deployment.md §6.4/§6.5 (`NFR-NOTIFY-SLA`).
+- **Reliability goals and strategies** (Streams ACK/retry, idempotent deduplication, Push retry, reconciliation recovery, indicators/alarms, **≥99.9% notification availability and boundaries**) see README.md §6.3 (`NFR-NOTIFY-SLA`).
 
 ---
 
@@ -547,7 +547,7 @@ The design target form once included six additional variants: `Jmap(#[from] jmap
 
 ## 10. Phased implementation plan
 
-> Prerequisite: `rustup` first installs the tool chain (stable). CI and release flows are in deployment.md.
+> Prerequisite: `rustup` first installs the tool chain (stable). CI and release flows are in README.md §3.
 
 ### 10.0 Phase 0: Scaffolding and HTTPS entry skeleton (completed, `GATE-P0` passed)
 
@@ -669,7 +669,7 @@ Single authority table, this section only retains four "whys" that affect design
 **Audit Opinion → Closing (2026-09-26)**
 
 - [Repair-2] When the enqueue failed, dedup released best-effort, which may have caused a 24h silent loss event → Fixed to `claim_dedup_and_enqueue` (Lua atoms: `SET NX EX` must succeed before `XADD`), there is no intermediate failure window between claim and enqueue.
-- [Should be revised-1] `Email/changes` relies on `newState` for continued transmission, `jmap-client 0.4.2` does not have `upToId` → has been changed to "Same as `sinceState`, double `maxChanges` one by one to expand the window (upper limit 4096), only advance `new_state` when the window cannot be expanded" to avoid missing batches when advancing by page; `newState` The semantics have been confirmed to be load-bearing (`docs/opengaps.md` §2), and the callback verification round-trip and backlog emptying in the real Stalwart environment follow the path of baseline → increment `/changes` → `newState` (`docs/deployment.md` §4.1, §6.3.1).
+- [Should be revised-1] `Email/changes` relies on `newState` for continued transmission, `jmap-client 0.4.2` does not have `upToId` → has been changed to "Same as `sinceState`, double `maxChanges` one by one to expand the window (upper limit 4096), only advance `new_state` when the window cannot be expanded" to avoid missing batches when advancing by page; `newState` The semantics have been confirmed to be load-bearing (`docs/opengaps.md` §2), and the callback verification round-trip and backlog emptying in the real Stalwart environment follow the path of baseline → increment `/changes` → `newState` (`README.md` §3.7, `README.md` §3.10).
 - The rest of the low-risk items have been closed: the empty value of the unknown stream is changed to `Err` (fail-closed, enter retry/DLQ); `push:disable` is cleared by `forget_push_subscription`; the lower limit of `SET NX EX` TTL is tightened to `.max(1)`; XAUTOCLAIM idle threshold is scaled according to the batch size; malformed stream entries without payload are determined by `ack_malformed` is moved out of PEL via `XACK`; CSPRNG changes the owner-token to "time + PID + counter" and no longer uses constants.
 - Unscheduled (Phase 5 "Search + Search Snippet") ** Closed (`bfe0fd8`)**: `/search` uses `email_query`(`Filter::text`) + `SearchSnippet/get`. For the upper limit of highlight degradation and truncation, see §2.3 and §5.7; text-level highlighting cannot be done in the locked version (see §2.3 remarks). Stage 5 Backlog cleared.
 
@@ -680,20 +680,20 @@ Single authority table, this section only retains four "whys" that affect design
 
 ## 11. Archive of historical issues and decisions (product/architecture category, all have conclusions)
 
-> ⚠️ Deployment/platform decisions have been **all confirmed** (single account / App Password+Basic / Redis hosting + AOF / platform HTTPS URL / external Cron reconciliation / `Q-DEP-A` platform URL and certificate configurator / `Q-DEP-B` scheduler selection), which have been filed in the Confirmed Decisions section of `docs/deployment.md` and will not be repeated in this article.
+> ⚠️ Deployment/platform decisions have been **all confirmed** (single account / App Password+Basic / Redis hosting + AOF / platform HTTPS URL / external Cron reconciliation / `Q-DEP-A` platform URL and certificate configurator / `Q-DEP-B` scheduler selection), which have been filed in the Confirmed Decisions section of `docs/charter.md` §8 and will not be repeated in this article.
 
 ### 11.1 Authentication method (confirmed)
 - **Confirmed**: **App Password + Basic** (`C-AUTH-APP-BASIC`). No master password, no OAuth2 Bearer (no OIDC required).
 - Affects: `Credentials::Basic` construct; no need for OAuth client/token auto-refresh module.
 
-### 11.2 Real-time channel (decided, see deployment.md)
-- Channel = **JMAP Push HTTPS callback + external Cron reconciliation and draining** (`C-NO-LONG-CONN`/`C-HTTPS-INBOUND`); EventSource/SSE/WebSocket are all **non-target** (`NG-POLLING-SSE`). Push registration is triggered explicitly through protected `POST /api/push/register`; external Cron must call `/reconcile` (incremental enqueue) and `/worker` (drain concurrent notification) at the same time - **Only adjusting reconciliation will make the notification never sent** (deployment.md §6.3.1).
-- Stalwart side access has been verified in the real environment: the built-in role has the `PushSubscription` permission, and registration, verification and round-trip and real callback delivery are all passed. The match between the number of callback retries and the idempotent key TTL/reconciliation interval is an operation and maintenance parameter item, not an acceptance threshold: `docs/deployment.md` §5 provides retry suggestions, §6.3.1 provides a value for the reconciliation interval, and §7 explains that the idempotent key TTL must cover the TG rate-limit fallback upper limit. `docs/opengaps.md` currently has no outstanding items.
+### 11.2 Real-time channel (decided, see docs/charter.md §8)
+- Channel = **JMAP Push HTTPS callback + external Cron reconciliation and draining** (`C-NO-LONG-CONN`/`C-HTTPS-INBOUND`); EventSource/SSE/WebSocket are all **non-target** (`NG-POLLING-SSE`). Push registration is triggered explicitly through protected `POST /api/push/register`; external Cron must call `/reconcile` (incremental enqueue) and `/worker` (drain concurrent notification) at the same time - **Only adjusting reconciliation will make the notification never sent** (README.md §3.10).
+- Stalwart side access has been verified in the real environment: the built-in role has the `PushSubscription` permission, and registration, verification and round-trip and real callback delivery are all passed. The match between the number of callback retries and the idempotent key TTL/reconciliation interval is an operation and maintenance parameter item, not an acceptance threshold: `docs/reference.md` §9.3 provides retry suggestions, README.md §3.10 provides a value for the reconciliation interval, and `docs/reference.md` §1 explains that the idempotent key TTL must cover the TG rate-limit fallback upper limit. `docs/opengaps.md` currently has no outstanding items.
 
 ### 11.3 Deployment form (confirmed, architecture related)
 - **Confirmed**: **Single account implementation** (`REQ-SINGLE-ACCOUNT`); multiple accounts temporarily use **multiple bot instances** (respective tokens/configurations), **no multiple accounts single instance** (so no need for chat→account routing and `JmapService` pooling). 2026-09-28 Users have made this decision, and the boundaries and future changes to be made are registered in `docs/opengaps.md` §3.
-- Deployment shape = **webhook-only + universal HTTPS-only Docker + external Cron reconciliation** (deployment.md `C-NO-LONG-CONN`/`NG-LONG-POLLING`/`NFR-RECONCILE-INTERVAL`).
-- **Multi-instance LB/HA (confirmed, `ARCH-LB-WORKER`)**: You can optionally deploy the same image on multiple serverless platforms, share the same Redis, and use free Cloudflare Worker as the only entrance and failover; the Worker code is located in the subdirectory [`cloudflare-worker/`](../cloudflare-worker/) (not a native Rust binary). For deployment, see `docs/deployment.md` for Worker Deployment section. The trust model is **transparent transmission** (the backend still fails-closed verification, `SAF-LB-PASSTHRU`), the backends share the same set of secrets** (`C-LB-SHARED-SECRETS`), `/reconcile` **Redis lock** single instance (`SAF-RECONCILE-LOCK`), and the Worker provides **aggregated health view** (`MOD-HEALTH-AGG`). **Redis single point of failure is not within the scope of this solution** (`NFR-HA-MULTI-INSTANCE`, solved externally by the user). Both active-active and active-standby are available. See the Multi-Instance Deployment section of `docs/deployment.md` for details.
+- Deployment shape = **webhook-only + universal HTTPS-only Docker + external Cron reconciliation** (deployment.md ``C-NO-LONG-CONN``/`NG-LONG-POLLING`/`NFR-RECONCILE-INTERVAL`).
+- **Multi-instance LB/HA (confirmed, `ARCH-LB-WORKER`)**: You can optionally deploy the same image on multiple serverless platforms, share the same Redis, and use free Cloudflare Worker as the only entrance and failover; the Worker code is located in the subdirectory [`cloudflare-worker/`](../cloudflare-worker/) (not a native Rust binary). For deployment, see `cloudflare-worker/README.md`. The trust model is **transparent transmission** (the backend still fails-closed verification, `SAF-LB-PASSTHRU`), the backends share the same set of secrets** (`C-LB-SHARED-SECRETS`), `/reconcile` **Redis lock** single instance (`SAF-RECONCILE-LOCK`), and the Worker provides **aggregated health view** (`MOD-HEALTH-AGG`). **Redis single point of failure is not within the scope of this solution** (`NFR-HA-MULTI-INSTANCE`, solved externally by the user). Both active-active and active-standby are available. See README.md §6.1 for details.
 
 ### 11.4 Early questions answered by code (no longer pending confirmation)
 The following questions were listed in the form of Q6-Q30 during the design phase. The answers were given when the code was implemented, so they are no longer "items to be confirmed". Only the conclusions are recorded here:
@@ -704,11 +704,11 @@ The following questions were listed in the form of Q6-Q30 during the design phas
 - **Summary Aggregation/Timed Aggregation** (Q10): Not implemented, only `/reconcile`.
 - **Multiple Sending Identities** (Q12): `Identity` is not used, single account (`REQ-SINGLE-ACCOUNT`).
 - **unsafe** (Q13): There is no `unsafe` in `src/`, but `#![forbid(unsafe_code)]` is not added either.
-- **Monitoring** (Q15): Implemented as `/healthz` + `/ready` two HTTP probes, without introducing Prometheus/Exporter; see deployment.md for the running platform configuration.
+- **Monitoring** (Q15): Implemented as `/healthz` + `/ready` two HTTP probes, without introducing Prometheus/Exporter; see docs/reference.md §9.4 for the running platform configuration.
 - **LLM Provider/Network License** (Q25, Q26, Q30): `LLM_BASE_URL` is specified by the deployer (only verifies https); `LLM_ENABLED` and `LLM_ALLOW_NET` **default are `false`**, both must be true at the same time to construct the client, otherwise the `llm` field is `None` (`Option<Arc<LlmClient>>`, no `noop()` implementation exists in the warehouse), no detection (see §12.2).
 - **Break Cooling/Threshold** (Q27): Not applicable - the fuse itself is not implemented (see §12.4).
 
-There are no pending decisions regarding deployment/platform decisions: `Q-DEP-A` (who configures the platform URL/domain name and certificate, is determined by the deployment environment at the time of release) and `Q-DEP-B` (which scheduler is used for external Cron, does not limit the implementation) have both been decided and are archived in the Confirmed Decisions section of `docs/deployment.md` and will not be repeated in this article.
+There are no pending decisions regarding deployment/platform decisions: `Q-DEP-A` (who configures the platform URL/domain name and certificate, is determined by the deployment environment at the time of release) and `Q-DEP-B` (which scheduler is used for external Cron, does not limit the implementation) have both been decided and are archived in the Confirmed Decisions section of `docs/charter.md` §8 and will not be repeated in this article.
 
 ---
 
@@ -749,7 +749,7 @@ The LLM capability only exists in the `src/ai.rs` file; **no** configuration/fal
 | `max_retries` (running parameters) | int | See `docs/reference.md` §6.1 | Issued by `OutboundConfig` (`RuntimeConfigProvider`), see `docs/reference.md` §6.1 for the hard upper limit; LLM is shared with Telegram outbound |
 | `llm_timeout_ms` (running parameter) | int | See `docs/reference.md` §6.1 | Issued by `OutboundConfig`; unit milliseconds, for the lower limit and value range, see `docs/reference.md` §6.1 |
 
-**None** `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` / `LLM_TIMEOUT_SECS` / `LLM_MAX_RETRIES`: The request body only has `model` / `messages` / `max_tokens` (= `max_chars * 2`), no temperature, and no timeout switch independent of `llm_timeout_ms`. The API key is only read from the configuration, without entering the source code or logging (`SAF-LOG-PURITY`). For the runtime secret injection method, see deployment.md (`C-NO-SECRET-IN-IMAGE`).
+**None** `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` / `LLM_TIMEOUT_SECS` / `LLM_MAX_RETRIES`: The request body only has `model` / `messages` / `max_tokens` (= `max_chars * 2`), no temperature, and no timeout switch independent of `llm_timeout_ms`. The API key is only read from the configuration, without entering the source code or logging (`SAF-LOG-PURITY`). For the runtime secret injection method, see README.md §3.0 (`C-NO-SECRET-IN-IMAGE`).
 
 ### 12.3 Text acquisition strategy and long email processing (requirement 1/2/3/5)
 - **View original text = JMAP direct access**: `Intent::Query` goes through `JmapService::read_email` with any "read text" action, **without going through LLM**; LLM is not on the viewing path.

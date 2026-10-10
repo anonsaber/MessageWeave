@@ -10,7 +10,7 @@
 >
 > **它不是安全特性。** 这里没有隐藏后端的意图，也没有加固后端的意图。负载均衡器在不在，origin 都同样可以直接访问，边缘上也没有加任何访问控制，所以路由白名单不是防火墙，本文档任何一处都不该被读成防护。
 
-> 设计依据：`docs/design.md §11.3`（`NFR-HA-MULTI-INSTANCE`）与 `docs/deployment.md §10`。
+> 设计依据：`docs/design.md §11.3`（`NFR-HA-MULTI-INSTANCE`）与 `README.md §6.1`。
 > 安全基线与禁令：`docs/charter.md §3`、`docs/charter.md §5`；稳定 ID 注册表 `docs/charter.md §8`。
 
 ## 1. 它是什么，不是什么
@@ -191,7 +191,7 @@ curl https://<your-worker>.workers.dev/healthz-worker
 
 ## References
 
-- `docs/deployment.md §10` — 负载均衡器部署、配置与上线
+- `docs/reference.md §9.5` — 负载均衡器部署、配置与上线
 - `docs/reference.md §4` — 负载均衡器与后端的路由矩阵
 - `docs/reference.md §9.2` — 后端配置与 secret
 - `docs/reference.md §9.4` — 健康与发布检查

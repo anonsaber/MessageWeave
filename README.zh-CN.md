@@ -23,7 +23,9 @@ MessageWeave 位于 JMAP 邮件服务器（例如 Stalwart）与 Telegram bot �
 - **无长连接。** 无 SSE、无 WebSocket、无长轮询。
 - **日志只写 stdout。** 日志存储与保留由平台采集器负责。
 - **它不是什么。** 它不是邮件客户端，不是代理，也不是转发中继。它只把一个 bot 的元数据
-  送达 Telegram；不抓取任意 URL、不开隧道、不中转流量。
+  送达 Telegram；不抓取任意 URL、不开隧道、不中转流量。它没有常驻 `server` 模式开关，不持有
+  EventSource/SSE 或 Telegram 长轮询连接，不向 SQLite 或本地卷持久化，也不绑定特定 serverless
+  平台——每条通知路径都是短请求-响应。
 
 ## 2. 两种部署形态
 
@@ -42,7 +44,7 @@ MessageWeave 位于 JMAP 邮件服务器（例如 Stalwart）与 Telegram bot �
 | 负载均衡器路由集 | 不适用——没有负载均衡器 | 固定 19 个路径；未知路径返回 `404` |
 | 要看哪个健康接口 | origin 上的 `GET /ready` | 透传的 `GET /ready`，外加负载均衡器聚合 `GET /healthz-worker` |
 | 额外组件 | 无 | 一个 Worker 部署、一份 origin 列表 |
-| 文档 | `docs/deployment.md §2` | `docs/deployment.md §10`、`cloudflare-worker/README.zh-CN.md` |
+| 文档 | 见下文 §3 | 上文 §2、§6、`cloudflare-worker/README.zh-CN.md` |
 
 单 origin 且没有 HA 要求时选形态 A；两个及以上 origin、或想在滚动与重建某个实例时保持一个稳定的回调 URL，就选形态 B。
 
@@ -54,7 +56,7 @@ MessageWeave 位于 JMAP 邮件服务器（例如 Stalwart）与 Telegram bot �
 
 ## 3. 从零开始
 
-本节是手把手教程：创建 Telegram bot、部署一个后端、填写配置页、注册回调、收到第一条通知。字段语义、默认值、TTL 与错误码在 `docs/reference.md`；生产、扩展与负载均衡器运维在 `docs/deployment.md`。
+本节是手把手教程：创建 Telegram bot、部署一个后端、填写配置页、注册回调、收到第一条通知。字段语义、默认值、TTL 与错误码在 `docs/reference.md`；生产、扩展与负载均衡器运维见下文 §6。
 
 ### 3.0 你需要准备什么
 
@@ -66,6 +68,8 @@ MessageWeave 位于 JMAP 邮件服务器（例如 Stalwart）与 Telegram bot �
 - 可选：OpenAI 兼容的 LLM 密钥；想要负载均衡器的话再来一个 Cloudflare 账号。
 
 不需要别的：没有 Postgres、没有消息队列、没有 Kubernetes。
+
+平台或反代终结 TLS；进程监听一个 HTTP 端口（`PORT`，默认 `8080`），不暴露任何其他 TCP 端口，公网 HTTPS URL 由平台提供，不是 bot 自己的。Docker 镜像用 Rust builder 与 Debian slim 运行时，外链 `rustls` 配原生根证书做出站 TLS，镜像层与构建参数里不带任何 secret。用 AOF 持久化备份 Redis——它是唯一的状态存储。
 
 ### 3.1 创建 Telegram bot
 
@@ -138,7 +142,7 @@ curl localhost:8080/healthz   # → ok
 
 密钥是只写的：页面永不再显示已存密钥，提交空的密钥字段会保留之前的值——要清密钥就在单独一次编辑里故意留空。
 
-如果你在负载均衡器后面跑了多个后端，**在任意一台节点上配置即可**——所有后端共享同一个 Redis，读同一份配置。完整的多实例模型见[部署文档的多实例章节](docs/deployment.zh-CN.md#102-多实例前提)。
+如果你在负载均衡器后面跑了多个后端，**在任意一台节点上配置即可**——所有后端共享同一个 Redis，读同一份配置。完整的多实例模型见 [§6.1](#61-多实例前提)。
 
 ### 3.7 注册回调
 
@@ -177,7 +181,7 @@ MW_RECONCILE_TOKEN=<reconcile token> \
 scripts/cron-drain.sh
 ```
 
-脚本会排空队列（`/worker`）并重扫漏掉的 push（`/reconcile`）；两者成功都回答 204 空 body。`MW_RECONCILE_TOKEN` 是可选的——省略时跳过 reconcile 步骤，只排空队列。如果你把负载均衡器放在前面，`/worker` 必须直达后端源站——原因见 `docs/deployment.md` §10。
+脚本会排空队列（`/worker`）并重扫漏掉的 push（`/reconcile`）；两者成功都回答 204 空 body。`MW_RECONCILE_TOKEN` 是可选的——省略时跳过 reconcile 步骤，只排空队列。如果你把负载均衡器放在前面，`/worker` 必须直达后端源站——原因见 §6.3。
 
 ### 3.11 出问题时
 
@@ -218,7 +222,7 @@ Telegram 发送。它由双因子开关控制——进程必须带 `--debug` **�
 任一缺失则这些路由完全不存在（请求落到通用 404）。`/debug/*` 不在负载均衡器白名单内，因此只能
 直连后端 origin 访问。运行它唯一的规则就是不要打开：启动命令里不加 `--debug`，环境变量里不
 设 `DEBUG_TOKEN`。若确实要为一次排障临时开启，请先配好 chat 白名单——白名单为空时，测试
-发送不会受限到任何 chat。见 `docs/deployment.md` §2.1。
+发送不会受限到任何 chat。见 `docs/reference.zh-CN.md` §3 的端点契约。
 
 ## 5. 安全边界，一句话
 
@@ -228,12 +232,56 @@ Telegram 发送。它由双因子开关控制——进程必须带 `--debug` **�
 
 前置在后端前面的可选 Cloudflare Worker 负载均衡器不在这个边界内。它不持有任何凭据，也不校验任何认证头；负载均衡器在不在，后端都同样可以直接访问，所以它不会改变攻击者与你的邮件之间的任何东西。见 §2。
 
-## 6. 去哪读更多
+## 6. 运维与多实例
+
+生产、扩展与负载均衡器运维参考。§3 的教程覆盖单实例；本节覆盖在多个后端、一个或多个 HTTPS 源站前面跑时有什么不同。
+
+### 6.1 多实例前提
+
+多个后端可以分担流量，因为请求状态存在 Redis、重复投递被去重、对账修复漏掉的 push 事件。不需要粘性会话，也不需要改应用代码。
+
+所有 Redis 键都是全局命名，不带实例、主机名或源站后缀。这里共享一个 Redis 不是妥协：多个源站持有下面每一项的单一份副本。
+
+| 数据 | 键 | 语义 |
+|---|---|---|
+| 业务配置 | `config:business` | 一个全局密文块（AES-256-GCM），没有按实例的槽 |
+| 配置版本号 | `config:business:revision` | 一个全局单调计数器，在写入的同一 Lua 事务内自增（`CONFIG_STORE_REV_SCRIPT`） |
+| 启用开关 | `config:enabled` | 一个全局布尔 |
+| 对账游标 | `state:jmap:since` | 一个全局游标，没有账户维度 |
+| 投递流 | `stalwart:jmap:events` / `stalwart:telegram:events` | 通过消费者组共享；组惰性创建，`XAUTOCLAIM` 回收空闲消息 |
+| 对账锁 | `lock:reconcile` | 一个全局单飞锁，跨实例互斥 |
+
+实践中两条推论最重要。
+
+第一，**业务配置只有一份，任一源站的 SPA 编辑写入的是同一份副本。** 没有办法只改一个实例：没有任何键带实例维度，`refresh_business_config` 也不接受实例参数。这是有意行为。如果确实需要两份互相独立的配置——比如生产与一个预生产孪生——那就部署第二个实例、指向第二个 Redis，而不是在一个 Redis 内部分区。
+
+第二，**`CONFIG_ENCRYPTION_KEY` 在每个源站上必须逐字节相同。** 它是 64 位十六进制（32 字节），直接用作 AES-256-GCM 密钥，AAD 固定为 `message-weave/config:business/v1`。它还兼作 SPA 管理员凭据。持不同值的源站既解不开别处写入的配置，也登不上 SPA，且两条路径都失败关闭。
+
+多挂源站买的是故障转移，不是吞吐。投递在共享消费者组里分散，但 `/reconcile` 被 `lock:reconcile` 全局串行化、游标是单一的。如果某个实例在批次中途死掉，下一个实例会在消息越过 `XAUTOCLAIM` 空闲窗口后把它们捡起来；代价是可能的重复投递，由 `dedup:*` 键兜底，永远不会丢消息。
+
+### 6.2 跨源站配置收敛
+
+一次 SPA 编辑只往 Redis 写一次。各源站**惰性收敛，在请求边界上**：每个调用 `refresh_business_config` 的入口都从 Redis 重读全局版本号，当 `remote_revision <= local_revision` 时立即返回。没有轮询循环、没有 watch，所以收不到流量的源站保持它已有的配置。
+
+入口是 `/ready`、`/worker`、`/reconcile`、`/push/jmap`、`/webhook/tg`、`/api/config`、`/api/business-config` 与 `/api/telegram/register-webhook`。`GET /healthz` **不**在其中——它是静态 `200 "ok"`、从不刷新——`GET /api/status`、`/api/enabled`、`/api/push/register`、`/api/push/disable` 与 `/api/admin/session` 这一对也都不是。
+
+**已知行为：一次失败的重建在下一个版本号到来前不会被重试。** 上面的版本号检查是早退，不是重试守卫。当 `build_worker` 对某个源站失败时——JMAP session URL 不可达，或 `llm_api_key` / `llm_base_url` 缺失或非法——该源站把内存中的版本号推进到远端值，并保留它已有的运行时。于是早退条件对该源站永远成立，所以它直到**新**版本号被写入才会再试。同一函数内的其他失败（Redis 不可达、密文块缺失、JSON 解析失败、校验失败）不碰本地版本号，因此在下次请求时确实重试；这些路径在运行时构建之前就失败了，所以没有 worker 被重建。
+
+症状是一个源站跑着新配置、另一个还停在旧配置，没有错误、没有日志行：失败路径静默返回。要检测它，比较各源站 `GET /debug/config` 报告的字段值——那些来自活动内存运行时。不要用它的 `revision` 字段做这件事：那个值是从 Redis 读的，显示的是最新全局版本号，即便该实例尚未收敛。
+
+要恢复，从 SPA 再动一次配置让版本号前进；卡住的源站会再尝试一次重建。如果该源站还在 Worker 的源站列表里，在此期间先把它移除，免得请求被拆到两份配置之间。
+
+### 6.3 可靠性与投递目标
+
+Worker 只重试超时与后端 `5xx` 响应；`4xx` 响应直接返回。`/reconcile` 与 `/worker` 有更长的逐路由超时，且不向第二个后端故障转移，避免重复工作。后端队列处理是至少一次，依赖 Redis 支持的幂等。完整行为见路由与状态参考。
+
+本服务允许短的投递延迟，目标至少 99.9% 的通知可用性。Redis 可用性与外部调度间隔不在应用控制之内；确切投递保证在项目章程的 `NFR-NOTIFY-SLA` 与 `NFR-RECONCILE-INTERVAL` 中描述。
+
+## 7. 去哪读更多
 
 | 文档 | 回答什么 |
 |---|---|
 | [`docs/design.zh-CN.md`](docs/design.zh-CN.md) | 为什么这样设计：数据流、JMAP 语义、Redis streams、AI 授权规则 |
-| [`docs/deployment.zh-CN.md`](docs/deployment.zh-CN.md) | 怎么部署：Dockerfile、secrets、Redis 托管、webhook/push/对账路由、多实例负载均衡 |
 | [`docs/reference.zh-CN.md`](docs/reference.zh-CN.md) | **可核对事实的唯一权威来源**——Redis 键与 TTL、错误码、路由、环境变量分层、预算常量 |
 | [`docs/opengaps.zh-CN.md`](docs/opengaps.zh-CN.md) | 缺口、阻塞项与下一阶段目标 |
 | [`docs/retired.zh-CN.md`](docs/retired.zh-CN.md) | 试过但没用的：废弃路线、未落地的设计与从未存在的名字 |

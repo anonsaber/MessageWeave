@@ -10,9 +10,9 @@
 > **相关文档**（职责分离，避免重复堆砌）：
 > - [docs/charter.md](charter.zh-CN.md) — 项目章程：项目目标、技术选型、安全不变量、实现阶段、禁止事项、测试验收与稳定 ID 注册表
 > - [AGENTS.md](../AGENTS.md) — 通用、语言无关的代码编写与环境构建规范（不含项目专属内容）
-> - [docs/deployment.md](deployment.zh-CN.md) — 部署运维与发布：通用 HTTPS-only Docker 容器、密钥管理、Redis（状态唯一载体）、短请求 Webhook/Push/对账路由、健康检查、CI 发布与仍需确认项
+> - [README.md](../README.md) — 部署运维：HTTPS-only Docker、密钥管理、Redis（状态唯一载体）、短请求 webhook/push/对账路由、健康检查、多实例运维
 >
-> 本文档只保留与**产品行为、代码架构、模块接口、状态机、数据流、错误处理、测试和实施阶段**直接相关的内容。部署运维与 Docker/通用容器平台细节已移至 `deployment.md`；项目约束与安全不变量在 `docs/charter.md`；通用、语言无关的代码编写与环境构建规范在 `../AGENTS.md`。
+> 本文档只保留与**产品行为、代码架构、模块接口、状态机、数据流、错误处理、测试和实施阶段**直接相关的内容。部署运维与 Docker/通用容器平台细节已移至 [README.md §6](../README.md)；项目约束与安全不变量在 `docs/charter.md`；通用、语言无关的代码编写与环境构建规范在 `../AGENTS.md`。
 
 ---
 
@@ -237,8 +237,8 @@ Telegram 渠道用 `src/channel.rs` 的 `reqwest` 自研实现（`ARCH-DEPS-STAG
   4. 启动 **Redis Streams worker**（后台 task）消费 Push 事件 → `Email/changes` → 通知 → 发往 TG → 推进 sinceState → XACK。
   5. **不持有任何长连接、不自建定时器**（`C-NO-LONG-CONN`）；对账由**外部 HTTPS Cron** 触发 `/reconcile`（`FLOW-RECONCILE`）。
 - 通知发送与命令处理共享 `Arc<JmapService>`，内部 `tokio::sync::RwLock` 保护可变缓存；跨请求状态一律落外部 Redis（`C-REDIS-ONLY-STATE`）。
-- **多实例与负载均衡（部署形态，`ARCH-LB-WORKER`）**：由于状态全在外部 Redis（`C-REDIS-ONLY-STATE`）且投递幂等（`MOD-DEDUP`），**同一镜像可跨多个 serverless 平台实例化**，前面用免费 Cloudflare Worker 做唯一入口与故障转移（`C-LB-SINGLE-REG-URL`）；`/reconcile` 用 Redis 锁单实例执行（`SAF-RECONCILE-LOCK`），Streams 用同一消费组自动分摊（`MOD-STREAMS-GROUP`）。详见 deployment.md §10。**领域/渠道逻辑无需改动。**
-- **生产红线（`C-NO-DB` / `C-NO-LOCAL-WRITE` / `C-LOG-STDOUT-ONLY` / `SAF-LOG-PURITY` / `C-NO-STATEFUL-RECOVERY`，详见 deployment.md §0 / §8.2）**：
+- **多实例与负载均衡（部署形态，`ARCH-LB-WORKER`）**：由于状态全在外部 Redis（`C-REDIS-ONLY-STATE`）且投递幂等（`MOD-DEDUP`），**同一镜像可跨多个 serverless 平台实例化**，前面用免费 Cloudflare Worker 做唯一入口与故障转移（`C-LB-SINGLE-REG-URL`）；`/reconcile` 用 Redis 锁单实例执行（`SAF-RECONCILE-LOCK`），Streams 用同一消费组自动分摊（`MOD-STREAMS-GROUP`）。详见 README.md §6.1。**领域/渠道逻辑无需改动。**
+- **生产红线（`C-NO-DB` / `C-NO-LOCAL-WRITE` / `C-LOG-STDOUT-ONLY` / `SAF-LOG-PURITY` / `C-NO-STATEFUL-RECOVERY`，详见 docs/charter.md §3 / docs/reference.md §9.1）**：
   - **生产不使用任何数据库**（`C-NO-DB`）：无 SQLite/Postgres/MySQL/嵌入式数据库；Redis 是唯一生产状态存储。
   - **禁止本地文件/目录写入**（`C-NO-LOCAL-WRITE`）：无日志文件、无数据文件、无临时缓存、不挂载本地卷。
   - **日志只写 stdout/stderr**（`C-LOG-STDOUT-ONLY`）：容器/平台负责采集落盘；禁用文件日志后端。
@@ -306,7 +306,7 @@ message-weave/
 ├── Cargo.toml                    # jmap-client 0.4.2 / redis 0.27 / reqwest 0.13；不含 teloxide
 ├── .env.example                  # 仅 2 个必填项的占位样例（REDIS_URL / CONFIG_ENCRYPTION_KEY），不含业务配置
 ├── .gitignore
-├── Dockerfile                    # 仅本地开发用；生产不执行（C-DEBIAN-SLIM，边界见 deployment.md §3）
+├── Dockerfile                    # 仅本地开发用；生产不执行（C-DEBIAN-SLIM，边界见 README.md §3.4）
 ├── hoststack.yaml                # 生产部署真源（runtime/build/start/healthCheck），非负载均衡器清单，见 §5.1
 ├── src/
 │   ├── main.rs                   # tokio main：读 PORT/REDIS_URL/CONFIG_ENCRYPTION_KEY 后启动 webhook HTTP 入口（单入口，无 CLI 子命令）
@@ -456,11 +456,11 @@ message-weave/
 | `SAF-LOG-PURITY` | 日志与 Redis 写入内容仅限结构化事件、计数、时间戳、脱敏摘要 | 日志打印 JMAP 正文、AI prompt/completion、密钥原文、附件内容 |
 | `C-NO-STATEFUL-RECOVERY` | 生产恢复不依赖进程内状态 | 用 `static Mutex<HashSet>` 存 dedup、用内存 LRU 存 sinceState 作为唯一恢复源 |
 
-**验证**：静态检查代码不出现本地路径常量 / `std::fs` 非测试调用 / 文件日志后端；运行期通过容器 `/proc/mounts` 与 `docker inspect` 确认无本地卷挂载；部署检查清单见 deployment.md §8.2。
+**验证**：静态检查代码不出现本地路径常量 / `std::fs` 非测试调用 / 文件日志后端；运行期通过容器 `/proc/mounts` 与 `docker inspect` 确认无本地卷挂载；部署检查清单见 docs/reference.md §9.1。
 
 ### 7.6 为什么远程联调接口必须默认完全关闭？
 
-该面存在的唯一理由是缩短生产排障路径：在无法登录容器、只能靠外部请求观察系统时，需要有人能在不发版的前提下探到 JMAP/Telegram 连通性与当前业务配置。代价是它的入口软度必然高于三条写路径——除只读探测外还保留一次**真实出站发送**，且复用业务白名单而非独立白名单。因此设计选择是「默认关闭」而不是「默认开启、靠负载均衡器挡」：进程满足「`DEBUG_ENABLED` 为真值或命令行带 `--debug`」**且**设置了非空 `DEBUG_TOKEN` 时才会挂载这组路由（`SAF-DEBUG-GATE`）；缺一时路由在路由器里**根本不存在**，请求落到 axum 通用 `404`，而非「存在但 401」——后者会泄漏路由存在性。也不存在第三种状态：没有「未配置即开放」的回退，也没有任何配置项能把它设为默认开启。`DEBUG_ENABLED` 走环境变量而非启动命令，是为了让开关能在不发版的前提下从平台控制台改一次完成——启动命令保持静态。再叠一层位置约束：它不在负载均衡器的安全路由白名单内，即便后端开错，经平台入口也会被 fail-closed 拒掉，唯一可达路径是直连后端 origin。这四处——双因子挂载、404 而非 401、无默认开启回退、负载均衡器不可达——共同构成「暴露面默认为零」的架构决策。启用方式、逐端点状态码与部署确认清单见 deployment.md §2.1。
+该面存在的唯一理由是缩短生产排障路径：在无法登录容器、只能靠外部请求观察系统时，需要有人能在不发版的前提下探到 JMAP/Telegram 连通性与当前业务配置。代价是它的入口软度必然高于三条写路径——除只读探测外还保留一次**真实出站发送**，且复用业务白名单而非独立白名单。因此设计选择是「默认关闭」而不是「默认开启、靠负载均衡器挡」：进程满足「`DEBUG_ENABLED` 为真值或命令行带 `--debug`」**且**设置了非空 `DEBUG_TOKEN` 时才会挂载这组路由（`SAF-DEBUG-GATE`）；缺一时路由在路由器里**根本不存在**，请求落到 axum 通用 `404`，而非「存在但 401」——后者会泄漏路由存在性。也不存在第三种状态：没有「未配置即开放」的回退，也没有任何配置项能把它设为默认开启。`DEBUG_ENABLED` 走环境变量而非启动命令，是为了让开关能在不发版的前提下从平台控制台改一次完成——启动命令保持静态。再叠一层位置约束：它不在负载均衡器的安全路由白名单内，即便后端开错，经平台入口也会被 fail-closed 拒掉，唯一可达路径是直连后端 origin。这四处——双因子挂载、404 而非 401、无默认开启回退、负载均衡器不可达——共同构成「暴露面默认为零」的架构决策。启用方式、逐端点状态码与部署确认清单见 docs/reference.md §3。
 
 ---
 
@@ -503,7 +503,7 @@ pub enum BotError {
 - `tracing`（直接依赖）+ `tracing-subscriber`（fmt + EnvFilter）。**当前只记录启动期事件**：`src/main.rs` 共 5 处 `info!`/`warn!`（启动变量缺失降级到 setup 模式、启动横幅、debug 端点开启、JMAP 服务不可用降级×2）。请求级事件（Push 回调、Reconcile 拉取、渠道推送、LLM 耗时）**尚未实现**——`src/` 里除 `main.rs` 外没有任何 tracing 调用，也没有命名 span（无 `#[instrument]` / `span!`）。
 - 指标（可选 `metrics` crate）：Push 回调到达数、去重命中率、Redis Streams 积压深度（pending）、DLQ 条数、对账补差条数、JMAP 请求延迟、推送失败率。**当前未接入任何指标后端**（`metrics` 不在 `Cargo.toml`）。
 - 优雅退出：**当前未实现**——`src/` 里没有信号处理（无 `tokio::signal` / `ctrl_c`），也没有 Streams pending 条目的 flush 逻辑；容器停机即终止进程。Redis 侧 `C-NO-STATEFUL-RECOVERY` 保证重启后从 Redis 重建，不依赖进程内状态。
-- **可靠性目标与策略**（Streams ACK/retry、幂等去重、Push 重试、对账恢复、指标/告警、**≥99.9% 通知可用性及边界**）见 deployment.md §6.4/§6.5（`NFR-NOTIFY-SLA`）。
+- **可靠性目标与策略**（Streams ACK/retry、幂等去重、Push 重试、对账恢复、指标/告警、**≥99.9% 通知可用性及边界**）见 README.md §6.3（`NFR-NOTIFY-SLA`）。
 
 ---
 
@@ -669,7 +669,7 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 **审计意见 → 收口（2026-09-26）**
 
 - 【应修-2】入队失败时 dedup 释放 best-effort 曾可能造成 24h 静默丢事件 → 已修复为 `claim_dedup_and_enqueue`（Lua 原子：`SET NX EX` 成功才 `XADD`），claim 与入队之间无中间失败窗口。
-- 【应修-1】`Email/changes` 依赖 `newState` 续传，`jmap-client 0.4.2` 无 `upToId` → 已改为「同 `sinceState` 下逐次翻倍 `maxChanges` 扩窗（上限 4096），仅在无法扩窗时才推进 `new_state`」，避免按页推进时漏批；`newState` 语义已确认承重（`docs/opengaps.md` §2），真实 Stalwart 环境的回调验证往返与积压排空走的就是基线 → 增量 `/changes` → `newState` 这条路径（`docs/deployment.md` §4.1、§6.3.1）。
+- 【应修-1】`Email/changes` 依赖 `newState` 续传，`jmap-client 0.4.2` 无 `upToId` → 已改为「同 `sinceState` 下逐次翻倍 `maxChanges` 扩窗（上限 4096），仅在无法扩窗时才推进 `new_state`」，避免按页推进时漏批；`newState` 语义已确认承重（`docs/opengaps.md` §2），真实 Stalwart 环境的回调验证往返与积压排空走的就是基线 → 增量 `/changes` → `newState` 这条路径（`README.md` §3.7、`README.md` §3.10）。
 - 其余低风险项均已收口：未知 stream 的空值改为 `Err`（fail-closed，进重试/DLQ）；`push:disable` 经 `forget_push_subscription` 清理验证码摘要键；`SET NX EX` TTL 下限收紧为 `.max(1)`；XAUTOCLAIM 空闲阈值按批大小缩放；无 payload 的畸形流条目由 `ack_malformed` 经 `XACK` 移出 PEL；CSPRNG 兜底 owner-token 改为「时间 + PID + 计数器」，不再使用常量。
 - 未排期待办（阶段 5「搜索 + 搜索片段」）**已收口（`bfe0fd8`）**：`/search` 走 `email_query`(`Filter::text`) + `SearchSnippet/get`，高亮降级与截断上限见 §2.3、§5.7；正文级高亮在锁定版本做不到（见 §2.3 备注）。阶段 5 待办已清零。
 
@@ -688,7 +688,7 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 
 ### 11.2 实时通信渠道（已决定，参见 deployment.md）
 - 通道 = **JMAP Push HTTPS 回调 + 外部 Cron 对账与排空**（`C-NO-LONG-CONN`/`C-HTTPS-INBOUND`）；EventSource/SSE/WebSocket 均**非目标**（`NG-POLLING-SSE`）。Push 注册通过受保护的 `POST /api/push/register` 显式触发；外部 Cron 必须同时调 `/reconcile`（增量入队）与 `/worker`（排空并发通知）——**只调对账会让通知永远发不出去**（deployment.md §6.3.1）。
-- Stalwart 侧接入已在真实环境验证：内置角色具备 `PushSubscription` 权限，注册、验证往返与真实回调投递全部走通。回调重试次数与幂等键 TTL / 对账间隔的匹配属于运维调参项，不是验收门槛：`docs/deployment.md` §5 给重试建议、§6.3.1 给对账间隔取值、§7 说明幂等键 TTL 必须覆盖 TG rate-limit 回退上限。`docs/opengaps.md` 当前无未完成项。
+- Stalwart 侧接入已在真实环境验证：内置角色具备 `PushSubscription` 权限，注册、验证往返与真实回调投递全部走通。回调重试次数与幂等键 TTL / 对账间隔的匹配属于运维调参项，不是验收门槛：`docs/reference.md` §9.3 给重试建议、README.md §3.10 给对账间隔取值、`docs/reference.md` §1 说明幂等键 TTL 必须覆盖 TG rate-limit 回退上限。`docs/opengaps.md` 当前无未完成项。
 
 ### 11.3 部署形式（已确认，架构相关）
 - **已确认**：**单账户实现**（`REQ-SINGLE-ACCOUNT`）；多账户暂用**多个 bot 实例**（各自 token/配置），**不做多账户单实例**（因此无需 chat→account 路由与 `JmapService` 池化）。2026-09-28 用户已就此决策，决定边界与将来若要做时的改动面登记在 `docs/opengaps.md` §3。

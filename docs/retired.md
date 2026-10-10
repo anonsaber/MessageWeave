@@ -25,7 +25,7 @@
 | Multi-step dialogue FSM (`Idle` / `AwaitClarify` / `AwaitConfirm` / `Analyzing` / `AwaitFallback`) | Target design, not implemented | Current AI authorization only needs a Boolean + expiration time, multi-step is over-design | Redis TTL authorization state, key and TTL, see the AI authorization state section of `docs/reference.md` |
 | Split each layer of domain / channel / notification / util into independent directories (sub-module split plan) | Target form directory, not implemented | The amount of code has not reached the scale that needs to be split | For the actual structure, see the project structure section of `docs/design.md`: the domain layer is `src/domain.rs` + `src/domain/jmap/` (only `client.rs`); LLM is in `src/ai.rs`; notifications are in `src/notify.rs`; encryption and tool logic are inline in `src/state.rs` / `src/config.rs`, there is no independent util layer and no integration test directory |
 | Teloxide style outbound message delivery integration test | Target form test, not yet implemented | Dependent on teloxide test mode | Unit test of `src/channel.rs` (`#[test]`) |
-| docker-compose `healthcheck` example (`message-weave health --addr ...`) | Deleted example | `src/main.rs` has no CLI subcommand resolution, the subcommand does not exist, and copying will fail (in the early days, there was also a problem of not having `curl` in the image, and now `curl` is built in) | `/ready` is detected by the platform ingress; for instructions, see `docs/deployment.md` Readiness Detection section |
+| docker-compose `healthcheck` example (`message-weave health --addr ...`) | Deleted example | `src/main.rs` has no CLI subcommand resolution, the subcommand does not exist, and copying will fail (in the early days, there was also a problem of not having `curl` in the image, and now `curl` is built in) | `/ready` is detected by the platform ingress; for instructions, see `docs/reference.md` §9.4 (readiness detection) |
 
 | Redis ACL password for SPA admin credentials = `REDIS_URL` | Route not taken | Obfuscating infrastructure credentials with UI admin password; `.is_empty()` guard for `bootstrap_token` when Redis has no ACL password (TLS-only managed Redis) makes SPA permanent 401 | Use instead `CONFIG_ENCRYPTION_KEY` (32-byte high-entropy hex required for startup, constant time comparison) |
 
@@ -101,7 +101,7 @@ These names never exist in the code. Some of them appear in the directory tree o
 | `/flag` / `/unseen` / Send command | Not implemented | Currently 6 intents recognized (Help/Consent/Summary/Search/General Messages/Unrecognized); of which `/search` is implemented (`worker.rs:680`) | None |
 | `Identity` concept | Not implemented | Account identification only relies on `ACCOUNT_ID`, no identity layer abstraction | None |
 | Extract `RUN_MODE` into a separate configuration file | Fictitious splitting scheme | `RUN_MODE` was once read by `config.rs` and verified in `src/main.rs`. **This variable and the verification block have been deleted together** (see §4); there has never been such a function as `validate_env_or_exit` | None |
-| docker-compose `message-weave health --addr` example | fictitious command | Applies no CLI subcommand; health check endpoints are `GET /healthz` and `GET /ready` | See the Health-check table in `docs/deployment.md` |
+| docker-compose `message-weave health --addr` example | fictitious command | Applies no CLI subcommand; health check endpoints are `GET /healthz` and `GET /ready` | See the Health-check section in `docs/reference.md` §9.4 |
 | Early design debate questions (message format/long message threshold/attachment policy/Identity/monitoring/LLM provider/circuit breaker, etc. 17 items) | Answered by code | The answer is given by the code that has been implemented and is no longer a pending item | See the "Early questions answered by code" section of `docs/design.md` |
 
 ## 3. Deleted documents
@@ -109,7 +109,7 @@ These names never exist in the code. Some of them appear in the directory tree o
 | Entry | Type | Reason | Alternative or Current Status |
 |---|---|---|---|
 | `docs/todo.md` | Superseded (deleted) | Unclear structure, overlapping with design/deployment, and once carrying historical narratives such as "this round has been closed" | First replaced by `docs/roadmap.md`, which was renamed and narrowed to `docs/opengaps.md` on 2026-09-29 (only unfinished/unverified gaps, blockages and next-stage goals are included) |
-| Temporary handover files in the root directory (no such files are left) | Temporary handover files, **never entered the git history** | Handover content should be returned to the permanent document, no temporary files in the root directory are left | Contents are merged into `docs/design.md`, `docs/deployment.md`, `docs/reference.md`, `docs/opengaps.md` |
+| Temporary handover files in the root directory (no such files are left) | Temporary handover files, **never entered the git history** | Handover content should be returned to the permanent document, no temporary files in the root directory are left | Contents are merged into `docs/design.md`, `docs/reference.md`, `docs/opengaps.md` |
 
 ---
 

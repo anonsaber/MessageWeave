@@ -25,7 +25,7 @@
 | 多步对话 FSM（`Idle` / `AwaitClarify` / `AwaitConfirm` / `Analyzing` / `AwaitFallback`） | 目标设计，未落地 | 当前 AI 授权只需一个布尔+过期时间，多步态属过度设计 | Redis TTL 授权态，键与 TTL 见 `docs/reference.md` 的 AI 授权态一节 |
 | 把领域 / 渠道 / 通知 / util 各层拆成独立目录（子模块拆分方案） | 目标形态目录，未落地 | 代码量未到需要拆分的规模 | 实际结构见 `docs/design.md` 的工程结构一节：领域层是 `src/domain.rs` + `src/domain/jmap/`（仅 `client.rs`）；LLM 在 `src/ai.rs`；通知在 `src/notify.rs`；加密与工具逻辑内联在 `src/state.rs` / `src/config.rs`，没有独立的 util 层，也没有集成测试目录 |
 | teloxide 风格的出站消息派发集成测试 | 目标形态测试，未落地 | 依附 teloxide 测试模式 | `src/channel.rs` 的单元测试（`#[test]`） |
-| docker-compose `healthcheck` 示例（`message-weave health --addr ...`） | 已删除的示例 | `src/main.rs` 无 CLI 子命令解析，该子命令不存在，照抄必失败（早期还叠加了镜像内无 `curl` 的问题，现已内置 `curl`） | 由平台 ingress 探测 `/ready`；说明见 `docs/deployment.md` 的就绪探测一节 |
+| docker-compose `healthcheck` 示例（`message-weave health --addr ...`） | 已删除的示例 | `src/main.rs` 无 CLI 子命令解析，该子命令不存在，照抄必失败（早期还叠加了镜像内无 `curl` 的问题，现已内置 `curl`） | 由平台 ingress 探测 `/ready`；说明见 `docs/reference.md` §9.4 的就绪探测一节 |
 
 | SPA 管理凭据 = `REDIS_URL` 的 Redis ACL 密码 | 未采用路线 | 混淆基础设施凭据与 UI 管理密码；Redis 无 ACL 密码（TLS-only 托管 Redis）时 `bootstrap_token` 的 `.is_empty()` 守卫让 SPA 永久 401 | 改用 `CONFIG_ENCRYPTION_KEY`（启动必填的 32 字节高熵 hex，常数时间比较） |
 
@@ -101,7 +101,7 @@
 | `/flag` / `/unseen` / 发信命令 | 未实施 | 当前识别 6 个意图（帮助 / 同意 / 摘要 / 搜索 / 普通消息 / 未识别）；其中 `/search` 已实现（`worker.rs:680`） | 无 |
 | `Identity` 概念 | 未实施 | 账号识别只依赖 `ACCOUNT_ID`，无身份层抽象 | 无 |
 | 把 `RUN_MODE` 抽成独立配置文件 | 虚构拆分方案 | `RUN_MODE` 曾由 `config.rs` 读取并在 `src/main.rs` 校验取值，**该变量与校验块现已一并删除**（见 §4）；从未存在 `validate_env_or_exit` 这类函数 | 无 |
-| docker-compose `message-weave health --addr` 示例 | 虚构命令 | 应用无 CLI 子命令；健康检查端点是 `GET /healthz` 与 `GET /ready` | 见 `docs/deployment.md` 的 Health-check 表 |
+| docker-compose `message-weave health --addr` 示例 | 虚构命令 | 应用无 CLI 子命令；健康检查端点是 `GET /healthz` 与 `GET /ready` | 见 `docs/reference.md` §9.4 的 Health-check 节 |
 | 早期设计辩论问题（消息格式 / 长邮件阈值 / 附件策略 / Identity / 监控 / LLM 供应商 / 熔断等 17 条） | 已由代码回答 | 均已被实现的代码给出答案，不再属于待确认项 | 见 `docs/design.md` 的「已由代码回答的早期问题」一节 |
 
 ## 3. 已删除的文档
@@ -109,7 +109,7 @@
 | 条目 | 类型 | 原因 | 替代或现状 |
 |---|---|---|---|
 | `docs/todo.md` | 已取代（已删除） | 结构不清，与 design/deployment 重叠，且曾承载「本轮已收口」这类历史叙述 | 先由 `docs/roadmap.md` 取代，后者于 2026-09-29 更名并收窄为 `docs/opengaps.md`（只放仍未完成/未验证的缺口、阻塞与下一阶段目标） |
-| 根目录临时交接件（不留此类文件） | 临时交接件，**从未进入 git 历史** | 交接内容应归位到常驻文档，不留根目录临时件 | 内容并入 `docs/design.md`、`docs/deployment.md`、`docs/reference.md`、`docs/opengaps.md` |
+| 根目录临时交接件（不留此类文件） | 临时交接件，**从未进入 git 历史** | 交接内容应归位到常驻文档，不留根目录临时件 | 内容并入 `docs/design.md`、`docs/reference.md`、`docs/opengaps.md` |
 
 ---
 

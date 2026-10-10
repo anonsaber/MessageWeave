@@ -26,7 +26,7 @@ business payloads and forwards the request as-is to the backend https origins; o
 > access control is added at the edge, so the route safelist is not a firewall and nothing in
 > this document is meant to be read as protection.
 
-> Design basis: `docs/design.md §11.3` (`NFR-HA-MULTI-INSTANCE`) and `docs/deployment.md §10`.
+> Design basis: `docs/design.md §11.3` (`NFR-HA-MULTI-INSTANCE`) and `docs/charter.md` §8.
 > Security baseline and prohibitions: `docs/charter.md §3`, `docs/charter.md §5`; stable-ID
 > registry `docs/charter.md §8`.
 
@@ -300,7 +300,7 @@ Two production incidents worth keeping in mind:
 
 ## References
 
-- `docs/deployment.md §10` — load balancer deployment, configuration and rollout
+- `docs/reference.md §9.5` — load balancer deployment, configuration and rollout
 - `docs/reference.md §4` — load balancer versus backend route matrix
 - `docs/reference.md §9.2` — backend configuration and secrets
 - `docs/reference.md §9.4` — health and release checks
