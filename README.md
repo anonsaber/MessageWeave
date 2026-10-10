@@ -256,10 +256,10 @@ Push delivery can be delayed or missed; an external scheduler is the safety net.
 that can reach your origin, every 5–10 minutes:
 
 ```sh
-MW_APP_URL=https://mw.example.com \
+MW_APP_DOMAIN=mw.example.com \
 MW_WORKER_TOKEN=<worker token> \
 MW_RECONCILE_TOKEN=<reconcile token> \
-scripts/cron-drain.sh
+scripts/cron-drain.sh --once
 ```
 
 The script drains the queue (`/worker`) and rescans for missed pushes (`/reconcile`); both return
