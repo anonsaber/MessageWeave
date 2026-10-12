@@ -108,6 +108,10 @@ export async function forwardWithFailover(origins, request, opts) {
   const queue = origins.slice(start).concat(origins.slice(0, start));
   const attempts = Math.max(1, Math.min(maxAttempts, queue.length));
   let lastFailure = "no backends configured";
+  // 保留最后一次 5xx HTTP 响应（未 cancel body），全部 origin 失败时透传它，
+  // 让客户端看到后端真实错误 body（如 reconcile 的 reason 字段），而非合成文本。
+  let last5xxResp = null;
+  let last5xxOrigin = "";
   // 一次性读 body 快照：让每次故障转移尝试可回灌同一请求体（body 流只能读一次）。
   const snapshot = await snapshotBody(request);
 
@@ -118,20 +122,32 @@ export async function forwardWithFailover(origins, request, opts) {
       const resp = await forwardRequest(origin, request, io, snapshot);
       // 非 5xx / 非网络错误：直接返回（4xx、2xx、3xx 均原样透传，不故障转移）。
       if (!isRetryableError(null, resp.status)) {
+        // 成功返回前释放之前保留的 5xx body（如果有），避免泄漏。
+        if (last5xxResp) last5xxResp.body?.cancel?.().catch(() => {});
         return mark(resp, origin);
       }
-      // 5xx：释放 body，换下一个实例。
-      resp.body?.cancel?.().catch(() => {});
+      // 5xx：释放上一次保留的 5xx body，保留这一次（最后一次胜出）。
+      // 全部 origin 失败时透传最后一次 5xx——后端的错误码/reason 字段
+      // 比「all backends failed」对排障有用得多。
+      if (last5xxResp) last5xxResp.body?.cancel?.().catch(() => {});
+      last5xxResp = resp;
+      last5xxOrigin = origin;
       lastFailure = `backend ${origin} returned HTTP ${resp.status}`;
       if (log) log(`retrying ${request.method} ${new URL(request.url).pathname}: ${lastFailure}`);
     } catch (err) {
       lastFailure = `backend ${origin} unavailable (${err && err.name ? err.name : "error"})`;
       if (log) log(lastFailure);
-      // 仅「可故障转移」的网络类失败（超时/连接错误）才换实例；其它错误 fail-fast，避免无限重试。
+      // 网络错误不清除 last5xxResp：如果之前某个 origin 返回了 5xx body，
+      // 那个 body 比网络错误描述更有诊断价值。
+      // 仅「可故障转移」的网络类失败（超时/连接错误）才换实例；其它错误 fail-fast。
       if (!isRetryableError(err, 0)) break;
     }
   }
-  // 全部 origin 失败 → 5xx（交由 Telegram/Stalwart 自动重投兜底，不丢消息）。
+  // 全部 origin 失败：如有 5xx HTTP 响应，透传它（带后端真实 body + status）。
+  if (last5xxResp) {
+    return mark(last5xxResp, last5xxOrigin);
+  }
+  // 全部是网络错误（无 HTTP 响应）→ 合成 5xx（交由 Telegram/Stalwart 自动重投兜底，不丢消息）。
   return new Response(`all backends failed: ${lastFailure}`, {
     status: 503,
     statusText: "All Backends Unavailable",

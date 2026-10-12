@@ -40,12 +40,17 @@ pub trait WorkerHandler: Send + Sync {
     ///
     /// `initial_changes` sizes the first `/changes` call only. The pass may
     /// widen the window afterwards, which is why it is not called `max_changes`.
+    ///
+    /// On failure, returns a `&'static str` diagnostic code identifying which
+    /// step broke (e.g. `"jmap_session_failed"`, `"jmap_list_failed"`). The HTTP
+    /// layer surfaces this as a `reason` field in the 503 body so operators can
+    /// see the cause without server-side logs.
     async fn reconcile(
         &self,
         _since_state: Option<&str>,
         _initial_changes: usize,
-    ) -> Result<String, ()> {
-        Err(())
+    ) -> Result<String, &'static str> {
+        Err("reconcile_unsupported")
     }
 }
 
@@ -143,8 +148,12 @@ impl WorkerHandler for WorkerHandle {
         &self,
         since_state: Option<&str>,
         initial_changes: usize,
-    ) -> Result<String, ()> {
-        let worker = self.current.read().map_err(|_| ())?.clone();
+    ) -> Result<String, &'static str> {
+        let worker = self
+            .current
+            .read()
+            .map_err(|_| "worker_handle_unavailable")?
+            .clone();
         worker.reconcile(since_state, initial_changes).await
     }
 }
@@ -344,7 +353,7 @@ impl<B: JmapBackend> WorkerHandler for MetadataWorker<B> {
         &self,
         since_state: Option<&str>,
         initial_changes: usize,
-    ) -> Result<String, ()> {
+    ) -> Result<String, &'static str> {
         // `maxChanges` must be at least 1: a zero window is not a valid
         // `/changes` request, and rejecting it would waste the pass.
         let window = initial_changes.max(1);
@@ -355,7 +364,12 @@ impl<B: JmapBackend> WorkerHandler for MetadataWorker<B> {
         } else {
             // Capture a stable baseline before paging. Changes occurring while
             // the listing is in flight are replayed from it before committing.
-            ReconcileCursor::walk_from(self.jmap.session_state().await.map_err(|_| ())?)
+            ReconcileCursor::walk_from(
+                self.jmap
+                    .session_state()
+                    .await
+                    .map_err(|_| "jmap_session_failed")?,
+            )
         };
 
         // Phase 1: drain the position walk, the only path that can see email
@@ -364,7 +378,7 @@ impl<B: JmapBackend> WorkerHandler for MetadataWorker<B> {
         match self.walk_baseline(cursor, started).await? {
             WalkOutcome::ReplayFrom(state) => self.replay_changes(state, window, started).await,
             WalkOutcome::Persist(cursor) => Ok(cursor.to_persisted()),
-            WalkOutcome::NoProgress => Err(()),
+            WalkOutcome::NoProgress => Err("reconcile_no_progress"),
         }
     }
 }
@@ -377,7 +391,7 @@ impl<B: JmapBackend> MetadataWorker<B> {
         &self,
         cursor: ReconcileCursor,
         started: tokio::time::Instant,
-    ) -> Result<WalkOutcome, ()> {
+    ) -> Result<WalkOutcome, &'static str> {
         // A cursor in replay mode has nothing to walk: nothing was appended to
         // the collection since it was committed.
         let (state, mut position) = match cursor {
@@ -405,7 +419,7 @@ impl<B: JmapBackend> MetadataWorker<B> {
                 .jmap
                 .list_emails_page(None, position, BASELINE_PAGE_SIZE)
                 .await
-                .map_err(|_| ())?;
+                .map_err(|_| "jmap_list_failed")?;
             if page.is_empty() {
                 return Ok(WalkOutcome::ReplayFrom(state));
             }
@@ -436,7 +450,7 @@ impl<B: JmapBackend> MetadataWorker<B> {
         mut state: String,
         initial_window: usize,
         started: tokio::time::Instant,
-    ) -> Result<String, ()> {
+    ) -> Result<String, &'static str> {
         let mut window = initial_window;
         let mut pages = 0_usize;
         loop {
@@ -444,7 +458,11 @@ impl<B: JmapBackend> MetadataWorker<B> {
                 // Every event from the last completed page is already enqueued.
                 // Returning that cursor lets the next invocation continue from
                 // it instead of retrying the same bounded window forever.
-                return if pages == 0 { Err(()) } else { Ok(state) };
+                return if pages == 0 {
+                    Err("reconcile_budget_exhausted")
+                } else {
+                    Ok(state)
+                };
             }
             pages += 1;
             let changes = match self.jmap.email_changes(&state, window).await {
@@ -455,7 +473,7 @@ impl<B: JmapBackend> MetadataWorker<B> {
                     // carries `oldState`/`newState`/`hasMoreChanges`/`created`/
                     // `updated`, so a `/changes` failure is
                     // indistinguishable from "the server no longer replays from
-                    // this `sinceState`". Returning `Err(())` leaves the cursor
+                    // this `sinceState`". Returning an error leaves the cursor
                     // untouched, so every later invocation retries the same dead
                     // state and `reconcile:state` freezes forever (a persistent
                     // 503 `reconcile_retry` with no forward progress). The
@@ -465,7 +483,10 @@ impl<B: JmapBackend> MetadataWorker<B> {
                     // dedup key makes the resulting re-read at-most-duplicate,
                     // never-loss.
                     let rebaselined = ReconcileCursor::walk_from(
-                        self.jmap.session_state().await.map_err(|_| ())?,
+                        self.jmap
+                            .session_state()
+                            .await
+                            .map_err(|_| "jmap_session_failed")?,
                     );
                     return Ok(rebaselined.to_persisted());
                 }
@@ -507,7 +528,7 @@ fn decode_baseline_cursor(value: &str) -> Option<(String, usize)> {
 }
 
 impl<B: JmapBackend> MetadataWorker<B> {
-    async fn enqueue_reconcile_event(&self, email_id: &str) -> Result<(), ()> {
+    async fn enqueue_reconcile_event(&self, email_id: &str) -> Result<(), &'static str> {
         let key = format!("dedup:jmap:{}:{}", self.jmap.account_id(), email_id);
         let payload = serde_json::json!({
             "accountId": self.jmap.account_id(),
@@ -521,7 +542,7 @@ impl<B: JmapBackend> MetadataWorker<B> {
         self.state
             .claim_dedup_and_enqueue(&key, ttl::DEDUP_JMAP_SECONDS, "stalwart:jmap", &payload)
             .await
-            .map_err(|_| ())?;
+            .map_err(|_| "enqueue_failed")?;
         Ok(())
     }
 

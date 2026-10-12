@@ -334,22 +334,40 @@ async fn reconcile(State(app): State<AppState>, headers: HeaderMap) -> Response 
                 .reconcile(since.as_deref(), RECONCILE_INITIAL_CHANGES)
                 .await;
             heartbeat.abort();
-            let response = if lease_lost.load(Ordering::Acquire) {
-                StatusCode::SERVICE_UNAVAILABLE
+            // Keep the failure reason instead of collapsing everything into a
+            // bare 503: without it operators cannot tell a JMAP outage from a
+            // Redis error, and (behind the Worker LB) the real cause is lost.
+            let outcome: Result<StatusCode, &'static str> = if lease_lost.load(Ordering::Acquire) {
+                Err("reconcile_lease_lost")
             } else {
                 match result {
                     Ok(new_state) => match app.state.set_reconcile_state(&new_state).await {
-                        Ok(()) => StatusCode::NO_CONTENT,
-                        Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+                        Ok(()) => Ok(StatusCode::NO_CONTENT),
+                        Err(_) => Err("reconcile_state_write_failed"),
                     },
-                    Err(()) => StatusCode::SERVICE_UNAVAILABLE,
+                    Err(reason) => Err(reason),
                 }
             };
             let _ = app.state.release_lock("lock:reconcile", &lock_owner).await;
-            if response == StatusCode::SERVICE_UNAVAILABLE {
-                error_response(response, "reconcile_retry", true)
-            } else {
-                response.into_response()
+            match outcome {
+                Ok(status) if status == StatusCode::NO_CONTENT => status.into_response(),
+                Ok(status) => error_response(status, "reconcile_retry", true),
+                Err(reason) => {
+                    // `reconcile_retry` stays the documented error code (stable
+                    // contract for cron-drain.sh and other callers); `reason`
+                    // identifies the broken step (e.g. `jmap_session_failed`).
+                    let body = axum::Json(serde_json::json!({
+                        "error": "reconcile_retry",
+                        "reason": reason,
+                        "request_id": reconcile_lock_owner(),
+                    }));
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        [(header::RETRY_AFTER, "30")],
+                        body,
+                    )
+                        .into_response()
+                }
             }
         }
         Ok(false) => error_response(StatusCode::CONFLICT, "conflict", false),

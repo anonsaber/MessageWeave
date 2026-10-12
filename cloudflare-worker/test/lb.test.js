@@ -178,8 +178,25 @@ test("timeout(AbortError) triggers failover and recovery", async () => {
   assert.equal(calls.length, 2);
 });
 
-test("all backends 5xx/timeout => aggregated 503 (Telegram redelivery fallback)", async () => {
+test("all backends fail: HTTP 5xx 透传最后一次真实 body（不被合成文本覆盖）", async () => {
+  // 网络错误 + HTTP 5xx 混合：保留 5xx 响应并透传，客户端能看到后端真实错误 body。
   const { fetch, calls } = mockFetch([{ error: abortError() }, { status: 503, body: "x" }]);
+  const res = await forwardWithFailover(["https://a.example", "https://b.example"], req("/push/jmap"), {
+    ...noOpTimers,
+    fetch,
+    maxAttempts: 2,
+    timeoutMs: 5000,
+    rng: () => 0,
+  });
+  assert.equal(res.status, 503);
+  assert.equal(calls.length, 2);
+  assert.equal(await res.text(), "x", "5xx 透传：后端真实 body 不被合成文本覆盖");
+  assert.equal(res.headers.get("x-lb-backend"), "https://b.example");
+});
+
+test("all backends network-error only => 合成 503 (Telegram redelivery fallback)", async () => {
+  // 纯网络错误（无 HTTP 响应）→ 无真实 body 可透传 → 合成 503。
+  const { fetch, calls } = mockFetch([{ error: abortError() }]);
   const res = await forwardWithFailover(["https://a.example", "https://b.example"], req("/push/jmap"), {
     ...noOpTimers,
     fetch,
