@@ -2,12 +2,16 @@
 //! Concrete read-only adapter (MOD-JMAP-CLIENT, GATE-G1-JMAP-READONLY).
 
 use super::{
-    EmailChanges, EmailContent, EmailMetadata, Folder, JmapBackend, JmapError, SearchResult,
-    SearchSnippet,
+    EmailChanges, EmailContent, EmailMetadata, EmailQueryFilter, Folder, JmapBackend, JmapError,
+    SearchResult, SearchSnippet,
 };
 use crate::state::{runtime_provider, OutboundConfig, RuntimeConfigProvider};
 use async_trait::async_trait;
 use jmap_client::{email, mailbox, DataType, Get};
+
+/// RFC 8621 §4.1.2: the read keyword. `notKeyword "$seen"` narrows `Email/query`
+/// to unread mail for the initial-baseline filter.
+const KEYWORD_SEEN: &str = "$seen";
 
 pub struct JmapClientBackend {
     client: jmap_client::client::Client,
@@ -270,8 +274,9 @@ impl JmapBackend for JmapClientBackend {
         folder_id: Option<&str>,
         position: usize,
         limit: usize,
+        filter: Option<EmailQueryFilter>,
     ) -> Result<Vec<EmailMetadata>, JmapError> {
-        self.fetch_email_page(account_id, folder_id, position, limit)
+        self.fetch_email_page(account_id, folder_id, position, limit, filter)
             .await
     }
 
@@ -369,14 +374,37 @@ impl JmapClientBackend {
         folder_id: Option<&str>,
         position: usize,
         limit: usize,
+        filter: Option<EmailQueryFilter>,
     ) -> Result<Vec<EmailMetadata>, JmapError> {
         if account_id != self.account_id || limit == 0 {
             return Err(JmapError::InvalidRequest("email query"));
         }
         let mut request = self.client.build();
         let query = request.query_email();
+        // Compose the folder condition (if any) with the baseline filter into one
+        // `Email/query` filter. A single condition is sent as-is; two or more are
+        // AND'd. Keeping `position` paginating the *filtered* set is what stops a
+        // multi-page baseline from flooding page 2+ with the unfiltered mailbox.
+        let mut conditions: Vec<email::query::Filter> = Vec::new();
         if let Some(folder_id) = folder_id {
-            query.filter(email::query::Filter::in_mailbox(folder_id));
+            conditions.push(email::query::Filter::in_mailbox(folder_id));
+        }
+        if let Some(filter) = filter {
+            if let Some(after) = filter.received_after {
+                conditions.push(email::query::Filter::after(after));
+            }
+            if filter.unread_only {
+                conditions.push(email::query::Filter::not_keyword(KEYWORD_SEEN.to_string()));
+            }
+        }
+        match conditions.len() {
+            0 => {}
+            1 => {
+                query.filter(conditions.swap_remove(0));
+            }
+            _ => {
+                query.filter(jmap_client::core::query::Filter::and(conditions));
+            }
         }
         query.position(position as i32).limit(limit.min(100));
         let mut response = tokio::time::timeout(self.timeout(), request.send_query_email())

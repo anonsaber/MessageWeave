@@ -97,6 +97,21 @@ pub struct SearchResult {
     pub snippets: Vec<SearchSnippet>,
 }
 
+/// Optional server-side constraints for `Email/query`.
+///
+/// The initial baseline walk uses this so a freshly-connected mailbox does not
+/// enqueue its entire history: it narrows to recent unread mail. Incremental
+/// `/changes` walks never call `list_emails_page`, so they are unaffected.
+///
+/// `received_after` is epoch **seconds** (matching the JMAP `after` filter, which
+/// the server compares against `receivedAt`). `unread_only` maps to
+/// `notKeyword "$seen"` (RFC 8621 §4.1.2: `$seen` is the read keyword).
+#[derive(Debug, Clone, Default)]
+pub struct EmailQueryFilter {
+    pub received_after: Option<i64>,
+    pub unread_only: bool,
+}
+
 #[async_trait]
 pub trait JmapBackend: Send + Sync {
     async fn create_push_subscription(&self, callback_url: &str) -> Result<String, JmapError>;
@@ -144,13 +159,23 @@ pub trait JmapBackend: Send + Sync {
     /// Fetch one bounded page without requiring the caller to materialize the
     /// entire mailbox. Implementations with a native JMAP position query should
     /// override this; the fallback preserves test backends' existing contract.
+    ///
+    /// `filter` narrows the server-side query (see [`EmailQueryFilter`]). It
+    /// carries the baseline's recent-unread window, so `position` paginates
+    /// within the *filtered* set: it must be held constant across every page of
+    /// one walk, or a later page would paginate the unfiltered mailbox.
     async fn list_emails_page(
         &self,
         account_id: &str,
         folder_id: Option<&str>,
         position: usize,
         limit: usize,
+        filter: Option<EmailQueryFilter>,
     ) -> Result<Vec<EmailMetadata>, JmapError> {
+        // The fallback has no server-side query to push the filter into; it is
+        // honored only where `Email/query` exists (`JmapClientBackend`), so a
+        // test backend that ignores it keeps its existing contract.
+        let _ = filter;
         let all = self
             .list_emails(account_id, folder_id, position.saturating_add(limit))
             .await?;
@@ -277,12 +302,13 @@ impl<B: JmapBackend> JmapService<B> {
         folder_id: Option<&str>,
         position: usize,
         limit: usize,
+        filter: Option<EmailQueryFilter>,
     ) -> Result<Vec<EmailMetadata>, JmapError> {
         if limit == 0 {
             return Err(JmapError::InvalidRequest("limit"));
         }
         self.backend
-            .list_emails_page(&self.account_id, folder_id, position, limit)
+            .list_emails_page(&self.account_id, folder_id, position, limit, filter)
             .await
     }
 

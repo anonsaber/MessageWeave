@@ -3,7 +3,7 @@
 use crate::ai::LlmClient;
 use crate::channel::telegram::TelegramClient;
 use crate::config::BusinessConfig;
-use crate::domain::jmap::{JmapBackend, JmapService, SearchResult};
+use crate::domain::jmap::{EmailQueryFilter, JmapBackend, JmapService, SearchResult};
 use crate::domain::Notification;
 use crate::state::ttl;
 use crate::state::ReliableState;
@@ -12,7 +12,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, RwLock},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 #[async_trait]
@@ -180,6 +180,11 @@ const CHANGE_WINDOW_CAP: usize = 4_096;
 const RECONCILE_MAX_PAGES: usize = 100;
 /// Wall-clock ceiling for the whole invocation, walk phase included.
 const RECONCILE_BUDGET: Duration = Duration::from_secs(20);
+/// The initial-baseline window: the walk only enqueues mail received within
+/// the last N days and still unread, so a freshly-connected mailbox does not
+/// flood notifications with its entire archive. `/changes` replay is
+/// unaffected (it never calls `list_emails_page`).
+const INITIAL_BASELINE_WINDOW_DAYS: u64 = 7;
 
 /// `reconcile:state` is bimodal, and the two modes need different handling.
 ///
@@ -401,6 +406,18 @@ impl<B: JmapBackend> MetadataWorker<B> {
 
         let mut pages = 0_usize;
         let mut emails = 0_usize;
+        // The baseline walk is the only caller of `list_emails_page`, and it must
+        // not enqueue a freshly-connected mailbox's entire history. Narrow every
+        // page to recent unread mail so the position walk paginates the *filtered*
+        // set consistently — filtering only page 0 would flood page 2+ from the
+        // unfiltered set at position 100. `/changes` replay never reaches here.
+        let baseline_filter = Some(EmailQueryFilter {
+            received_after: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|now| now.as_secs() as i64 - (INITIAL_BASELINE_WINDOW_DAYS as i64) * 86_400)
+                .ok(),
+            unread_only: true,
+        });
         loop {
             if pages >= BASELINE_MAX_PAGES
                 || emails >= BASELINE_MAX_EMAILS
@@ -417,7 +434,7 @@ impl<B: JmapBackend> MetadataWorker<B> {
             }
             let page = self
                 .jmap
-                .list_emails_page(None, position, BASELINE_PAGE_SIZE)
+                .list_emails_page(None, position, BASELINE_PAGE_SIZE, baseline_filter.clone())
                 .await
                 .map_err(|_| "jmap_list_failed")?;
             if page.is_empty() {
@@ -1347,6 +1364,7 @@ mod reconcile_rebaseline_tests {
             _folder_id: Option<&str>,
             _position: usize,
             _limit: usize,
+            _filter: Option<EmailQueryFilter>,
         ) -> Result<Vec<EmailMetadata>, JmapError> {
             Ok(vec![])
         }
@@ -1462,6 +1480,7 @@ mod reconcile_rebaseline_tests {
             _folder_id: Option<&str>,
             _position: usize,
             _limit: usize,
+            _filter: Option<EmailQueryFilter>,
         ) -> Result<Vec<EmailMetadata>, JmapError> {
             Ok(vec![EmailMetadata {
                 id: "m1".to_string(),
@@ -1526,5 +1545,163 @@ mod reconcile_rebaseline_tests {
             0,
             "a truncated walk must not replay /changes from a half-listed state"
         );
+    }
+
+    /// Records every `EmailQueryFilter` the baseline walk hands to
+    /// `list_emails_page`. Page 0 returns a short filtered-looking set so the
+    /// walk advances; every later page returns empty so the walk exhausts after
+    /// one page. The recorded filters let the test pin acceptance #1 (only
+    /// recent unread) and the whole-Walk-phase deviation (every page carries
+    /// the filter, not just position 0).
+    struct FilteredBaselineBackend {
+        filters: Arc<std::sync::Mutex<Vec<Option<EmailQueryFilter>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl JmapBackend for FilteredBaselineBackend {
+        async fn create_push_subscription(&self, _callback_url: &str) -> Result<String, JmapError> {
+            unreachable!("baseline walk never creates push subscriptions")
+        }
+        async fn destroy_push_subscription(&self, _subscription_id: &str) -> Result<(), JmapError> {
+            unreachable!("baseline walk never destroys push subscriptions")
+        }
+        async fn verify_push_subscription(
+            &self,
+            _subscription_id: &str,
+            _verification_code: &str,
+        ) -> Result<(), JmapError> {
+            unreachable!("baseline walk never verifies push subscriptions")
+        }
+        async fn session_state(&self) -> Result<String, JmapError> {
+            Ok("state-fresh".to_string())
+        }
+        async fn email_changes(
+            &self,
+            _account_id: &str,
+            _since_state: &str,
+            _max_changes: usize,
+        ) -> Result<EmailChanges, JmapError> {
+            Ok(EmailChanges {
+                new_state: "state-listed".to_string(),
+                created: vec![],
+                updated: vec![],
+                has_more_changes: false,
+            })
+        }
+        async fn list_folders(&self, _account_id: &str) -> Result<Vec<Folder>, JmapError> {
+            unreachable!("baseline walk never lists folders")
+        }
+        async fn list_emails(
+            &self,
+            _account_id: &str,
+            _folder_id: Option<&str>,
+            _limit: usize,
+        ) -> Result<Vec<EmailMetadata>, JmapError> {
+            unreachable!("baseline walk uses list_emails_page, not list_emails")
+        }
+        async fn list_emails_page(
+            &self,
+            _account_id: &str,
+            _folder_id: Option<&str>,
+            position: usize,
+            _limit: usize,
+            filter: Option<EmailQueryFilter>,
+        ) -> Result<Vec<EmailMetadata>, JmapError> {
+            self.filters
+                .lock()
+                .expect("filter recorder mutex")
+                .push(filter);
+            if position == 0 {
+                Ok(vec![
+                    EmailMetadata {
+                        id: "m-recent-unread-1".to_string(),
+                        subject: Some("recent".to_string()),
+                        sender: Some("a@example.org".to_string()),
+                        received_at: Some(1),
+                        preview: None,
+                        size: None,
+                        has_attachment: false,
+                    },
+                    EmailMetadata {
+                        id: "m-recent-unread-2".to_string(),
+                        subject: Some("recent".to_string()),
+                        sender: Some("b@example.org".to_string()),
+                        received_at: Some(2),
+                        preview: None,
+                        size: None,
+                        has_attachment: false,
+                    },
+                ])
+            } else {
+                Ok(vec![])
+            }
+        }
+        async fn read_email(
+            &self,
+            _account_id: &str,
+            _email_id: &str,
+        ) -> Result<Option<EmailContent>, JmapError> {
+            unreachable!("baseline walk never reads individual emails")
+        }
+        async fn search_emails(
+            &self,
+            _account_id: &str,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<SearchResult, JmapError> {
+            unreachable!("baseline walk never searches")
+        }
+    }
+
+    #[tokio::test]
+    async fn first_reconcile_filters_the_initial_baseline_to_recent_unread() {
+        let filters: Arc<std::sync::Mutex<Vec<Option<EmailQueryFilter>>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let backend = FilteredBaselineBackend {
+            filters: filters.clone(),
+        };
+        let jmap = JmapService::new(backend, "account-x").expect("account id");
+        let telegram = TelegramClient::with_endpoint(
+            SecretString::from("token".to_string()),
+            runtime_provider(OutboundConfig::default()),
+            "http://127.0.0.1:1/".to_string(),
+        );
+        let state: Arc<dyn ReliableState> = Arc::new(MemoryState::enabled_for_tests());
+        let worker = MetadataWorker::new(jmap, telegram, 42, state, None, 0);
+
+        let cursor = worker
+            .reconcile(None, 100)
+            .await
+            .expect("a filtered baseline walk must complete, not error");
+
+        assert!(
+            matches!(
+                ReconcileCursor::from_persisted(&cursor),
+                ReconcileCursor::Replay(_)
+            ),
+            "the walk must exhaust the filtered set and move to the /changes phase"
+        );
+
+        let recorded = filters.lock().expect("filter recorder mutex");
+        assert!(
+            !recorded.is_empty(),
+            "the baseline walk must call list_emails_page at least once"
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("post-epoch clock")
+            .as_secs() as i64;
+        let expected_after = now - (INITIAL_BASELINE_WINDOW_DAYS as i64) * 86_400;
+        for f in recorded.iter() {
+            let f = f.as_ref().expect("every baseline page must carry a filter");
+            assert!(f.unread_only, "baseline filter must request unread only");
+            let after = f
+                .received_after
+                .expect("baseline filter must bound received_at to the 7-day window");
+            assert!(
+                after >= expected_after - 60 && after <= expected_after + 60,
+                "received_after must be ~now - 7d (got {after}, expected ~{expected_after})"
+            );
+        }
     }
 }
