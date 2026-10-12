@@ -69,11 +69,11 @@ pub(crate) mod ttl {
     /// `session_digest(verification_code)`. Stalwart sends the verification
     /// request (RFC 8620 §7.2) once at subscription creation; event pushes
     /// (§7.3) arrive without `verificationCode` and rely on this key existing
-    /// to confirm prior verification. TTL must outlast any realistic gap
-    /// between subscription creation and the first event, and survive across
-    /// restarts — Stalwart does not re-verify. Aligned with
-    /// `PUSH_REGISTRATION_SECONDS` (1 week).
-    pub const PUSH_SUBSCRIPTION_SECONDS: u64 = WEEK;
+    /// to confirm prior verification. **TTL 0 = never expires**: Stalwart
+    /// does not re-verify, so any finite TTL would cause push to silently
+    /// stop working. The key is explicitly deleted by `forget_push_subscription`
+    /// when the subscription is retired.
+    pub const PUSH_SUBSCRIPTION_SECONDS: u64 = 0;
     /// Callback-URL -> subscription-id registration window.
     pub const PUSH_REGISTRATION_SECONDS: u64 = WEEK;
     /// Orphan callback attribution window: a callback with an unknown
@@ -830,13 +830,24 @@ impl ReliableState for RedisState {
         ttl_seconds: u64,
     ) -> Result<(), StateError> {
         let mut connection = self.connection.clone();
-        redis::cmd("SET")
-            .arg(format!("push:subscription:{subscription_id}"))
-            .arg(crate::config::session_digest(verification_code))
-            .arg("EX")
-            .arg(ttl_seconds.max(1))
-            .query_async::<()>(&mut connection)
-            .await?;
+        let key = format!("push:subscription:{subscription_id}");
+        let value = crate::config::session_digest(verification_code);
+        if ttl_seconds == 0 {
+            // No expiration — Stalwart does not re-verify (RFC 8620 §7.2).
+            redis::cmd("SET")
+                .arg(&key)
+                .arg(&value)
+                .query_async::<()>(&mut connection)
+                .await?;
+        } else {
+            redis::cmd("SET")
+                .arg(&key)
+                .arg(&value)
+                .arg("EX")
+                .arg(ttl_seconds.max(1))
+                .query_async::<()>(&mut connection)
+                .await?;
+        }
         Ok(())
     }
 
@@ -1357,16 +1368,18 @@ impl ReliableState for MemoryState {
         verification_code: &str,
         ttl_seconds: u64,
     ) -> Result<(), StateError> {
+        let expiry = if ttl_seconds == 0 {
+            i64::MAX
+        } else {
+            unix_now().saturating_add(ttl_seconds as i64)
+        };
         self.inner
             .lock()
             .map_err(|_| StateError::Poisoned)?
             .push_subscriptions
             .insert(
                 subscription_id.to_owned(),
-                (
-                    crate::config::session_digest(verification_code),
-                    unix_now().saturating_add(ttl_seconds as i64),
-                ),
+                (crate::config::session_digest(verification_code), expiry),
             );
         Ok(())
     }
@@ -1624,7 +1637,7 @@ mod tests {
 
         assert_eq!(ttl::PUSH_STATUS_PENDING_SECONDS, 900);
         assert_eq!(ttl::PUSH_STATUS_VERIFIED_SECONDS, 300);
-        assert_eq!(ttl::PUSH_SUBSCRIPTION_SECONDS, 604_800);
+        assert_eq!(ttl::PUSH_SUBSCRIPTION_SECONDS, 0);
         assert_eq!(ttl::PUSH_REGISTRATION_SECONDS, 604_800);
         assert_eq!(ttl::PUSH_ORPHAN_SECONDS, 604_800);
         assert_eq!(ttl::ADMIN_SESSION_SECONDS, 1_800);

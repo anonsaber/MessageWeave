@@ -138,7 +138,7 @@ DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 
 
 | 键 | TTL | 写入方 | 读取方 |
 |---|---|---|---|
-| `push:subscription:{id}` | EX 604_800（调用方提供，最小 1）| `remember_push_subscription`，从 `jmap_push` 验证路径调用 | `push_subscription_verified` |
+| `push:subscription:{id}` | 无 TTL（0 = 永不过期） | `remember_push_subscription`，从 `jmap_push` 验证路径调用 | `push_subscription_verified`、`forget_push_subscription` |
 | `push:subscription:id` | 无 EX | `remember_push_subscription_id` | 当前订阅查询 |
 | `push:subscription:{id}:status` | 900 / 300 / 86_400（强制最小 1）| `set_push_subscription_status`；验证请求时为 `pending`，成功时为 `verified`，禁用时为 `disabled` | **无** |
 | `push:registration:{sha256(callback_url)}` | EX 604_800 | `remember_push_subscription_for_callback`，从 `register_push` 调用 | `get_push_subscription_for_callback`;通过 `remove_push_subscription_for_callback` 删除 |

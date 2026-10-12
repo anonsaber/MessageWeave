@@ -639,7 +639,8 @@ The Push event is consumed by Streams and delivered to Telegram. Its key path de
 
 **The only authoritative source for keys and TTL is `docs/reference.md` (section Redis Keys and TTL). **The tables will not be repeated in this section - repeated tables
 Historical note: `push:subscription:{id}` was previously marked as 7d in docs but the code used 300s — a bug that caused event pushes to fail with 401 after 5 minutes
-(because Stalwart only sends the verification request once, at subscription creation, and never re-verifies). Now corrected to 7d (`WEEK`), aligned with `PUSH_REGISTRATION_SECONDS`.
+(because Stalwart only sends the verification request once, at subscription creation, and never re-verifies). Now corrected to **never expire (TTL 0)**: the key is explicitly deleted by
+`forget_push_subscription` when the subscription is retired, so no TTL is needed.
 The `push:registration:{...}` was marked as 360s registration solo lock, which was also wrong; the real 360s solo lock is `lock:push-register:{sha256(callback_url)}`.
 All values have now converged to the single authority table in `docs/reference.md`. This section retains five "whys" that affect design judgment:
 
@@ -647,8 +648,9 @@ All values have now converged to the single authority table in `docs/reference.m
   (`REQ-RECONCILE-IDEMPOTENCY`, `SAF-RECONCILE-LOCK`).
 - **push registration solo lock TTL 360s, deliberately larger than the upper limit of 300s for a single outbound request**, otherwise a slow registration will cause repeated requests
   (`SAF-AUTH-JMAP-PUSH`).
-- **Push subscription verification key TTL 7d (`WEEK`)**: Stalwart sends the verification request (RFC 8620 §7.2) once at subscription creation; event pushes (§7.3) arrive without
-  `verificationCode` and rely on this key existing to confirm prior verification. The key must outlast any gap between subscription creation and events, and survive restarts — Stalwart does not re-verify.
+- **Push subscription verification key has no TTL (0 = never expires)**: Stalwart sends the verification request (RFC 8620 §7.2) once at subscription creation; event pushes (§7.3) arrive without
+  `verificationCode` and rely on this key existing to confirm prior verification. Any finite TTL would cause push to silently stop working — Stalwart does not re-verify.
+  The key is explicitly deleted by `forget_push_subscription` when the subscription is retired.
 - **Reconciliation deduplication 24h is intentionally designed**: the same email will only be notified once within 24h (`MOD-DEDUP`, see 11.5 of this article for the scope).
 - **If the configuration key is missing, it will be regarded as failed (fail-closed)** and the business path will not be entered.
 

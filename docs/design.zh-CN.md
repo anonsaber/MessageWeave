@@ -639,7 +639,8 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 
 **键与 TTL 的唯一权威来源是 `docs/reference.md`（Redis 键与 TTL 各节）。**本节不再重复表格——重复的表
 历史说明：`push:subscription:{id}` 此前在文档中标为 7d 但代码实为 300s——这是一个 bug，导致事件 push 在 5 分钟后全部 401 失败
-（因为 Stalwart 仅在订阅创建时发送一次验证请求，之后不再重验）。现已修正为 7d（`WEEK`），与 `PUSH_REGISTRATION_SECONDS` 对齐。
+（因为 Stalwart 仅在订阅创建时发送一次验证请求，之后不再重验）。现已修正为**永不过期（TTL 0）**：订阅被注销时由
+`forget_push_subscription` 显式删除，不靠 TTL 兜底。
 `push:registration:{...}` 曾被标为 360s 注册单飞锁，亦为误标；真正的 360s 单飞锁是 `lock:push-register:{sha256(callback_url)}`。
 所有值现已收敛到 `docs/reference.md` 的单一权威表。本节保留影响设计判断的五条"为什么"：
 
@@ -647,8 +648,9 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
   （`REQ-RECONCILE-IDEMPOTENCY`、`SAF-RECONCILE-LOCK`）。
 - **push 注册单飞锁 TTL 360s，刻意大于单条出站请求上限 300s**，否则一次慢注册会放进重复请求
   （`SAF-AUTH-JMAP-PUSH`）。
-- **push 订阅验证键 TTL 7d（`WEEK`）**：Stalwart 仅在订阅创建时发送验证请求（RFC 8620 §7.2），事件 push（§7.3）不带
-  `verificationCode`，依赖此键存在来确认已验证过。TTL 必须长于订阅创建到首条事件之间的任何间隔，且能跨重启存活——Stalwart 不会重验。
+- **push 订阅验证键无 TTL（0 = 永不过期）**：Stalwart 仅在订阅创建时发送验证请求（RFC 8620 §7.2），事件 push（§7.3）不带
+  `verificationCode`，依赖此键存在来确认已验证过。任何有限 TTL 都会导致 push 在某天静默失效——Stalwart 不会重验。
+  订阅被注销时由 `forget_push_subscription` 显式删除。
 - **对账去重 24h 是有意设计**：同一封邮件 24h 内只通知一次（`MOD-DEDUP`，范围见本文 11.5）。
 - **配置键缺键即视为关闭（fail-closed）**，不进入业务路径。
 
