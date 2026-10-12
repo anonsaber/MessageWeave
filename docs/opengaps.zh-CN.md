@@ -45,8 +45,9 @@ TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），�
 
 | 常量 | 值（秒） | 键 |
 | --- | --- | --- |
-| `ttl::RECONCILE_LOCK_SECONDS` | 300 | `lock:reconcile` |
-| `ttl::RECONCILE_HEARTBEAT_SECONDS` | 90 | `lock:reconcile`（心跳续租） |
+| `ttl::RECONCILE_LOCK_SECONDS` | 60 | `lock:reconcile` |
+| `ttl::RECONCILE_HEARTBEAT_SECONDS` | 30 | `lock:reconcile`（心跳续租） |
+| `ttl::RECONCILE_HEARTBEAT_INTERVAL_SECONDS` | 10 | 心跳 sleep 间隔 |
 | `ttl::PUSH_REGISTER_LOCK_SECONDS` | 360 | `lock:push-register:{sha256(callback_url)}` |
 | `ttl::PUSH_VERIFY_LIMIT_SECONDS` | 30 | `ratelimit:push-verify:{subscription_id}` |
 | `ttl::DEDUP_TG_SECONDS` | 86_400 | `dedup:tg:{update_id}` |
@@ -103,8 +104,8 @@ TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），�
 
 **将来若真要做的最小改动面**（本轮核实过现状，供拆需求时直接用）
 
-- `state:jmap:since` 是**单一全局游标**，无账户维度（读 `src/state.rs:792`、写 `src/state.rs:800`）——两个账户会互相覆盖游标，这是第一个要动的地方。
-- `lock:reconcile` 是**单一全局单飞锁**（Redis 实现 `src/state.rs:1130`）——两个账户的对账会被同一把锁串行化。
+- `state:jmap:since` 是**单一全局游标**，无账户维度（读 `src/state.rs:801`、写 `src/state.rs:809`）——两个账户会互相覆盖游标，这是第一个要动的地方。
+- `lock:reconcile` 是**单一全局单飞锁**（Redis 实现 `src/state.rs:1139`）——两个账户的对账会被同一把锁串行化。
 - `dedup:jmap:{account_id}:{email_id}` **已经带账户段**（`docs/reference.md` §1），键形无需改。
 - `ACCOUNT_ID` 环境变量已存在且经校验（留空取 session 主账户，越界值在 `src/domain/jmap/client.rs:485` 报错），业务配置层也能覆盖 `account_id`（`src/config.rs:465` 的 `unwrap_or_else` 回落）。配置面已就绪，缺的只是实例内的分维度状态。
 

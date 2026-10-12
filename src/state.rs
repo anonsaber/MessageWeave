@@ -32,10 +32,19 @@ pub(crate) mod ttl {
     pub const WEEK: u64 = 7 * DAY;
     pub const YEAR: u64 = 365 * DAY;
 
-    /// Initial hold on the reconcile job.
-    pub const RECONCILE_LOCK_SECONDS: u64 = 300;
-    /// Heartbeat renewal. Must stay well under `RECONCILE_LOCK_SECONDS`.
-    pub const RECONCILE_HEARTBEAT_SECONDS: u64 = 90;
+    /// Initial hold on the reconcile job. Kept short: if the process crashes
+    /// before the first heartbeat fires, the lock expires in ≤60 s instead of
+    /// the previous 300 s. The heartbeat renews to `RECONCILE_HEARTBEAT_SECONDS`
+    /// well before this expires.
+    pub const RECONCILE_LOCK_SECONDS: u64 = 60;
+    /// Heartbeat renewal TTL. Must stay well under `RECONCILE_LOCK_SECONDS` and
+    /// be at least `RECONCILE_HEARTBEAT_INTERVAL_SECONDS × 2` (one missed beat
+    /// tolerated). After the first heartbeat the worst-case expiry drops to
+    /// this value.
+    pub const RECONCILE_HEARTBEAT_SECONDS: u64 = 30;
+    /// Interval between heartbeat renewals. Short enough that the first renewal
+    /// fires well before `RECONCILE_LOCK_SECONDS` expires.
+    pub const RECONCILE_HEARTBEAT_INTERVAL_SECONDS: u64 = 10;
     /// Single-flight lock for JMAP push registration. Outlives the maximum JMAP
     /// request timeout so a slow create cannot admit a duplicate.
     pub const PUSH_REGISTER_LOCK_SECONDS: u64 = 360;
@@ -1586,12 +1595,21 @@ mod tests {
         assert_eq!(ttl::WEEK, 604_800);
         assert_eq!(ttl::YEAR, 31_536_000);
 
-        assert_eq!(ttl::RECONCILE_LOCK_SECONDS, 300);
-        assert_eq!(ttl::RECONCILE_HEARTBEAT_SECONDS, 90);
+        assert_eq!(ttl::RECONCILE_LOCK_SECONDS, 60);
+        assert_eq!(ttl::RECONCILE_HEARTBEAT_SECONDS, 30);
+        assert_eq!(ttl::RECONCILE_HEARTBEAT_INTERVAL_SECONDS, 10);
         const {
             assert!(
                 ttl::RECONCILE_HEARTBEAT_SECONDS < ttl::RECONCILE_LOCK_SECONDS,
                 "the heartbeat must renew before the reconcile lock expires"
+            );
+            assert!(
+                ttl::RECONCILE_HEARTBEAT_INTERVAL_SECONDS * 2 <= ttl::RECONCILE_HEARTBEAT_SECONDS,
+                "one missed heartbeat must not push renewal past the beat TTL"
+            );
+            assert!(
+                ttl::RECONCILE_HEARTBEAT_INTERVAL_SECONDS < ttl::RECONCILE_LOCK_SECONDS,
+                "the first renewal must fire before the initial hold expires"
             );
         }
         assert_eq!(ttl::PUSH_REGISTER_LOCK_SECONDS, 360);

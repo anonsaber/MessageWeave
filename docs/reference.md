@@ -125,7 +125,7 @@ re-baseline on the next restart.
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `lock:reconcile` | 300 | `acquire_lock` in `reconcile` | `renew_lock` from the heartbeat task (90 s) |
+| `lock:reconcile` | 60 | `acquire_lock` in `reconcile` | `renew_lock` from the heartbeat task (30 s) |
 | `lock:push-register:{sha256(callback_url)}` | 360 | `acquire_lock` in `register_push` | `release_lock` on every exit path of `register_push` |
 
 **Why the registration lock is 360 s and not 300 s.** The lock must outlive the longest
@@ -526,7 +526,7 @@ There is **no** `LLM_MAX_RETRIES` environment variable; retry count lives in
 | `RECONCILE_BUDGET` | 20 s | `worker.rs` |
 | `CHANGE_WINDOW_CAP` | 4_096 | `worker.rs` |
 | `RECONCILE_INITIAL_CHANGES` | 100 | `notify.rs` |
-| Lock TTL / heartbeat | 300 s / 90 s | `reconcile` and its heartbeat task |
+| Lock TTL / heartbeat | 60 s / 30 s | `reconcile` and its heartbeat task |
 
 `initial_changes` is a function parameter, not a constant: it sizes only the
 first `/changes` call. The replay phase may widen the window afterwards, up to

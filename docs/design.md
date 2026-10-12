@@ -642,7 +642,7 @@ Will be modified: `push:subscription:{id}` was previously marked as 7d, and `pus
 Both are wrong, and the real 360s solo lock `lock:push-register:{sha256(callback_url)}` was missing the entire line. has now converged to
 Single authority table, this section only retains four "whys" that affect design judgment:
 
-- **Reconciliation lock TTL 300s, deliberately larger than the upper limit of 120s for a single page**, to avoid lock expiration during the lock period, causing the same account to enter reconciliation repeatedly
+- **Reconciliation lock TTL 60s, with heartbeat renewal every 10s to 30s during active processing**, ensuring a crashed process releases the lock within 60s instead of blocking reconciliation
   (`REQ-RECONCILE-IDEMPOTENCY`, `SAF-RECONCILE-LOCK`).
 - **push registration solo lock TTL 360s, deliberately larger than the upper limit of 300s for a single outbound request**, otherwise a slow registration will cause repeated requests
   (`SAF-AUTH-JMAP-PUSH`).

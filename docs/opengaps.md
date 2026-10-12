@@ -45,8 +45,9 @@ Contract baseline (see `docs/reference.md` §1 for the complete semantics of key
 
 | constant | value (seconds) | key |
 | --- | --- | --- |
-| `ttl::RECONCILE_LOCK_SECONDS` | 300 | `lock:reconcile` |
-| `ttl::RECONCILE_HEARTBEAT_SECONDS` | 90 | `lock:reconcile` (heartbeat renewal) |
+| `ttl::RECONCILE_LOCK_SECONDS` | 60 | `lock:reconcile` |
+| `ttl::RECONCILE_HEARTBEAT_SECONDS` | 30 | `lock:reconcile` (heartbeat renewal) |
+| `ttl::RECONCILE_HEARTBEAT_INTERVAL_SECONDS` | 10 | heartbeat sleep interval |
 | `ttl::PUSH_REGISTER_LOCK_SECONDS` | 360 | `lock:push-register:{sha256(callback_url)}` |
 | `ttl::PUSH_VERIFY_LIMIT_SECONDS` | 30 | `ratelimit:push-verify:{subscription_id}` |
 | `ttl::DEDUP_TG_SECONDS` | 86_400 | `dedup:tg:{update_id}` |
@@ -103,8 +104,8 @@ Single accounts are fixed by requirement (`REQ-SINGLE-ACCOUNT`) and never enter 
 
 **Minimum changes if necessary in the future** (The current situation has been verified in this round and will be used directly when disassembly is needed)
 
-- `state:jmap:since` is a **single global cursor**, no account dimension (read `src/state.rs:792`, write `src/state.rs:800`) - both accounts will overwrite each other's cursors, which is the first place to move.
-- `lock:reconcile` is a **single global solo lock** (Redis implementation `src/state.rs:1130`) - the reconciliation of two accounts will be serialized by the same lock.
+- `state:jmap:since` is a **single global cursor**, no account dimension (read `src/state.rs:801`, write `src/state.rs:809`) - both accounts will overwrite each other's cursors, which is the first place to move.
+- `lock:reconcile` is a **single global solo lock** (Redis implementation `src/state.rs:1139`) - the reconciliation of two accounts will be serialized by the same lock.
 - `dedup:jmap:{account_id}:{email_id}` **Already has the account segment** (`docs/reference.md` §1), the key shape does not need to be changed.
 - The `ACCOUNT_ID` environment variable already exists and has been verified (leave it blank to take the session main account, and an error will be reported if the out-of-bounds value is `src/domain/jmap/client.rs:485`). The business configuration layer can also override `account_id` (`unwrap_or_else` of `src/config.rs:465` falls back). The configuration interface is ready, all that is missing is the sub-dimension status within the instance.
 

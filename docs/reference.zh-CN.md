@@ -124,7 +124,7 @@ DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 
 
 | 键 | TTL | 写入方 | 读取方 |
 |---|---|---|---|
-| `lock:reconcile` | 300 | `reconcile` 中的 `acquire_lock` |心跳任务中的 `renew_lock`（90 秒） |
+| `lock:reconcile` | 60 | `reconcile` 中的 `acquire_lock` |心跳任务中的 `renew_lock`（30 秒） |
 | `lock:push-register:{sha256(callback_url)}` | 360 | `register_push` 中的 `acquire_lock` | `register_push` 每个退出路径上的 `release_lock`
 
 **为什么注册锁是 360 秒而不是 300 秒。** 锁的寿命必须是最长的
@@ -515,7 +515,7 @@ build 没有 IANA tz 数据库（“chrono-tz”不可用），因此每个区�
 | `协调预算` | 20 秒 | `worker.rs` |
 | `CHANGE_WINDOW_CAP` | 4_096 | 4_096 `worker.rs` |
 | `协调初始更改` | 100 | 100 `notify.rs` |
-|锁定TTL/心跳| 300 秒 / 90 秒 | `reconcile` 及其心跳任务 |
+|锁定TTL/心跳| 60 秒 / 30 秒 | `reconcile` 及其心跳任务 |
 
 `initial_changes` 是一个函数参数，而不是一个常量：它只调整
 第一个“/changes”调用。重播阶段之后可能会扩大窗口，最多

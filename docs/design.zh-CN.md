@@ -642,7 +642,7 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 两处都错，而真正的 360s 单飞锁 `lock:push-register:{sha256(callback_url)}` 当时整行缺失。现已收敛到
 单一权威表，本节只保留影响设计判断的四条"为什么"：
 
-- **对账锁 TTL 300s，刻意大于单页 120s 上限**，避免持锁期间锁过期导致同一账号重复进入对账
+- **对账锁 TTL 60s，活跃处理期间每 10s 心跳续期至 30s**，确保崩溃进程在 60s 内释放锁、不阻塞对账
   （`REQ-RECONCILE-IDEMPOTENCY`、`SAF-RECONCILE-LOCK`）。
 - **push 注册单飞锁 TTL 360s，刻意大于单条出站请求上限 300s**，否则一次慢注册会放进重复请求
   （`SAF-AUTH-JMAP-PUSH`）。

@@ -31,10 +31,10 @@ import { aggregateHealth, healthResponse, DEFAULT_HEALTH_TTL_MS } from "./health
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_ATTEMPTS = 2; // 首次 + 1 次故障转移（§10.4 建议）
-// /reconcile 是后端同步长任务：handler 持集群级锁 `lock:reconcile`（初租 300s、30s 心跳续期至 90s，
+// /reconcile 是后端同步长任务：handler 持集群级锁 `lock:reconcile`（初租 60s、10s 心跳续期至 30s，
 // notify.rs reconcile 入口）并在同一请求内同步跑 reconcile()。全局 10s 超时会把它误判失败并故障转移到
 // 第二实例——第二实例必然立刻撞 409（锁已被占），重试只放大冲突。故仅对此路由覆盖：
-// 长超时（默认 320s > 300s 初租 + 心跳余量）+ maxAttempts=1，绝不故障转移；其余快路径路由保持全局默认。
+// 长超时（默认 320s > 最坏对账耗时 + 余量）+ maxAttempts=1，绝不故障转移；其余快路径路由保持全局默认。
 const DEFAULT_RECONCILE_TIMEOUT_MS = 320_000;
 // /worker 同样是外部 cron 触发的同步长任务：一次最多排空 batch 条（默认 10，硬上限 10），
 // 每条消息的出站调用会重试 max_retries 次，最坏墙钟远超全局 10s——超时会把一次正常的
@@ -120,10 +120,10 @@ export async function handleFetch(request, env) {
   let maxAttempts = intFromEnv(env.LB_MAX_ATTEMPTS, DEFAULT_MAX_ATTEMPTS);
 
   // Per-route 覆盖：/reconcile 是后端同步长任务（handler 持集群级锁 lock:reconcile，
-  // 初租 300s、30s 心跳续期，notify.rs reconcile 入口），并在同一请求内同步跑 reconcile()。
+  // 初租 60s、10s 心跳续期，notify.rs reconcile 入口），并在同一请求内同步跑 reconcile()。
   // 全局 10s 超时会把它误判失败并按 maxAttempts=2 故障转移到第二实例——第二实例必然立刻撞
   // 409（锁已被占），重试只放大冲突、对 curl/cron 调度器是硬伤。故仅对此路由覆盖：
-  // 长超时（LB_RECONCILE_TIMEOUT_MS，默认 320s > 300s 初租 + 心跳余量）+ maxAttempts=1，
+  // 长超时（LB_RECONCILE_TIMEOUT_MS，默认 320s > 最坏对账耗时 + 余量）+ maxAttempts=1，
   // 绝不故障转移；其余快路径（/webhook/tg 等）保持全局默认 10s/2 不变。
   if (path === "/reconcile") {
     timeoutMs = intFromEnv(env.LB_RECONCILE_TIMEOUT_MS, DEFAULT_RECONCILE_TIMEOUT_MS);

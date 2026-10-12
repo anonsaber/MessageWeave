@@ -300,7 +300,10 @@ async fn reconcile(State(app): State<AppState>, headers: HeaderMap) -> Response 
             let heartbeat_lease_lost = Arc::clone(&lease_lost);
             let heartbeat = tokio::spawn(async move {
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(
+                        ttl::RECONCILE_HEARTBEAT_INTERVAL_SECONDS,
+                    ))
+                    .await;
                     match heartbeat_state
                         .renew_lock(
                             "lock:reconcile",
