@@ -139,7 +139,7 @@ duplicate. Source comment:
 
 | Key | TTL | Writer | Reader |
 |---|---|---|---|
-| `push:subscription:{id}` | EX 300 (caller-supplied, min 1) | `remember_push_subscription`, called from `register_push` | `push_subscription_verified` |
+| `push:subscription:{id}` | EX 604_800 (caller-supplied, min 1) | `remember_push_subscription`, called from `jmap_push` verification path | `push_subscription_verified` |
 | `push:subscription:id` | No EX | `remember_push_subscription_id` | current-subscription lookup |
 | `push:subscription:{id}:status` | 900 / 300 / 86_400 (min 1 enforced) | `set_push_subscription_status`; `pending` on verification request, `verified` on success, `disabled` on disable | **none** |
 | `push:registration:{sha256(callback_url)}` | EX 604_800 | `remember_push_subscription_for_callback`, called from `register_push` | `get_push_subscription_for_callback`; removed by `remove_push_subscription_for_callback` |

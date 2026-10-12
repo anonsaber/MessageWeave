@@ -65,8 +65,15 @@ pub(crate) mod ttl {
     pub const PUSH_STATUS_PENDING_SECONDS: u64 = 900;
     /// How long a `verified` push subscription stays trusted before re-check.
     pub const PUSH_STATUS_VERIFIED_SECONDS: u64 = 300;
-    /// Push subscription code and its link to the subscription id.
-    pub const PUSH_SUBSCRIPTION_SECONDS: u64 = 300;
+    /// Push subscription verification key: `push:subscription:{id}` =
+    /// `session_digest(verification_code)`. Stalwart sends the verification
+    /// request (RFC 8620 §7.2) once at subscription creation; event pushes
+    /// (§7.3) arrive without `verificationCode` and rely on this key existing
+    /// to confirm prior verification. TTL must outlast any realistic gap
+    /// between subscription creation and the first event, and survive across
+    /// restarts — Stalwart does not re-verify. Aligned with
+    /// `PUSH_REGISTRATION_SECONDS` (1 week).
+    pub const PUSH_SUBSCRIPTION_SECONDS: u64 = WEEK;
     /// Callback-URL -> subscription-id registration window.
     pub const PUSH_REGISTRATION_SECONDS: u64 = WEEK;
     /// Orphan callback attribution window: a callback with an unknown
@@ -1617,7 +1624,7 @@ mod tests {
 
         assert_eq!(ttl::PUSH_STATUS_PENDING_SECONDS, 900);
         assert_eq!(ttl::PUSH_STATUS_VERIFIED_SECONDS, 300);
-        assert_eq!(ttl::PUSH_SUBSCRIPTION_SECONDS, 300);
+        assert_eq!(ttl::PUSH_SUBSCRIPTION_SECONDS, 604_800);
         assert_eq!(ttl::PUSH_REGISTRATION_SECONDS, 604_800);
         assert_eq!(ttl::PUSH_ORPHAN_SECONDS, 604_800);
         assert_eq!(ttl::ADMIN_SESSION_SECONDS, 1_800);

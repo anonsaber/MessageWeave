@@ -638,14 +638,17 @@ Not implemented, see `docs/retired.md`.
 The Push event is consumed by Streams and delivered to Telegram. Its key path delivery semantics are as follows:
 
 **The only authoritative source for keys and TTL is `docs/reference.md` (section Redis Keys and TTL). **The tables will not be repeated in this section - repeated tables
-Will be modified: `push:subscription:{id}` was previously marked as 7d, and `push:registration:{...}` was marked as 360s registration solo lock.
-Both are wrong, and the real 360s solo lock `lock:push-register:{sha256(callback_url)}` was missing the entire line. has now converged to
-Single authority table, this section only retains four "whys" that affect design judgment:
+Historical note: `push:subscription:{id}` was previously marked as 7d in docs but the code used 300s — a bug that caused event pushes to fail with 401 after 5 minutes
+(because Stalwart only sends the verification request once, at subscription creation, and never re-verifies). Now corrected to 7d (`WEEK`), aligned with `PUSH_REGISTRATION_SECONDS`.
+The `push:registration:{...}` was marked as 360s registration solo lock, which was also wrong; the real 360s solo lock is `lock:push-register:{sha256(callback_url)}`.
+All values have now converged to the single authority table in `docs/reference.md`. This section retains five "whys" that affect design judgment:
 
 - **Reconciliation lock TTL 60s, with heartbeat renewal every 10s to 30s during active processing**, ensuring a crashed process releases the lock within 60s instead of blocking reconciliation
   (`REQ-RECONCILE-IDEMPOTENCY`, `SAF-RECONCILE-LOCK`).
 - **push registration solo lock TTL 360s, deliberately larger than the upper limit of 300s for a single outbound request**, otherwise a slow registration will cause repeated requests
   (`SAF-AUTH-JMAP-PUSH`).
+- **Push subscription verification key TTL 7d (`WEEK`)**: Stalwart sends the verification request (RFC 8620 §7.2) once at subscription creation; event pushes (§7.3) arrive without
+  `verificationCode` and rely on this key existing to confirm prior verification. The key must outlast any gap between subscription creation and events, and survive restarts — Stalwart does not re-verify.
 - **Reconciliation deduplication 24h is intentionally designed**: the same email will only be notified once within 24h (`MOD-DEDUP`, see 11.5 of this article for the scope).
 - **If the configuration key is missing, it will be regarded as failed (fail-closed)** and the business path will not be entered.
 

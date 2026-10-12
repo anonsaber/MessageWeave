@@ -57,7 +57,7 @@ TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），�
 | `ttl::PUSH_DISABLED_SECONDS` | 86_400 | `push:subscription:{id}:status`（`disabled`） |
 | `ttl::PUSH_STATUS_PENDING_SECONDS` | 900 | `push:subscription:{id}:status`（`pending`） |
 | `ttl::PUSH_STATUS_VERIFIED_SECONDS` | 300 | `push:subscription:{id}:status`（`verified`） |
-| `ttl::PUSH_SUBSCRIPTION_SECONDS` | 300 | `push:subscription:{id}` / `push:subscription-code:{code}` |
+| `ttl::PUSH_SUBSCRIPTION_SECONDS` | 604_800 | `push:subscription:{id}` |
 | `ttl::PUSH_REGISTRATION_SECONDS` | 604_800 | `push:registration:{sha256(callback_url)}` |
 | `ttl::PUSH_ORPHAN_SECONDS` | 604_800 | `push:orphan:{subscription_id}` |
 | `ttl::ADMIN_SESSION_SECONDS` | 1,800 | `admin-session:{token}`（同时是 `/admin/session` 返回的 `expires_in`） |
