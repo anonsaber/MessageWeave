@@ -250,17 +250,39 @@ async fn telegram_webhook(
     let key = format!("dedup:tg:{}", update.update_id);
     match app.state.claim_dedup(&key, ttl::DEDUP_TG_SECONDS).await {
         Ok(false) => StatusCode::NO_CONTENT.into_response(),
-        Ok(true) => match app
-            .state
-            .enqueue("stalwart:telegram", &String::from_utf8_lossy(&body))
-            .await
-        {
-            Ok(_) => StatusCode::NO_CONTENT.into_response(),
-            Err(_) => {
-                let _ = app.state.release_dedup(&key).await;
-                error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true)
+        Ok(true) => {
+            // /help and /summary are processed inline (no XADD) so the user
+            // gets an immediate response instead of waiting for the cron drain.
+            let is_inline_command = update
+                .message
+                .as_ref()
+                .and_then(|m| m.text.as_deref())
+                .map(|text| {
+                    let t = text.trim().to_ascii_lowercase();
+                    t == "/help" || t == "help" || t.starts_with("/summary")
+                })
+                .unwrap_or(false);
+            if is_inline_command {
+                let worker = Arc::clone(&app.worker);
+                let payload = String::from_utf8_lossy(&body).into_owned();
+                tokio::spawn(async move {
+                    let _ = worker.process("stalwart:telegram", &payload).await;
+                });
+                StatusCode::NO_CONTENT.into_response()
+            } else {
+                match app
+                    .state
+                    .enqueue("stalwart:telegram", &String::from_utf8_lossy(&body))
+                    .await
+                {
+                    Ok(_) => StatusCode::NO_CONTENT.into_response(),
+                    Err(_) => {
+                        let _ = app.state.release_dedup(&key).await;
+                        error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true)
+                    }
+                }
             }
-        },
+        }
         Err(_) => error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true),
     }
 }
@@ -1243,59 +1265,71 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
     let Ok(push) = serde_json::from_slice::<JmapPush>(&body) else {
         return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
     };
-    let (Some(subscription), Some(code)) = (
-        push.subscription_id.as_deref(),
-        push.verification_code.as_deref(),
-    ) else {
+    // subscription_id is required on every request (RFC 8620 §7.2/§7.3).
+    let Some(subscription) = push.subscription_id.as_deref() else {
         return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
     };
-    if !matches!(
-        app.state
-            .push_subscription_verified(subscription, code)
-            .await,
-        Ok(true)
-    ) {
-        let limit_key = format!("ratelimit:push-verify:{subscription}");
-        if matches!(
+    if let Some(code) = push.verification_code.as_deref() {
+        // Verification request (RFC 8620 §7.2): carries verificationCode.
+        if !matches!(
             app.state
-                .claim_dedup(&limit_key, ttl::PUSH_VERIFY_LIMIT_SECONDS)
+                .push_subscription_verified(subscription, code)
                 .await,
-            Ok(false)
+            Ok(true)
         ) {
-            return error_response(
-                StatusCode::TOO_MANY_REQUESTS,
-                "push_verify_rate_limited",
-                true,
-            );
+            let limit_key = format!("ratelimit:push-verify:{subscription}");
+            if matches!(
+                app.state
+                    .claim_dedup(&limit_key, ttl::PUSH_VERIFY_LIMIT_SECONDS)
+                    .await,
+                Ok(false)
+            ) {
+                return error_response(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "push_verify_rate_limited",
+                    true,
+                );
+            }
+            if app
+                .worker
+                .verify_push_subscription(subscription, code)
+                .await
+                .is_err()
+            {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, "push_verify_failed", true);
+            }
+            if app
+                .state
+                .remember_push_subscription(subscription, code, ttl::PUSH_SUBSCRIPTION_SECONDS)
+                .await
+                .is_err()
+            {
+                return error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "push_state_unavailable",
+                    true,
+                );
+            }
+            let _ = app
+                .state
+                .set_push_subscription_status(
+                    subscription,
+                    "verified",
+                    ttl::PUSH_STATUS_VERIFIED_SECONDS,
+                )
+                .await;
         }
-        if app
-            .worker
-            .verify_push_subscription(subscription, code)
-            .await
-            .is_err()
-        {
-            return error_response(StatusCode::SERVICE_UNAVAILABLE, "push_verify_failed", true);
+    } else {
+        // Event push (RFC 8620 §7.3): no verificationCode; the subscription
+        // must have been verified during the initial handshake.
+        if !matches!(
+            app.state
+                .dedup_exists(&format!("push:subscription:{subscription}"))
+                .await,
+            Ok(true)
+        ) {
+            return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
         }
-        if app
-            .state
-            .remember_push_subscription(subscription, code, ttl::PUSH_SUBSCRIPTION_SECONDS)
-            .await
-            .is_err()
-        {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "push_state_unavailable",
-                true,
-            );
-        }
-        let _ = app
-            .state
-            .set_push_subscription_status(
-                subscription,
-                "verified",
-                ttl::PUSH_STATUS_VERIFIED_SECONDS,
-            )
-            .await;
     }
     if push.account_id.is_none() && push.email_id.is_none() {
         return StatusCode::NO_CONTENT.into_response();
@@ -1311,7 +1345,36 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
             .enqueue("stalwart:jmap", &String::from_utf8_lossy(&body))
             .await
         {
-            Ok(_) => StatusCode::NO_CONTENT.into_response(),
+            Ok(message_id) => {
+                // Claim in-flight lease so the cron-triggered worker() drain
+                // skips this message while we process it immediately.
+                let inflight_key = format!("delivery:inflight:stalwart:jmap:{message_id}");
+                if matches!(
+                    app.state
+                        .claim_dedup(&inflight_key, ttl::DELIVERY_INFLIGHT_SECONDS)
+                        .await,
+                    Ok(true)
+                ) {
+                    let worker = Arc::clone(&app.worker);
+                    let state = Arc::clone(&app.state);
+                    let payload = String::from_utf8_lossy(&body).into_owned();
+                    tokio::spawn(async move {
+                        if worker.process("stalwart:jmap", &payload).await.is_ok() {
+                            let committed =
+                                format!("delivery:committed:stalwart:jmap:{message_id}");
+                            let _ = state
+                                .claim_dedup(&committed, ttl::DELIVERY_COMMITTED_SECONDS)
+                                .await;
+                            let _ = state
+                                .ack("stalwart:jmap", "stalwart-workers", &message_id)
+                                .await;
+                        }
+                        let inflight = format!("delivery:inflight:stalwart:jmap:{message_id}");
+                        let _ = state.release_dedup(&inflight).await;
+                    });
+                }
+                StatusCode::NO_CONTENT.into_response()
+            }
             Err(_) => {
                 let _ = app.state.release_dedup(&key).await;
                 error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true)
@@ -1767,6 +1830,7 @@ struct TelegramUpdate {
 #[derive(serde::Deserialize)]
 struct TelegramMessage {
     chat: TelegramChat,
+    text: Option<String>,
 }
 #[derive(serde::Deserialize)]
 struct TelegramChat {
