@@ -272,11 +272,10 @@ env var — 并且“DEBUG_TOKEN”非空**（“SAF-DEBUG-GATE”；门被读�
   JMAP 探针有意针对*规范化来源*进行身份验证：探测原始数据
   未经身份验证的会话 URL 将永远报告未就绪并使入口停止路由。
 - `GET /api/status`（**始终 200**）返回
-  `{“ready”：<bool>，“mode”：“configured”|“configuration-setup”，“missing”：[...]，“version”：“<build-fingerprint>”}`。
-  “ready”为“false”，“missing”列出了缺少的必需密钥（“REDIS_URL”、
-  `CONFIG_ENCRYPTION_KEY`）当变量不存在时 - 路由本身永远不会出错，所以它是
-  可以安全进行民意调查。 `version` 是由 `build.rs` 烘焙的 `BUILD_VERSION` 字符串
-  （`<git-sha-or-nogit>+<UTC 构建时间>`）。SPA 已不再渲染它，确认部署落地只能查这个接口。
+  `{"ready": <bool>, "mode": "configured"|"configuration-setup", "missing": [...], "version": "<build-fingerprint>", "backend": "<id>"|null}`。
+  `ready` 为 `false`、`missing` 列出缺少的必需变量名（`REDIS_URL`、
+  `CONFIG_ENCRYPTION_KEY`）——路由本身永不报错，可安全轮询。`version` 是 `build.rs` 烘焙的 `BUILD_VERSION` 字符串
+  （`<git-sha 或 nogit>+<UTC 构建时间>`）——同一镜像构建的每个实例都相同，因此它回答「本次部署是否落地」，但不回答「命中的是哪个实例」。`backend` 回答后者：每实例标签，启动时一次性读取 `BACKEND_ID`（回退容器运行时设置的 `HOSTNAME`），穿入 `AppState::backend_id` 并在此回显。它是观测标签，不是连接密钥，也不持久化。`null` 表示两个 env 都未设置；两个都不设的实例在该字段上不可区分，所以需要分辨 origin 的探针必须在部署时为每个实例设置 `BACKEND_ID`。SPA 已不再渲染 `version`，确认部署落地只能查这个接口。
 - `/debug/*` 在一个地方返回 **503**：业务执行时`POST /debug/notify`
   配置未加载或没有出站客户端 — `service_unavailable`
 `重试时间：30`。三个探测端点反而报告失败

@@ -104,6 +104,11 @@ pub(crate) struct AppState {
     /// `--debug` AND `DEBUG_TOKEN` was set. `debug_router` is mounted iff this is `Some`, so the
     /// `/debug/*` surface is absent by default. `SAF-DEBUG-AUTH`: compared in constant time.
     pub(crate) debug_token: Option<SecretString>,
+    /// Per-instance observability label echoed in `/api/status`, so a probe through the load
+    /// balancer can tell which origin answered — `version` alone is identical across instances
+    /// built from the same image. Read once at startup from `BACKEND_ID` (falls back to
+    /// `HOSTNAME`); not a connection secret, not persisted. `None` only when both are unset.
+    pub(crate) backend_id: Option<String>,
 }
 
 impl From<AuthSecrets> for AuthState {
@@ -220,6 +225,7 @@ async fn setup_status(State(app): State<AppState>) -> Response {
         "mode": if ready { "configured" } else { "configuration-setup" },
         "missing": app.setup_missing.as_ref(),
         "version": BUILD_VERSION,
+        "backend": &app.backend_id,
     }))
     .into_response()
 }
@@ -1924,6 +1930,7 @@ pub fn router_with_state<S: ReliableState + 'static>(
         state,
         allowlist,
         Arc::new(NoopWorker),
+        None,
     )
 }
 
@@ -1939,7 +1946,7 @@ pub fn router_with_state<S: ReliableState + 'static>(
 /// 404 removes that ambiguity for clients, probes and the SPA alike. The SPA bootstrap card is
 /// driven by `/api/status` alone (`web/config.js` reveals the admin-session card only when
 /// `ready === true`), so nothing the status page renders is lost.
-pub fn router_configuration_setup(missing: Vec<String>) -> Router {
+pub fn router_configuration_setup(missing: Vec<String>, backend_id: Option<String>) -> Router {
     let worker_handle = Arc::new(WorkerHandle::new(Arc::new(NoopWorker)));
     let app_state = AppState {
         auth: AuthState {
@@ -1958,6 +1965,7 @@ pub fn router_configuration_setup(missing: Vec<String>) -> Router {
         business_revision: Arc::new(RwLock::new(0)),
         setup_missing: Arc::new(missing),
         reload: Arc::new(ReloadCoordinator::new(worker_handle, None)),
+        backend_id,
     };
     Router::new()
         .route("/api/status", get(setup_status))
@@ -1972,6 +1980,7 @@ pub fn router_with_worker_state<S: ReliableState + 'static>(
     state: S,
     allowlist: HashSet<i64>,
     worker_handler: Arc<dyn WorkerHandler>,
+    backend_id: Option<String>,
 ) -> Router {
     router_with_worker_state_and_runtime(
         secrets,
@@ -1979,6 +1988,7 @@ pub fn router_with_worker_state<S: ReliableState + 'static>(
         state,
         allowlist,
         worker_handler,
+        backend_id,
         runtime_provider(OutboundConfig::default()),
     )
 }
@@ -1989,6 +1999,7 @@ pub fn router_with_worker_state_and_runtime<S: ReliableState + 'static>(
     state: S,
     allowlist: HashSet<i64>,
     worker_handler: Arc<dyn WorkerHandler>,
+    backend_id: Option<String>,
     runtime: RuntimeConfigProvider,
 ) -> Router {
     router_with_worker_state_runtime_bootstrap(
@@ -1997,6 +2008,7 @@ pub fn router_with_worker_state_and_runtime<S: ReliableState + 'static>(
         state,
         allowlist,
         worker_handler,
+        backend_id,
         runtime,
         SecretString::new(String::new()),
         None,
@@ -2013,6 +2025,7 @@ pub fn router_with_worker_state_runtime_bootstrap<S: ReliableState + 'static>(
     state: S,
     allowlist: HashSet<i64>,
     worker_handler: Arc<dyn WorkerHandler>,
+    backend_id: Option<String>,
     runtime: RuntimeConfigProvider,
     admin_token: SecretString,
     debug_token: Option<SecretString>,
@@ -2023,6 +2036,7 @@ pub fn router_with_worker_state_runtime_bootstrap<S: ReliableState + 'static>(
         state,
         allowlist,
         worker_handler,
+        backend_id,
         runtime,
         admin_token,
         debug_token,
@@ -2040,6 +2054,7 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
     state: S,
     allowlist: HashSet<i64>,
     worker_handler: Arc<dyn WorkerHandler>,
+    backend_id: Option<String>,
     runtime: RuntimeConfigProvider,
     admin_token: SecretString,
     debug_token: Option<SecretString>,
@@ -2061,6 +2076,7 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
         business_revision: Arc::new(RwLock::new(0)),
         setup_missing: Arc::new(setup_missing),
         reload,
+        backend_id,
     };
     let mut router = Router::new()
         .route("/webhook/tg", post(telegram_webhook))
@@ -2211,7 +2227,7 @@ mod tests {
 
     #[tokio::test]
     async fn configuration_setup_status_lists_only_missing_names() {
-        let response = router_configuration_setup(vec!["REDIS_URL".into()])
+        let response = router_configuration_setup(vec!["REDIS_URL".into()], None)
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -2232,18 +2248,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn setup_status_reports_backend_label() {
+        // `backend` is threaded from the router builder into `/api/status` so a probe through
+        // the load balancer can tell which origin answered — `version` alone is identical
+        // across instances built from the same image. `main` reads `BACKEND_ID`/`HOSTNAME` at
+        // startup and passes a real value; here the value is echoed verbatim end-to-end.
+        let response = router_configuration_setup(vec![], Some("edge-1".into()))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["backend"], "edge-1");
+    }
+
+    #[tokio::test]
     async fn configuration_setup_status_lists_both_bootstrap_requirements() {
-        let response =
-            router_configuration_setup(vec!["REDIS_URL".into(), "CONFIG_ENCRYPTION_KEY".into()])
-                .oneshot(
-                    Request::builder()
-                        .method("GET")
-                        .uri("/api/status")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
+        let response = router_configuration_setup(
+            vec!["REDIS_URL".into(), "CONFIG_ENCRYPTION_KEY".into()],
+            None,
+        )
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -2255,8 +2297,10 @@ mod tests {
 
     #[tokio::test]
     async fn configuration_setup_mounts_only_status_and_probes() {
-        let router =
-            router_configuration_setup(vec!["REDIS_URL".into(), "CONFIG_ENCRYPTION_KEY".into()]);
+        let router = router_configuration_setup(
+            vec!["REDIS_URL".into(), "CONFIG_ENCRYPTION_KEY".into()],
+            None,
+        );
         let token = "Bearer CONFIG_ENCRYPTION_KEY-candidate";
 
         // The status surface and both probes stay reachable: the SPA bootstrap card is driven
@@ -2312,6 +2356,7 @@ mod tests {
             MemoryState::default(),
             HashSet::new(),
             Arc::new(NoopWorker),
+            None,
             runtime_provider(OutboundConfig::default()),
             SecretString::new("acl-root".into()),
             None,
@@ -3297,6 +3342,7 @@ mod tests {
             state.clone(),
             HashSet::new(),
             handler,
+            None,
         );
         (router, state)
     }

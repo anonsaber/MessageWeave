@@ -365,8 +365,8 @@ message-weave/
 > 使用新配置，失败保留旧实例。该迁移替代下述阶段0环境变量清单，阶段0列表仅作为历史
 > 兼容说明。
 
-> **实际实现**（`ARCH-CONFIG-ENV`）：进程启动只读 **2 个**进程级凭据加监听端口（`src/main.rs:45` / `:54` / `:63`，
-> 另加可选 `DEBUG_TOKEN` 于 `:107`），直接 `std::env::var`，**不使用 figment、不使用 TOML/配置文件**。
+> **实际实现**（`ARCH-CONFIG-ENV`）：进程启动只读 **2 个**进程级凭据加监听端口（均经 `main` 里的 `std::env::var`，键名 `REDIS_URL` / `CONFIG_ENCRYPTION_KEY` / `PORT`，
+> 另加可选 `DEBUG_TOKEN` 与 `/api/status` 标签 `BACKEND_ID`），**不使用 figment、不使用 TOML/配置文件**。
 > **业务配置不再从环境变量读取**：下表字段全部经 Redis 业务配置由 `config` 层以 serde 反序列化装载，
 > 并经 `validate_business_wire` / `validate_nonblank` 做 fail-closed 校验。
 > 历史上存在的 `Config::from_env()` 完整 env 解析路径**已删除**（登记见 `docs/retired.md`），
@@ -420,7 +420,7 @@ message-weave/
 
 ### 7.3.1 配置管理 API
 - `GET /` 提供嵌入 Rust 二进制的 SPA；`/assets/config.js` 与 `/assets/styles.css` 提供页面资源。服务不在运行时读取或写入本地文件（`C-NO-LOCAL-WRITE`）。
-- `GET /api/status` 公开返回 `{ "ready": boolean, "mode": "configured" | "configuration-setup", "missing": string[], "version": string }`，只列缺少的环境变量名称。缺少 `REDIS_URL` 或 `CONFIG_ENCRYPTION_KEY` 时，SPA 只显示配置引导状态与缺失变量；服务状态确认 ready=true 后才显示管理会话授权区。`version` 是 `build.rs` 在编译期烘焙的 `BUILD_VERSION`（`<git-sha 或 nogit>+<UTC 构建时间>`）。SPA 已不再渲染它，确认部署落地只能查这个接口。
+- `GET /api/status` 公开返回 `{ "ready": boolean, "mode": "configured" | "configuration-setup", "missing": string[], "version": string, "backend": string|null }`，只列缺少的环境变量名称。缺少 `REDIS_URL` 或 `CONFIG_ENCRYPTION_KEY` 时，SPA 只显示配置引导状态与缺失变量；服务状态确认 ready=true 后才显示管理会话授权区。`version` 是 `build.rs` 在编译期烘焙的 `BUILD_VERSION`（`<git-sha 或 nogit>+<UTC 构建时间>`）。SPA 已不再渲染它，确认部署落地只能查这个接口。`backend` 是启动时一次性读取 `BACKEND_ID`（回退到 `HOSTNAME`）的每实例标签；同一镜像构建的实例 `version` 相同，所以 `backend` 才是让穿过负载均衡器的探针分辨命中的是哪个 origin 的字段。`null` 表示未配置标签（两个 env 都未设置）；两个都不设的实例在该字段上不可区分，这是设计如此。
 - `POST /api/admin/session` 接受 `Authorization: Bearer <CONFIG_ENCRYPTION_KEY>`，返回 `{ "session": "<opaque>", "expires_in": 1800 }`；Redis 中保存的是会话令牌的摘要，30 分钟后过期。`POST /api/admin/session/revoke` 可立即撤销会话，成功返回 `204`。
 - 管理页面仅在 JavaScript 内存中保存 session。请求设置 `credentials: omit`、`cache: no-store`，不使用 Cookie、localStorage 或 sessionStorage。管理 API 接受有效 admin session；兼容路径也接受 `WORKER_TOKEN`。Worker 原样透传鉴权头（`SAF-LB-PASSTHRU`）。
 - `GET /api/config` 与 `PUT /api/config` 只读取和写入非敏感运行参数：
@@ -746,7 +746,7 @@ LLM 能力只存在于 `src/ai.rs` 一个文件；**没有**配置 / 回退 / �
 | 变量 | 类型 | 默认 | 用途 |
 |---|---|---|---|
 | `LLM_ENABLED` | bool | `false` | 总开关；默认关闭，未启用时不校验 `LLM_API_KEY`/`LLM_BASE_URL`/`LLM_MODEL` |
-| `LLM_ALLOW_NET` | bool | `false` | 运行时出站许可；`LLM_ENABLED && LLM_ALLOW_NET` 同时为真才构造 `LlmClient`，否则 `llm` 字段为 `None`（`src/main.rs:135-141`） |
+| `LLM_ALLOW_NET` | bool | `false` | 运行时出站许可；`LLM_ENABLED && LLM_ALLOW_NET` 同时为真才构造 `LlmClient`，否则 `llm` 字段为 `None`（`LlmClient::with_runtime` 于 `src/main.rs`） |
 | `LLM_API_KEY` | string | 可省略 | Bearer token；仅 `LLM_ENABLED=true` 时必填 |
 | `LLM_BASE_URL` | URL | 可省略 | 仅启用时必填，且必须 `https`，否则 `AiError::InvalidEndpoint` |
 | `LLM_MODEL` | string | 可省略 | 仅启用时必填；透传给 `/chat/completions` 的 `model` |

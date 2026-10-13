@@ -365,8 +365,8 @@ Testing: **No integrated test directory**, and no stand-alone util tool module. 
 > Use new configuration, keep old instance on failure. This migration replaces the following stage 0 environment variable list. The stage 0 list is only for historical purposes.
 > Compatibility instructions.
 
-> **Actual implementation** (`ARCH-CONFIG-ENV`): process startup read-only **2** process-level credentials plus listening port (`src/main.rs:45` / `:54` / `:63`,
-> Add optional `DEBUG_TOKEN` in `:107`), directly `std::env::var`, **do not use figment, do not use TOML/configuration file**.
+> **Actual implementation** (`ARCH-CONFIG-ENV`): process startup read-only **2** process-level credentials plus listening port (all via `std::env::var` in `main`, keyed by `REDIS_URL` / `CONFIG_ENCRYPTION_KEY` / `PORT`,
+> plus optional `DEBUG_TOKEN` and the `/api/status` label `BACKEND_ID`), **do not use figment, do not use TOML/configuration file**.
 > **Business configuration is no longer read from environment variables**: The fields in the following table are all loaded by the `config` layer using serde deserialization through the Redis business configuration.
 > And do fail-closed verification through `validate_business_wire` / `validate_nonblank`.
 > Historically existing `Config::from_env()` full env parsing path **removed** (see `docs/retired.md` for registration),
@@ -420,7 +420,7 @@ Testing: **No integrated test directory**, and no stand-alone util tool module. 
 
 ### 7.3.1 Configuration Management API
 - `GET /` provides a SPA embedded in the Rust binary; `/assets/config.js` and `/assets/styles.css` provide page resources. The service does not read or write local files while running (`C-NO-LOCAL-WRITE`).
-- `GET /api/status` publicly returns `{ "ready": boolean, "mode": "configured" | "configuration-setup", "missing": string[], "version": string }`, which only lists the missing environment variable names. When `REDIS_URL` or `CONFIG_ENCRYPTION_KEY` is missing, SPA only displays the configuration boot status and missing variables; the management session authorization area is displayed only after the service status is confirmed to be ready=true. `version` is the `BUILD_VERSION` (`<git-sha or nogit>+<UTC build time>`) baked by `build.rs` during compilation. The SPA no longer renders it, so the API is the only way to confirm a deployment landed.
+- `GET /api/status` publicly returns `{ "ready": boolean, "mode": "configured" | "configuration-setup", "missing": string[], "version": string, "backend": string|null }`, which only lists the missing environment variable names. When `REDIS_URL` or `CONFIG_ENCRYPTION_KEY` is missing, SPA only displays the configuration boot status and missing variables; the management session authorization area is displayed only after the service status is confirmed to be ready=true. `version` is the `BUILD_VERSION` (`<git-sha or nogit>+<UTC build time>`) baked by `build.rs` during compilation. The SPA no longer renders it, so the API is the only way to confirm a deployment landed. `backend` is the per-instance label read once at startup from `BACKEND_ID` (falling back to `HOSTNAME`); `version` is identical across instances built from the same image, so `backend` is what lets a probe through the load balancer tell which origin answered. `null` means no label was configured (both env vars unset); two such instances are indistinguishable by this field by design.
 - `POST /api/admin/session` accepts `Authorization: Bearer <CONFIG_ENCRYPTION_KEY>` and returns `{ "session": "<opaque>", "expires_in": 1800 }`; the admin session only saves the digest in Redis and expires after 1,800 seconds. `POST /api/admin/session/revoke` revokes the current session and returns `204` successfully.
 - The admin page only saves the session in JavaScript memory. Request settings `credentials: omit`, `cache: no-store`, without using cookies, localStorage or sessionStorage. The admin API accepts a valid admin session; the compatibility path also accepts `WORKER_TOKEN`. Worker transparently transmits the authentication header (`SAF-LB-PASSTHRU`) as it is.
 - `GET /api/config` and `PUT /api/config` only read and write non-sensitive running parameters:
@@ -746,7 +746,7 @@ The LLM capability only exists in the `src/ai.rs` file; **no** configuration/fal
 | Variable | Type | Default | Purpose |
 |---|---|---|---|
 | `LLM_ENABLED` | bool | `false` | Master switch; off by default, no verification when not enabled `LLM_API_KEY`/`LLM_BASE_URL`/`LLM_MODEL` |
-| `LLM_ALLOW_NET` | bool | `false` | Runtime outbound permission; `LlmClient` is constructed only if `LLM_ENABLED && LLM_ALLOW_NET` are both true, otherwise the `llm` field is `None` (`src/main.rs:135-141`) |
+| `LLM_ALLOW_NET` | bool | `false` | Runtime outbound permission; `LlmClient` is constructed only if `LLM_ENABLED && LLM_ALLOW_NET` are both true, otherwise the `llm` field is `None` (`LlmClient::with_runtime` in `src/main.rs`) |
 | `LLM_API_KEY` | string | Can be omitted | Bearer token; required only when `LLM_ENABLED=true` |
 | `LLM_BASE_URL` | URL | Can be omitted | Required only when enabled, and must be `https`, otherwise `AiError::InvalidEndpoint` |
 | `LLM_MODEL` | string | Can be omitted | Required only when enabled; transparently passed to `model` in `/chat/completions` |

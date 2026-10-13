@@ -275,12 +275,18 @@ Response conventions:
   The JMAP probe deliberately authenticates against the *normalized origin*: probing the raw
   session URL unauthenticated would report not-ready forever and make ingress stop routing.
 - `GET /api/status` (**always 200**) returns
-  `{"ready": <bool>, "mode": "configured"|"configuration-setup", "missing": [...], "version": "<build-fingerprint>"}`.
+  `{"ready": <bool>, "mode": "configured"|"configuration-setup", "missing": [...], "version": "<build-fingerprint>", "backend": "<id>"|null}`.
   `ready` is `false` and `missing` lists the absent required keys (`REDIS_URL`,
   `CONFIG_ENCRYPTION_KEY`) when a variable is absent — the route itself never errors, so it is
   safe to poll. `version` is the `BUILD_VERSION` string baked in by `build.rs`
-  (`<git-sha-or-nogit>+<UTC build time>`). The SPA no longer renders it — the API is now the
-  only way to confirm a deploy landed.
+  (`<git-sha-or-nogit>+<UTC build time>`) — identical across every instance built from the same
+  image, so it answers "did this deploy land?" but not "which instance answered?". `backend`
+  answers that: a per-instance label read once at startup from `BACKEND_ID` (falling back to
+  `HOSTNAME`, which container runtimes set), threaded into `AppState::backend_id` and echoed
+  here. It is an observability label, not a connection secret and not persisted. `null` means
+  neither env var was set; two such instances are indistinguishable by this field, so a probe
+  that needs to tell origins apart must set `BACKEND_ID` per instance at deploy time. The SPA
+  no longer renders `version` — the API is now the only way to confirm a deploy landed.
 - `/debug/*` returns **503** in exactly one place: `POST /debug/notify` when the business
   config is not loaded or there is no outbound client — `service_unavailable` with
   `Retry-After: 30`. The three probe endpoints instead report failure
