@@ -1290,13 +1290,17 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
                     true,
                 );
             }
-            if app
+            // RFC 8620 §7.2: verification is done by responding to the
+            // callback with the verificationCode. The JMAP API call is
+            // best-effort — some servers (including Stalwart) may not support
+            // PushSubscription/verify; failing it must not block verification.
+            if let Err(e) = app
                 .worker
                 .verify_push_subscription(subscription, code)
                 .await
-                .is_err()
             {
-                return error_response(StatusCode::SERVICE_UNAVAILABLE, "push_verify_failed", true);
+                tracing::warn!(error = ?e, subscription = %subscription,
+                    "push verify API call failed; continuing (RFC 8620 §7.2 verification is via callback response)");
             }
             if app
                 .state
@@ -1332,6 +1336,14 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
         }
     }
     if push.account_id.is_none() && push.email_id.is_none() {
+        // RFC 8620 §7.2: verification request response MUST be a JSON body
+        // containing exactly the verificationCode property (not 204).
+        if let Some(code) = push.verification_code.as_deref() {
+            return axum::Json(serde_json::json!({
+                "verificationCode": code
+            }))
+            .into_response();
+        }
         return StatusCode::NO_CONTENT.into_response();
     }
     let (Some(account), Some(email)) = (push.account_id, push.email_id) else {
