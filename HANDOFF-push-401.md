@@ -178,7 +178,7 @@ if 带 verificationCode:
 - **回调 URL**: `https://messageweave.motofans.club/push/jmap`
 - **后端仓库**: `/home/okabe/Repo/messageweave`
 - **双 remote**: `origin`（motofans.club）+ `upstream`（GitHub fork）
-- **测试基线**: Rust 104 passed / 0 failed / 4 ignored，GATE-DOCS 6/6 PASS
+- **测试基线**: Rust 105 passed / 0 failed / 4 ignored，GATE-DOCS 6/6 PASS
 - **最新 commit**: `f9160c0`（已 push 双 remote）
 
 ---

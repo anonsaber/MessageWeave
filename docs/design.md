@@ -560,7 +560,7 @@ The design target form once included six additional variants: `Jmap(#[from] jmap
 - axum adopts **0.8** (`ARCH-AXUM-08`); if subsequent review decides to adjust the version, Cargo.toml will prevail and this section will be synchronized.
 - Currently SSE/WebSocket/long polling/SQLite/local volumes (`C-NO-LONG-CONN`/`NG-SQLITE-PERSIST`/`NG-LOCAL-VOLUME`) are not implemented; entrance authentication (`R1`/`SAF-AUTH-*`) is implemented as a fail-closed hard access control, and the Push, Streams worker and `/reconcile` business paths after authentication have been implemented.
 
-**Phase 0 P0 Gate (`GATE-P0`) - Passed. It was 45 passed / 0 failed / 1 ignored when it was first frozen, and has continued to grow in subsequent rounds ④–⑥. The current baseline is 104 passed / 0 failed / 4 ignored (2026-10-13 retest; see the `TEST_BASELINE` line of `docs/charter.md` for the authoritative value). The following are the criteria at the time of stage 0, which are retained for historical records: **
+**Phase 0 P0 Gate (`GATE-P0`) - Passed. It was 45 passed / 0 failed / 1 ignored when it was first frozen, and has continued to grow in subsequent rounds ④–⑥. The current baseline is 105 passed / 0 failed / 4 ignored (2026-10-14 retest; see the `TEST_BASELINE` line of `docs/charter.md` for the authoritative value). The following are the criteria at the time of stage 0, which are retained for historical records: **
 1. `cargo fmt --check` passes (no format difference).
 2. `cargo clippy --all-targets -- -D warnings` passes (zero warnings; crate-level `allow` is disabled).
 3. `cargo test` passed (including routing/configuration minimum test).

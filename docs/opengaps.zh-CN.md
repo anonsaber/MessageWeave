@@ -21,7 +21,7 @@ TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），�
 | 3 | Telegram 入站 / Stalwart `PushSubscription` 联调 | 已关闭（真实流量已驱动，操作步骤见 `README.md` §3.7） |
 | 4 | `/worker` 未在部署文档里 | 已关闭（`README.md` §3.10 已补） |
 
-门禁：`cargo fmt --check` / `cargo check --locked` / `cargo clippy --locked --all-targets -- -D warnings` 全绿；`cargo test --locked` **104 passed / 0 failed / 4 ignored**（4 个 `#[ignore]` 里 2 个 TTL 断言已用真实 Upstash 跑过：`REDIS_TEST_URL=… cargo test --locked -- --ignored ttl` → **2 passed / 0 failed**；剩 2 个需要真实 JMAP 服务器，该能力已在 staging 联调验证）；文档门 6/6 全绿，含 72 处行号锚点非空校验。
+门禁：`cargo fmt --check` / `cargo check --locked` / `cargo clippy --locked --all-targets -- -D warnings` 全绿；`cargo test --locked` **105 passed / 0 failed / 4 ignored**（4 个 `#[ignore]` 里 2 个 TTL 断言已用真实 Upstash 跑过：`REDIS_TEST_URL=… cargo test --locked -- --ignored ttl` → **2 passed / 0 failed**；剩 2 个需要真实 JMAP 服务器，该能力已在 staging 联调验证）；文档门 6/6 全绿，含 49 处行号锚点非空校验。
 
 第 5 项不在阶段目标内：多账号产品决策，2026-09-28 已由用户定为不做，决定边界与将来要做的改动面见 §3。
 
