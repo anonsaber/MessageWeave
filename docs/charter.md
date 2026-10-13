@@ -38,7 +38,7 @@ A JMAP email notification service deployed on Docker + externally hosted Redis:
 | JMAP Client | jmap-client | 0.4.2 (`default-features = false` + features `["async","rustls"]`) |
 | Telegram | Self-built lightweight client (`src/channel.rs`), **not introducing** bot framework | — |
 | HTTPS client | reqwest | 0.13 |
-| key type | secrecy | 0.10 |
+| key type | secrecy | 0.8 |
 | encryption | ring | 0.17 |
 | Log | tracing + tracing-subscriber | 0.1 / 0.3 |
 | Scheduling | External cron → `POST /reconcile` | — |
@@ -118,7 +118,7 @@ cd /home/okabe/Repo/messageweave && docker run --rm --user 1000:1000 \
   bash -lc 'export PATH=/usr/local/cargo/bin:$PATH; cargo fmt --all -- --check && cargo check --locked && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked 2>&1 | tail -12'
 ```
 
-**Current baseline: 93 passed / 0 failed / 4 ignored** (Add 4 new cursor parsing and walk paging and retest after single test; ignored: `real_server_tests::session_list_and_read_smoke` and `debug::tests::debug_config_reports_timezone_of_business_configured_app` require external real JMAP Server credentials, `real_redis_ttl_tests::ttl_claim_dedup_sets_the_exactly_requested_expiry` and `real_redis_ttl_tests::ttl_consent_and_retry_landing_on_real_redis` require `REDIS_TEST_URL`).
+**Current baseline: 104 passed / 0 failed / 4 ignored** (Add 4 new cursor parsing and walk paging and retest after single test; ignored: `real_server_tests::session_list_and_read_smoke` and `debug::tests::debug_config_reports_timezone_of_business_configured_app` require external real JMAP Server credentials, `real_redis_ttl_tests::ttl_claim_dedup_sets_the_exactly_requested_expiry` and `real_redis_ttl_tests::ttl_consent_and_retry_landing_on_real_redis` require `REDIS_TEST_URL`).
 
 **Note**: The bash `-lc` script of `docker run` must be wrapped in **single quotes**. Using double quotes will first expand `$PWD` / `$PATH` on the host, and cargo will not be found in the container.
 

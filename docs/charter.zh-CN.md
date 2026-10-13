@@ -38,7 +38,7 @@
 | JMAP 客户端 | jmap-client | 0.4.2（`default-features = false` + features `["async","rustls"]`） |
 | Telegram | 自建轻量客户端（`src/channel.rs`），**不引入** bot 框架 | — |
 | HTTPS 客户端 | reqwest | 0.13 |
-| 密钥类型 | secrecy | 0.10 |
+| 密钥类型 | secrecy | 0.8 |
 | 加密 | ring | 0.17 |
 | 日志 | tracing + tracing-subscriber | 0.1 / 0.3 |
 | 调度 | 外部 cron → `POST /reconcile` | — |
@@ -118,7 +118,7 @@ cd /home/okabe/Repo/messageweave && docker run --rm --user 1000:1000 \
   bash -lc 'export PATH=/usr/local/cargo/bin:$PATH; cargo fmt --all -- --check && cargo check --locked && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked 2>&1 | tail -12'
 ```
 
-**当前基线：93 passed / 0 failed / 4 ignored**（新增 4 个游标解析与 walk 分页单测后复测；ignored：`real_server_tests::session_list_and_read_smoke` 与 `debug::tests::debug_config_reports_timezone_of_business_configured_app` 需外部真实 JMAP 服务器凭据，`real_redis_ttl_tests::ttl_claim_dedup_sets_the_exactly_requested_expiry` 与 `real_redis_ttl_tests::ttl_consent_and_retry_landing_on_real_redis` 需 `REDIS_TEST_URL`）。
+**当前基线：104 passed / 0 failed / 4 ignored**（新增 4 个游标解析与 walk 分页单测后复测；ignored：`real_server_tests::session_list_and_read_smoke` 与 `debug::tests::debug_config_reports_timezone_of_business_configured_app` 需外部真实 JMAP 服务器凭据，`real_redis_ttl_tests::ttl_claim_dedup_sets_the_exactly_requested_expiry` 与 `real_redis_ttl_tests::ttl_consent_and_retry_landing_on_real_redis` 需 `REDIS_TEST_URL`）。
 
 **注意**：`docker run` 的 bash `-lc` 脚本必须用**单引号**包裹。用双引号会先在宿主机展开 `$PWD` / `$PATH`，容器内找不到 cargo。
 

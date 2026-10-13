@@ -416,7 +416,7 @@ message-weave/
   - `/ready` 做端到端探测：配置完整性 + Redis 可达性 + 出站只读探测（`GET {jmap_origin}/.well-known/jmap`，带配置的 Basic 认证；`GET https://api.telegram.org/bot<token>/getMe`；各 `PROBE_TIMEOUT` = 3000ms、**并行**（`tokio::join!`），最坏约 3s）；四者全过 `200` 与就绪报告（`{"status":"ready","configured":...,"jmap":...,"telegram":...}`，其中 `jmap`/`telegram` 是真实探针结果），任一失败 `503`（标准错误 envelope `{"error":"service_unavailable","request_id":<id>}` + `Retry-After: 30`）。探针只读、只读配置状态，**不**触发邮件同步等业务副作用，也**不**回显 token 或第三方响应内容；`refresh_business_config` 仅读 Redis，无状态写入。因此 `/ready` 要求到 JMAP host 与 `api.telegram.org:443` 的出站 egress 可达（若该 egress 需要代理则 `/ready` 不可用，见 README.md §3.0）。
 - **chat 白名单（硬约束 `SAF-CHAT-ALLOWLIST`）**：`CHAT_ALLOWLIST` 是**必填**配置；任何入站事件（TG 命令 / 回调触发的动作）在**做任何 JMAP 调用、AI 调用或状态变更之前**，必须先校验 `chat.id ∈ CHAT_ALLOWLIST`，不在白名单则**直接拒绝并终止**（防止 token 泄露后被任意人调用）。阶段0 已完成 `CHAT_ALLOWLIST` 解析骨架；强制拒绝逻辑已随 Telegram 渠道接入落地（`src/notify.rs` 的 `telegram_webhook` 在任何 JMAP/AI/状态操作之前先校验白名单，拒绝即终止）。
 - **命令最小化**：只暴露必要命令；发邮件等写操作必须二次确认（当前未实现发信，见 §10.3）。
-- **速率**：出站侧未建本地令牌桶；Telegram 出站发送按 Redis 运行参数 `max_retries` 重试（默认值与硬上限见 `docs/reference.md` §6.1）；当前仅对 Push 验证码写入做 Redis 限流（`ratelimit:push-verify:*`）。Telegram 服务端 30 msg/s 限制下的 429 **按 `parameters.retry_after` 秒自动退避**（`channel.rs`，`f4cae00`）：`retry_after_ms` 解析后截断到 60s 预算上限，缺该字段或非数字时回退指数退避 `backoff_delay_ms`（250ms 起、封顶 4s），整体重试预算 60s。仍不做本地令牌桶限流——超出预算直接返回失败，交由上游重试。
+- **速率**：出站侧未建本地令牌桶；Telegram 出站发送按 Redis 运行参数 `max_retries` 重试（默认值与硬上限见 `docs/reference.md` §6.1）；当前仅对出站 PushSubscription/verify JMAP API 调用做 Redis 限流（`ratelimit:push-verify:*`）；`false` 的声明结果为抑制该 API 调用而非拒绝验证请求。Telegram 服务端 30 msg/s 限制下的 429 **按 `parameters.retry_after` 秒自动退避**（`channel.rs`，`f4cae00`）：`retry_after_ms` 解析后截断到 60s 预算上限，缺该字段或非数字时回退指数退避 `backoff_delay_ms`（250ms 起、封顶 4s），整体重试预算 60s。仍不做本地令牌桶限流——超出预算直接返回失败，交由上游重试。
 
 ### 7.3.1 配置管理 API
 - `GET /` 提供嵌入 Rust 二进制的 SPA；`/assets/config.js` 与 `/assets/styles.css` 提供页面资源。服务不在运行时读取或写入本地文件（`C-NO-LOCAL-WRITE`）。
@@ -560,7 +560,7 @@ pub enum BotError {
 - axum 采用 **0.8**（`ARCH-AXUM-08`）；如后续审核决定调整版本，以 Cargo.toml 为准并同步本节。
 - 当前不实现 SSE/WebSocket/长轮询/SQLite/本地卷（`C-NO-LONG-CONN`/`NG-SQLITE-PERSIST`/`NG-LOCAL-VOLUME`）；入口鉴权（`R1`/`SAF-AUTH-*`）作为 fail-closed 硬门禁落地，鉴权之后的 Push、Streams worker 和 `/reconcile` 业务路径已实现。
 
-**阶段0 P0 门禁（`GATE-P0`）——已通过。首次冻结时为 45 passed / 0 failed / 1 ignored，此后随 ④–⑥ 轮实现持续增长，当前基线为 93 passed / 0 failed / 4 ignored（2026-09-28 复测；权威值见 `docs/charter.md` 的 `TEST_BASELINE` 行）。以下为阶段0 当时的判据，保留作历史记录：**
+**阶段0 P0 门禁（`GATE-P0`）——已通过。首次冻结时为 45 passed / 0 failed / 1 ignored，此后随 ④–⑥ 轮实现持续增长，当前基线为 104 passed / 0 failed / 4 ignored（2026-10-13 复测；权威值见 `docs/charter.md` 的 `TEST_BASELINE` 行）。以下为阶段0 当时的判据，保留作历史记录：**
 1. `cargo fmt --check` 通过（无格式差异）。
 2. `cargo clippy --all-targets -- -D warnings` 通过（零告警；禁 crate 级 `allow`）。
 3. `cargo test` 通过（含路由/配置最小测试）。

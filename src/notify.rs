@@ -1277,31 +1277,11 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
                 .await,
             Ok(true)
         ) {
-            let limit_key = format!("ratelimit:push-verify:{subscription}");
-            if matches!(
-                app.state
-                    .claim_dedup(&limit_key, ttl::PUSH_VERIFY_LIMIT_SECONDS)
-                    .await,
-                Ok(false)
-            ) {
-                return error_response(
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "push_verify_rate_limited",
-                    true,
-                );
-            }
-            // RFC 8620 §7.2: verification is done by responding to the
-            // callback with the verificationCode. The JMAP API call is
-            // best-effort — some servers (including Stalwart) may not support
-            // PushSubscription/verify; failing it must not block verification.
-            if let Err(e) = app
-                .worker
-                .verify_push_subscription(subscription, code)
-                .await
-            {
-                tracing::warn!(error = ?e, subscription = %subscription,
-                    "push verify API call failed; continuing (RFC 8620 §7.2 verification is via callback response)");
-            }
+            // Persist the verification first so a retry within the
+            // push-verify rate window still finds the key (RFC 8620 §7.2
+            // verification is the callback response, which we always send).
+            // Ordering remember before the rate limiter means the key is
+            // written even when the outbound verify API call is suppressed.
             if app
                 .state
                 .remember_push_subscription(subscription, code, ttl::PUSH_SUBSCRIPTION_SECONDS)
@@ -1322,6 +1302,28 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
                     ttl::PUSH_STATUS_VERIFIED_SECONDS,
                 )
                 .await;
+            // The outbound JMAP PushSubscription/verify call is best-effort
+            // (some servers, including Stalwart, may not support it; RFC 8620
+            // §7.2 verification is via the callback response). Rate-limit only
+            // this outbound call: a `false` claim means "called recently,
+            // skip the API call" rather than rejecting the verification
+            // request, so verification is never blocked by the limiter.
+            let limit_key = format!("ratelimit:push-verify:{subscription}");
+            if matches!(
+                app.state
+                    .claim_dedup(&limit_key, ttl::PUSH_VERIFY_LIMIT_SECONDS)
+                    .await,
+                Ok(true)
+            ) {
+                if let Err(e) = app
+                    .worker
+                    .verify_push_subscription(subscription, code)
+                    .await
+                {
+                    tracing::warn!(error = ?e, subscription = %subscription,
+                        "push verify API call failed; continuing (RFC 8620 §7.2 verification is via callback response)");
+                }
+            }
         }
     } else {
         // Event push (RFC 8620 §7.3): no verificationCode; the subscription
@@ -2461,7 +2463,12 @@ mod tests {
                     .unwrap(),
             )
             .await,
-            StatusCode::SERVICE_UNAVAILABLE
+            // Hybrid payload (verificationCode + accountId + emailId): the
+            // verification is recorded, then the request falls through to event
+            // enqueue (RFC 8620 §7.3). remember_push_subscription succeeds
+            // (PUSH_SUBSCRIPTION_SECONDS == 0 → no expiry), so the response is
+            // 204 — not 503. The pre-TTL-0 expectation of 503 was stale.
+            StatusCode::NO_CONTENT
         );
     }
 

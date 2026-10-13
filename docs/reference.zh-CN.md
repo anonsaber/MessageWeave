@@ -113,7 +113,7 @@ DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 
 |---|---|---|---|
 | `dedup:tg:{update_id}` |前 86_400 |使用 `telegram_webhook` 中的 `claim_dedup` 构建并声明，在失败的入队时使用 `release_dedup` 释放 | — |
 | `dedup:jmap:{account}:{email}` | EX 86_400 |使用“jmap_push”中的“claim_dedup”构建并声明；在协调路径上重建相同的密钥并使用“claim_dedup_and_enqueue”（“worker.rs”）|声明— |
-| `ratelimit:push-verify:{subscription}` | EX 30 | 由 `register_push` 中的 `claim_dedup` 构建并声明；`false` 的声明结果就是 `429 push_verify_rate_limited` 分支 | — |
+| `ratelimit:push-verify:{subscription}` | EX 30 | 由 `jmap_push` 中的 `claim_dedup` 构建并声明；`false` 的声明结果为抑制出站 `verify_push_subscription` API 调用（不再返回 429） | — |
 | `state:jmap:since` | **无 EX** | `set_reconcile_state`（没有 `EX` 的 `SET`）| `get_reconcile_state` |
 
 `state:jmap:since` 是唯一一个在没有显式声明的情况下无限期存在的状态键
@@ -190,7 +190,6 @@ DLQ 是 **append-and-ack**：附加到 `stalwart:jmap:dlq` 的相同 Lua 脚本 
 | 404 | 404 `push_subscription_not_found` | — |
 | 409 | 409 `冲突` | — |
 | 422 | 422 `无效配置` | — |
-| 429 | 429 `push_verify_rate_limited` | `30` |
 | 500 | 500 `内部错误` | — |
 | 502 | 502 `telegram_send_failed`（仅限`/debug/*`）| — |
 | 503 | 503 `service_unavailable`、`disabled`、`reconcile_retry`、`push_verify_failed`、`push_state_unavailable`、`push_destroy_failed` |可重试时为“30”，或始终用于推送注册/禁用失败 |
@@ -292,8 +291,8 @@ env var — 并且“DEBUG_TOKEN”非空**（“SAF-DEBUG-GATE”；门被读�
 ## 4. 负载均衡器与后端路由对照表
 
 > **独立验证。** 来源：`cloudflare-worker/src/backends.js` `SAFE_ROUTES`，
-> 共 19 条，并与 `ROUTE_METHODS`（`index.js`）一起定义每条路径允许的方法。Worker 入口文件是 `src/index.js`
->（`wrangler.toml`）；`src/lb.js` 实现请求转发和有界故障转移（`SAF-LB-PASSTHRU`，
+> 共 19 条，并与 `ROUTE_METHODS`（`index.js`）一起定义每条路径允许的方法。Worker 入口文件是 `cloudflare-worker/src/index.js`
+>（`wrangler.toml`）；`cloudflare-worker/src/lb.js` 实现请求转发和有界故障转移（`SAF-LB-PASSTHRU`，
 > `C-NO-LONG-CONN`)。
 
 该门是**无条件且失败时关闭的**。Worker 不读取任何配置开关：

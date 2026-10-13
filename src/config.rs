@@ -1,4 +1,4 @@
-// SPLIT-EVAL: 已评估暂缓拆分——仅略超软上限约 20 行，结构体定义与 Redis 配置解析路径相互引用，拆出只增加跨文件跳转而不消除任何重复。
+// SPLIT-EVAL: 已评估暂缓拆分——当前 1119 行（超 500 软上限较多），结构体定义与 Redis 配置解析路径相互引用，拆出只增加跨文件跳转而不消除任何重复，暂以内聚性优先保留。
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::error::BotError;

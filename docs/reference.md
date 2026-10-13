@@ -114,7 +114,7 @@ back — replay is an operator action, not a service feature.
 |---|---|---|---|
 | `dedup:tg:{update_id}` | EX 86_400 | built and claimed with `claim_dedup` in `telegram_webhook`, released with `release_dedup` on a failed enqueue | — |
 | `dedup:jmap:{account}:{email}` | EX 86_400 | built and claimed with `claim_dedup` in `jmap_push`; the same key is rebuilt on the reconcile path and claimed with `claim_dedup_and_enqueue` (`worker.rs`) | — |
-| `ratelimit:push-verify:{subscription}` | EX 30 | built and claimed with `claim_dedup` in `register_push`; a `false` claim is the `429 push_verify_rate_limited` branch | — |
+| `ratelimit:push-verify:{subscription}` | EX 30 | built and claimed with `claim_dedup` in `jmap_push`; a `false` claim suppresses the outbound `verify_push_subscription` API call (no 429) | — |
 | `state:jmap:since` | **No EX** | `set_reconcile_state` (a `SET` with no `EX`) | `get_reconcile_state` |
 
 `state:jmap:since` is the only state key that survives indefinitely without an explicit
@@ -193,7 +193,6 @@ field. `request_id` is always present.
 | 404 | `push_subscription_not_found` | — |
 | 409 | `conflict` | — |
 | 422 | `invalid_configuration` | — |
-| 429 | `push_verify_rate_limited` | `30` |
 | 500 | `internal_error` | — |
 | 502 | `telegram_send_failed` (`/debug/*` only) | — |
 | 503 | `service_unavailable`, `disabled`, `reconcile_retry`, `push_verify_failed`, `push_state_unavailable`, `push_destroy_failed` | `30` when retryable, or always for the push register/disable failures |
@@ -297,8 +296,8 @@ Response conventions:
 
 > **Independently verified.** Source: `cloudflare-worker/src/backends.js` `SAFE_ROUTES`,
 > 19 entries, alongside `ROUTE_METHODS` (`index.js`)
-> which fixes one method set per path. The worker entry point is `src/index.js`
-> (`wrangler.toml`); `src/lb.js` performs forwarding and bounded failover (`SAF-LB-PASSTHRU`,
+> which fixes one method set per path. The worker entry point is `cloudflare-worker/src/index.js`
+> (`wrangler.toml`); `cloudflare-worker/src/lb.js` performs forwarding and bounded failover (`SAF-LB-PASSTHRU`,
 > `C-NO-LONG-CONN`).
 
 The gate is **unconditional and fail-closed**. The worker reads no configuration switches at

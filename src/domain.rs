@@ -1,4 +1,4 @@
-//! Channel-independent domain values. Telegram/teloxide types must not cross this boundary.
+//! Channel-independent domain values. Telegram channel types must not cross this boundary.
 
 pub mod jmap;
 

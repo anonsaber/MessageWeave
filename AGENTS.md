@@ -6,7 +6,7 @@
 >
 > 两者冲突时：**项目事实与安全不变量以 `docs/charter.md` 为准，质量规则以本文件为准。**
 
-> **版本基线** 填写本仓库的基线 commit：<`<代码行号锚点基线>`（例如 `b70d188`）｜`<文档章节引用基线>`（例如 `e0882c7`）>，由持有门禁结果的提交者在合并该批改动时更新。
+> **版本基线** 填写本仓库的基线 commit：<`fc686ab`（例如 `b70d188`）｜`fc686ab`（例如 `e0882c7`）>，由持有门禁结果的提交者在合并该批改动时更新。
 
 > 校验命令的具体可复制版本写在 `docs/charter.md §6.2`（`GATE-P0`）与 `docs/charter.md §6.3`（`GATE-DOCS`）。
 
@@ -76,7 +76,7 @@
   （`docs/deployment.md` 原为运维 runbook 例外，已于 2026-10 合并入 `README.md` 并删除；
   README 一律用符号名引用代码，不再保留行号锚点。）
   `docs/reference.md` 的 56 个 `notify.rs` 锚点里约 40 个落在闭合括号、注释行或错误符号上，
-  而门禁报 0 错，2026-09-29 起全部删除、不再回补。opengaps / retired / design 里还剩 17 个
+  而门禁报 0 错，2026-09-29 起全部删除、不再回补。opengaps / retired / design 里还剩 21 个
   存量锚点，**不再新增、也不刻意清理**——它们改动频率低，不值得为此动文档。
 - 需要定位到行时用 `grep` 符号名，不要用文档里的行号做判断依据。
 - `scripts/docs_check/audit_anchor_semantics.py` 是**独立脚本**，没接进 `run_all.sh`，

@@ -21,7 +21,7 @@ The TTL green light for real machines has already been passed using the Upstash 
 | 3 | Telegram inbound / Stalwart `PushSubscription` joint debugging | Closed (real traffic has been driven, please see `README.md` §3.7 for operation steps) |
 | 4 | `/worker` is not in the deployment document | Closed (`README.md` §3.10 has been added) |
 
-Access control: `cargo fmt --check` / `cargo check --locked` / `cargo clippy --locked --all-targets -- -D warnings` all green; `cargo test --locked` **94 passed / 0 failed / 4 ignored** (2 TTL assertions out of 4 `#[ignore]` have been run with real Upstash: `REDIS_TEST_URL=… cargo test --locked -- --ignored ttl` → **2 passed / 0 failed**; the remaining 2 require real JMAP servers, this capability has been verified in staging joint debugging); documentation gate is 6/6 PASS, including 72 line number anchor non-null verifications.
+Access control: `cargo fmt --check` / `cargo check --locked` / `cargo clippy --locked --all-targets -- -D warnings` all green; `cargo test --locked` **104 passed / 0 failed / 4 ignored** (2 TTL assertions out of 4 `#[ignore]` have been run with real Upstash: `REDIS_TEST_URL=… cargo test --locked -- --ignored ttl` → **2 passed / 0 failed**; the remaining 2 require real JMAP servers, this capability has been verified in staging joint debugging); documentation gate is 6/6 PASS, including 72 line number anchor non-null verifications.
 
 Item 5 is not within the stage goal: multi-account product decision-making, which has been determined not to be done by the user on 2026-09-28. The decision boundary and future changes will be discussed in §3.
 
