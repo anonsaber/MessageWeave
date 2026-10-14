@@ -34,12 +34,14 @@
 | `src/backends.js` | origin 解析与校验、路由白名单 |
 | `src/lb.js` | 透传转发与有界故障转移 |
 | `src/health.js` | 带 TTL 的健康聚合探测 |
-| `test/*.test.js` | 四个文件共 38 条测试，全部离线 |
+| `test/*.test.js` | 四个文件共 43 条测试，全部离线 |
 
 ## 3. 透传语义
 
 - method、headers、body 原样发出；后端响应的 status、body、headers 原样返回。
-- 负载均衡器唯一新增的 header 是尽力而为的观测头：`x-lb-backend`，标记应答的 origin。写入放在 `try/catch` 里。跨域且不带 `access-control-allow-*` 的响应，其 header guard 是 immutable，`headers.set` 会抛异常。一次会抛异常的观测写入绝不能把健康的 `2xx` 掩盖成 `503`，所以写不进去时静默放弃该 header。这个缺陷就是 2026-09-30 的生产事故根因。
+- 负载均衡器新增两个 header：
+  - **`x-lb-backend`**（尽力而为的观测头）：标记应答的 origin。写入放在 `try/catch` 里。跨域且不带 `access-control-allow-*` 的响应，其 header guard 是 immutable，`headers.set` 会抛异常。一次会抛异常的观测写入绝不能把健康的 `2xx` 掩盖成 `503`，所以写不进去时静默放弃该 header。这个缺陷就是 2026-09-30 的生产事故根因。
+  - **`Cache-Control: no-store`**（非静态资源）：`/api/*`、`/webhook/*`、`/push/*`、`/reconcile`、`/worker`、`/healthz*`、`/ready` 等所有动态路由一律加 `no-store`，阻止 Cloudflare 边缘缓存。静态资源（`/`、`/assets/config.js`、`/assets/styles.css`）豁免，保留缓存以提升性能。动态 API 响应绝不能被边缘缓存——过期的健康探针、配置读取或缓存的 webhook 投递回执会遮蔽真实的后端状态变化。
 - `GET` 和 `HEAD` 不带 body 转发：上游没有 body 的响应直接原样返回，不重算 `Content-Length`。
 - 后端的 `3xx` 由负载均衡器自己跟随（`redirect: "follow"`），跳转型的 origin 不会把第二跳甩给浏览器。
 - 日志与错误串只包含 method、path、origin、失败类别，绝不含 headers、body、认证 secret 或 App Password（`SAF-LOG-PURITY`）。
@@ -148,11 +150,11 @@ SPA 的回调 URL 只注册**一个** origin（`C-LB-SINGLE-REG-URL`）。只填
 ```bash
 cd cloudflare-worker
 
-npm test       # 四个文件共 38 条测试，全部离线
+npm test       # 四个文件共 43 条测试，全部离线
 npm run check  # 对源码与测试跑 node --check，再 wrangler deploy --dry-run
 ```
 
-`npm test` 即 `node --test`，会自动收集 `test/*.test.js`：`test/index.test.js` 15、`test/lb.test.js` 12、`test/backends.test.js` 6、`test/health.test.js` 5。跑测试不需要安装依赖——Worker 没有运行时依赖，测试文件只引入 `node:test` 与 `node:assert/strict`。
+`npm test` 即 `node --test`，会自动收集 `test/*.test.js`：`test/index.test.js` 19、`test/lb.test.js` 13、`test/backends.test.js` 6、`test/health.test.js` 5。跑测试不需要安装依赖——Worker 没有运行时依赖，测试文件只引入 `node:test` 与 `node:assert/strict`。
 
 两个坑：
 

@@ -301,6 +301,79 @@ test("Worker: /reconcile 走 per-route 长超时且绝不故障转移；其余�
   }
 });
 
+test("Worker: non-static API responses carry Cache-Control: no-store", async () => {
+  const restore = stubFetch(async (url) => {
+    // 后端响应不带 cache-control（或带任意值）；LB 必须覆盖成 no-store。
+    return new Response(JSON.stringify({ ready: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+  try {
+    for (const path of ["/api/status", "/api/config", "/webhook/tg", "/ready", "/healthz"]) {
+      const method = path === "/webhook/tg" ? "POST" : "GET";
+      const body = method === "POST" ? "{}" : undefined;
+      const res = await handleFetch(new Request(`https://lb.example${path}`, { method, body }), makeEnv());
+      assert.equal(
+        res.headers.get("cache-control"),
+        "no-store",
+        `${path} must have no-store to block edge cache`,
+      );
+    }
+  } finally {
+    restore();
+  }
+});
+
+test("Worker: static assets (/, /assets/*) do NOT get no-store — allow edge cache for performance", async () => {
+  const restore = stubFetch(async (url) => {
+    // 后端返回静态资源，不带 cache-control；LB 不应加 no-store（保留原样或允许 CF 默认缓存）。
+    return new Response("<!doctype html><html></html>", {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+  });
+  try {
+    for (const path of ["/", "/assets/config.js", "/assets/styles.css"]) {
+      const res = await handleFetch(new Request(`https://lb.example${path}`), makeEnv());
+      assert.notEqual(
+        res.headers.get("cache-control"),
+        "no-store",
+        `${path} must NOT have no-store — static assets should be cacheable`,
+      );
+    }
+  } finally {
+    restore();
+  }
+});
+
+test("Worker: /healthz-worker (LB-local probe) also gets no-store", async () => {
+  const restore = stubFetch(async () => new Response("ok", { status: 200 }));
+  try {
+    const res = await handleFetch(new Request("https://lb.example/healthz-worker"), makeEnv());
+    assert.equal(res.headers.get("cache-control"), "no-store", "LB probe must not be cached");
+  } finally {
+    restore();
+  }
+});
+
+test("Worker: error responses (404/405/503) also get no-store", async () => {
+  const res404 = await handleFetch(new Request("https://lb.example/unknown"), makeEnv());
+  assert.equal(res404.status, 404);
+  assert.equal(res404.headers.get("cache-control"), "no-store");
+
+  const res405 = await handleFetch(new Request("https://lb.example/webhook/tg", { method: "GET" }), makeEnv());
+  assert.equal(res405.status, 405);
+  assert.equal(res405.headers.get("cache-control"), "no-store");
+
+  const res503 = await handleFetch(
+    new Request("https://lb.example/webhook/tg", { method: "POST", body: "{}" }),
+    makeEnv({ BACKEND_ORIGINS_JSON: "not-json" }),
+  );
+  assert.equal(res503.status, 503);
+  assert.equal(res503.headers.get("cache-control"), "no-store");
+});
+
 test("Worker: POST /worker 在白名单内，走 per-route 长超时且绝不故障转移；GET /worker => 405", async () => {
   // /worker 和 /reconcile 一样只由外部 cron 触发（scripts/cron-drain.sh）。全局 10s 超时会把
   // 一次正常的排空误判成失败并切到第二实例，而第二个实例只会重复排同一批消息。

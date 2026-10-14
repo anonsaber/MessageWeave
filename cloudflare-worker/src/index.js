@@ -29,6 +29,9 @@ import { parseBackendOrigins, LB_ROUTES } from "./backends.js";
 import { forwardWithFailover } from "./lb.js";
 import { aggregateHealth, healthResponse, DEFAULT_HEALTH_TTL_MS } from "./health.js";
 
+/** 静态资源路由：允许 Cloudflare 边缘缓存（SPA HTML + 内联 JS/CSS）。其余一律 no-store。 */
+const STATIC_ASSET_ROUTES = new Set(["/", "/assets/config.js", "/assets/styles.css"]);
+
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_ATTEMPTS = 2; // 首次 + 1 次故障转移（§10.4 建议）
 // /reconcile 是后端同步长任务：handler 持集群级锁 `lock:reconcile`（初租 60s、10s 心跳续期至 30s，
@@ -94,7 +97,7 @@ export async function handleFetch(request, env) {
     if (request.method !== "GET") {
       return text("method not allowed for /healthz-worker", 405, { allow: "GET" });
     }
-    return handleHealth(env);
+    return withNoStore(await handleHealth(env));
   }
 
   // safelist 路由校验：未知路径 404，不透传至后端（C-LB-SINGLE-REG-URL）。
@@ -133,8 +136,8 @@ export async function handleFetch(request, env) {
     maxAttempts = 1; // 故障转移无意义：切到另一 origin 只会重复排同一批消息
   }
 
-  // 透传转发 + 有界故障转移（仅超时/5xx）。
-  return forwardWithFailover(origins, request, {
+  // 透传转发 + 有界故障转移（仅超时/5xx）。非静态资源加 no-store 阻止边缘缓存。
+  const resp = await forwardWithFailover(origins, request, {
     maxAttempts,
     timeoutMs,
     fetch: lazyFetch(),
@@ -149,6 +152,7 @@ export async function handleFetch(request, env) {
       }
     },
   });
+  return STATIC_ASSET_ROUTES.has(path) ? resp : withNoStore(resp);
 }
 
 /** 透传路由的统一错误/兜底日志不打印任何 header/body。 */
@@ -187,10 +191,26 @@ function lazyFetch() {
   return (...args) => globalThis.fetch(...args);
 }
 
+/**
+ * 给非静态资源响应设 `Cache-Control: no-store`，阻止 Cloudflare 边缘缓存。
+ * `fetch()` 返回的响应头可能是 immutable guard（跨域无 CORS），直接 `set` 会抛
+ * TypeError（见 `lb.js` `mark()` 的 2026-09-30 事故根因）；这里构造新 Response +
+ * 可变 Headers 副本，安全写入。body 流透传不缓冲。
+ */
+function withNoStore(response) {
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", "no-store");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function text(body, status, extraHeaders = {}) {
   return new Response(body, {
     status,
-    headers: { "content-type": "text/plain; charset=utf-8", ...extraHeaders },
+    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", ...extraHeaders },
   });
 }
 

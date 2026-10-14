@@ -64,18 +64,25 @@ business payloads and forwards the request as-is to the backend https origins; o
 | `src/backends.js` | origin parsing and validation, route safelist |
 | `src/lb.js` | pass-through forwarding and bounded failover |
 | `src/health.js` | TTL-cached health aggregate probe |
-| `test/*.test.js` | 38 tests in four files, all offline |
+| `test/*.test.js` | 43 tests in four files, all offline |
 
 ## 3. Pass-through semantics
 
 - Method, headers and body go out unchanged; the backend response status, body and headers are
   returned as-is.
-- The only header the load balancer adds is best-effort observability: `x-lb-backend`, naming the
-  origin that answered. The write sits behind a `try/catch`. A cross-origin response that
-  carries no `access-control-allow-*` header comes back with an immutable header guard, and
-  `headers.set` throws on those. An observability write that throws must never mask a healthy
-  `2xx` as a `503`, so the header is dropped silently when it cannot be written. That exact
-  defect was the 2026-09-30 production incident.
+- The load balancer adds two headers:
+  - **`x-lb-backend`** (best-effort observability): names the origin that answered. The write
+    sits behind a `try/catch`. A cross-origin response that carries no
+    `access-control-allow-*` header comes back with an immutable header guard, and
+    `headers.set` throws on those. An observability write that throws must never mask a
+    healthy `2xx` as a `503`, so the header is dropped silently when it cannot be written.
+    That exact defect was the 2026-09-30 production incident.
+  - **`Cache-Control: no-store`** on **all non-static routes** (`/api/*`, `/webhook/*`,
+    `/push/*`, `/reconcile`, `/worker`, `/healthz*`, `/ready`). Static assets (`/`,
+    `/assets/config.js`, `/assets/styles.css`) are exempted to allow Cloudflare edge caching
+    for performance. Dynamic API responses must never be cached at the edge — stale health
+    probes, stale config reads, or cached webhook delivery receipts would mask real backend
+    state changes.
 - `GET` and `HEAD` never forward a body: a bodyless upstream response is returned as it is,
   and no `Content-Length` is recomputed.
 - Backend `3xx` redirects are followed by the load balancer itself (`redirect: "follow"`), so a
@@ -239,12 +246,12 @@ the previous subscription — that is how you switch fronts.
 ```bash
 cd cloudflare-worker
 
-npm test       # 38 tests, four files, fully offline
+npm test       # 43 tests, four files, fully offline
 npm run check  # node --check on sources and tests, then wrangler deploy --dry-run
 ```
 
-`npm test` is `node --test`, which picks up `test/*.test.js`: `test/index.test.js` 15,
-`test/lb.test.js` 12, `test/backends.test.js` 6, `test/health.test.js` 5. There is no install
+`npm test` is `node --test`, which picks up `test/*.test.js`: `test/index.test.js` 19,
+`test/lb.test.js` 13, `test/backends.test.js` 6, `test/health.test.js` 5. There is no install
 step for the tests — the Worker has no runtime dependencies, and the test files import only
 `node:test` and `node:assert/strict`.
 
