@@ -1293,9 +1293,21 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
     let Ok(push) = serde_json::from_slice::<JmapPush>(&body) else {
         return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
     };
+    // Diagnostic request_id minted once here so every push 401 response and
+    // branch log line in this handler carries the same correlation id as the
+    // entry log. The verification_code value is never logged (AGENTS.md §3.2).
+    let request_id = reconcile_lock_owner();
+    tracing::info!(
+        request_id = %request_id,
+        subscription_id = ?push.subscription_id,
+        account_id = ?push.account_id,
+        email_id = ?push.email_id,
+        has_verification_code = push.verification_code.is_some(),
+        "jmap_push request received"
+    );
     // subscription_id is required on every request (RFC 8620 §7.2/§7.3).
     let Some(subscription) = push.subscription_id.as_deref() else {
-        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
+        return push_401(request_id);
     };
     if let Some(code) = push.verification_code.as_deref() {
         // Verification request (RFC 8620 §7.2): carries verificationCode.
@@ -1352,17 +1364,33 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
                         "push verify API call failed; continuing (RFC 8620 §7.2 verification is via callback response)");
                 }
             }
+            // Diagnostic: a verification request rewrites push:subscription:{id}.
+            // If a concurrent event push 401s, this line tells us a verification
+            // raced it (key rewritten mid-window). The code value is not logged.
+            tracing::info!(
+                request_id = %request_id,
+                subscription = %subscription,
+                "jmap_push verification branch wrote key"
+            );
         }
     } else {
         // Event push (RFC 8620 §7.3): no verificationCode; the subscription
         // must have been verified during the initial handshake.
-        if !matches!(
-            app.state
-                .dedup_exists(&format!("push:subscription:{subscription}"))
-                .await,
-            Ok(true)
-        ) {
-            return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
+        let push_key = format!("push:subscription:{subscription}");
+        let exists = matches!(app.state.dedup_exists(&push_key).await, Ok(true));
+        // Diagnostic: this is the line that decides the 401. If subscription is
+        // "b" and exists is false here while a CLI probe shows the key present,
+        // the key was deleted/rewritten in the window (see the verify-branch
+        // log). If subscription is not "b", Stalwart sent a different id than
+        // our stored push:subscription:id pointer — the contradiction's root.
+        tracing::info!(
+            request_id = %request_id,
+            key = %push_key,
+            exists,
+            "jmap_push event dedup_exists check"
+        );
+        if !exists {
+            return push_401(request_id);
         }
     }
     if push.account_id.is_none() && push.email_id.is_none() {
@@ -1388,6 +1416,15 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
             .await
         {
             Ok(message_id) => {
+                // Diagnostic: the event push was accepted and queued for
+                // delivery. If Telegram still doesn't arrive after this line,
+                // the failure is downstream (worker.process / Telegram), not
+                // in the push 401 path.
+                tracing::info!(
+                    request_id = %request_id,
+                    %message_id,
+                    "jmap_push event enqueued"
+                );
                 // Claim in-flight lease so the cron-triggered worker() drain
                 // skips this message while we process it immediately.
                 let inflight_key = format!("delivery:inflight:stalwart:jmap:{message_id}");
@@ -1859,6 +1896,19 @@ fn error_response_with_id(status: StatusCode, code: &'static str, request_id: St
         status,
         [(header::RETRY_AFTER, "30")],
         axum::Json(serde_json::json!({"error": code, "request_id": request_id})),
+    )
+        .into_response()
+}
+
+// 401 for the push inbound path. Identical body to `error_response` with
+// `retry=false`, but the request_id is the one minted at jmap_push entry so
+// Stalwart's logged request_id matches the diagnostic entry/branch logs. No
+// Retry-After header (401 is not retryable). Diagnostic instrumentation: this
+// helper exists only so the push 401 sites stay correlated to the entry log.
+fn push_401(request_id: String) -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        axum::Json(serde_json::json!({"error": "unauthorized", "request_id": request_id})),
     )
         .into_response()
 }
