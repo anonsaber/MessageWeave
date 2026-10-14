@@ -26,23 +26,6 @@ fn debug_surface_requested(debug_arg: bool, debug_enabled_var: Option<&str>) -> 
         )
 }
 
-/// Per-instance observability label for `/api/status` (see `AppState::backend_id`). Read once at
-/// startup so request handlers never touch the environment. `BACKEND_ID` wins; otherwise
-/// `HOSTNAME` (set by container runtimes) gives out-of-the-box distinction between instances.
-/// `None` only when both are unset, so a probe honestly reports "not labeled" instead of a
-/// misleading default — two instances that both skip it are indistinguishable by design until an
-/// operator sets `BACKEND_ID`, which is a deploy-time concern, not a connection secret.
-fn backend_id_from_env() -> Option<String> {
-    std::env::var("BACKEND_ID")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            std::env::var("HOSTNAME")
-                .ok()
-                .filter(|value| !value.is_empty())
-        })
-}
-
 use crate::channel::telegram::TelegramClient;
 use crate::domain::jmap::{client::JmapClientBackend, JmapService};
 use config::{encryption_key_from_env, Config};
@@ -67,7 +50,6 @@ async fn main() -> Result<(), error::BotError> {
         .parse()
         .map_err(|e| error::BotError::Config(format!("invalid PORT: {e}")))?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    let backend_id = backend_id_from_env();
     let mut missing = Vec::new();
     let redis_value = match std::env::var("REDIS_URL") {
         Ok(value) if !value.trim().is_empty() => value,
@@ -91,7 +73,7 @@ async fn main() -> Result<(), error::BotError> {
             ?missing,
             "required bootstrap environment is incomplete; serving setup mode"
         );
-        let app = router_configuration_setup(missing, backend_id).merge(web::router());
+        let app = router_configuration_setup(missing).merge(web::router());
         axum::serve(listener, app).await?;
         return Ok(());
     }
@@ -216,7 +198,6 @@ async fn main() -> Result<(), error::BotError> {
         redis,
         allowlist,
         Arc::new(WorkerHandle::new(worker)),
-        backend_id,
         runtime,
         admin_token,
         debug_token,

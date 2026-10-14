@@ -313,7 +313,6 @@ mod tests {
             state,
             HashSet::new(),
             Arc::new(NoopWorker),
-            None,
             runtime_provider(OutboundConfig::default()),
             SecretString::new(String::new()),
             debug_token,

@@ -275,7 +275,7 @@ env var — 并且“DEBUG_TOKEN”非空**（“SAF-DEBUG-GATE”；门被读�
   `{"ready": <bool>, "mode": "configured"|"configuration-setup", "missing": [...], "version": "<build-fingerprint>", "backend": "<id>"|null}`。
   `ready` 为 `false`、`missing` 列出缺少的必需变量名（`REDIS_URL`、
   `CONFIG_ENCRYPTION_KEY`）——路由本身永不报错，可安全轮询。`version` 是 `build.rs` 烘焙的 `BUILD_VERSION` 字符串
-  （`<git-sha 或 nogit>+<UTC 构建时间>`）——同一镜像构建的每个实例都相同，因此它回答「本次部署是否落地」，但不回答「命中的是哪个实例」。`backend` 回答后者：每实例标签，启动时一次性读取 `BACKEND_ID`（回退容器运行时设置的 `HOSTNAME`），穿入 `AppState::backend_id` 并在此回显。它是观测标签，不是连接密钥，也不持久化。`null` 表示两个 env 都未设置；两个都不设的实例在该字段上不可区分，所以需要分辨 origin 的探针必须在部署时为每个实例设置 `BACKEND_ID`。SPA 已不再渲染 `version`，确认部署落地只能查这个接口。
+  （`<git-sha 或 nogit>+<UTC 构建时间>`）——同一镜像构建的每个实例都相同，因此它回答「本次部署是否落地」，但不回答「命中的是哪个实例」。`backend` 回答后者：请求本身的 `Host` 头，去掉默认 https/http 端口（`example.com:443` -> `example.com`）。请求穿过 Cloudflare Worker 负载均衡器（`ARCH-LB-WORKER`）时，该头就是 LB 把该实例路由为的公开地址——正是探针分辨 origin 所需。不涉及启动期 env：标签逐请求推导，永远不会与 LB 配置漂移。`null` 表示请求未携带可用的 `Host`（如裸健康检查）。SPA 已不再渲染 `version`，确认部署落地只能查这个接口。
 - `/debug/*` 在一个地方返回 **503**：业务执行时`POST /debug/notify`
   配置未加载或没有出站客户端 — `service_unavailable`
 `重试时间：30`。三个探测端点反而报告失败

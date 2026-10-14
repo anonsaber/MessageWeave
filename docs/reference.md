@@ -281,12 +281,13 @@ Response conventions:
   safe to poll. `version` is the `BUILD_VERSION` string baked in by `build.rs`
   (`<git-sha-or-nogit>+<UTC build time>`) — identical across every instance built from the same
   image, so it answers "did this deploy land?" but not "which instance answered?". `backend`
-  answers that: a per-instance label read once at startup from `BACKEND_ID` (falling back to
-  `HOSTNAME`, which container runtimes set), threaded into `AppState::backend_id` and echoed
-  here. It is an observability label, not a connection secret and not persisted. `null` means
-  neither env var was set; two such instances are indistinguishable by this field, so a probe
-  that needs to tell origins apart must set `BACKEND_ID` per instance at deploy time. The SPA
-  no longer renders `version` — the API is now the only way to confirm a deploy landed.
+  answers that: the `Host` header of the request itself, trimmed of the default https/http
+  port (`example.com:443` -> `example.com`). When the request comes through the Cloudflare
+  Worker load balancer (`ARCH-LB-WORKER`), that header is the public address the LB routed
+  this instance as — which is exactly what a probe needs to tell origins apart. No startup
+  env var is involved: the label is derived per-request, so it never drifts from the LB
+  config. `null` means the request carried no usable `Host` (e.g. a bare health check). The
+  SPA no longer renders `version` — the API is now the only way to confirm a deploy landed.
 - `/debug/*` returns **503** in exactly one place: `POST /debug/notify` when the business
   config is not loaded or there is no outbound client — `service_unavailable` with
   `Retry-After: 30`. The three probe endpoints instead report failure

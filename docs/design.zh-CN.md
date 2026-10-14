@@ -366,7 +366,7 @@ message-weave/
 > 兼容说明。
 
 > **实际实现**（`ARCH-CONFIG-ENV`）：进程启动只读 **2 个**进程级凭据加监听端口（均经 `main` 里的 `std::env::var`，键名 `REDIS_URL` / `CONFIG_ENCRYPTION_KEY` / `PORT`，
-> 另加可选 `DEBUG_TOKEN` 与 `/api/status` 标签 `BACKEND_ID`），**不使用 figment、不使用 TOML/配置文件**。
+> 另加可选 `DEBUG_TOKEN`），**不使用 figment、不使用 TOML/配置文件**。
 > **业务配置不再从环境变量读取**：下表字段全部经 Redis 业务配置由 `config` 层以 serde 反序列化装载，
 > 并经 `validate_business_wire` / `validate_nonblank` 做 fail-closed 校验。
 > 历史上存在的 `Config::from_env()` 完整 env 解析路径**已删除**（登记见 `docs/retired.md`），
@@ -420,7 +420,7 @@ message-weave/
 
 ### 7.3.1 配置管理 API
 - `GET /` 提供嵌入 Rust 二进制的 SPA；`/assets/config.js` 与 `/assets/styles.css` 提供页面资源。服务不在运行时读取或写入本地文件（`C-NO-LOCAL-WRITE`）。
-- `GET /api/status` 公开返回 `{ "ready": boolean, "mode": "configured" | "configuration-setup", "missing": string[], "version": string, "backend": string|null }`，只列缺少的环境变量名称。缺少 `REDIS_URL` 或 `CONFIG_ENCRYPTION_KEY` 时，SPA 只显示配置引导状态与缺失变量；服务状态确认 ready=true 后才显示管理会话授权区。`version` 是 `build.rs` 在编译期烘焙的 `BUILD_VERSION`（`<git-sha 或 nogit>+<UTC 构建时间>`）。SPA 已不再渲染它，确认部署落地只能查这个接口。`backend` 是启动时一次性读取 `BACKEND_ID`（回退到 `HOSTNAME`）的每实例标签；同一镜像构建的实例 `version` 相同，所以 `backend` 才是让穿过负载均衡器的探针分辨命中的是哪个 origin 的字段。`null` 表示未配置标签（两个 env 都未设置）；两个都不设的实例在该字段上不可区分，这是设计如此。
+- `GET /api/status` 公开返回 `{ "ready": boolean, "mode": "configured" | "configuration-setup", "missing": string[], "version": string, "backend": string|null }`，只列缺少的环境变量名称。缺少 `REDIS_URL` 或 `CONFIG_ENCRYPTION_KEY` 时，SPA 只显示配置引导状态与缺失变量；服务状态确认 ready=true 后才显示管理会话授权区。`version` 是 `build.rs` 在编译期烘焙的 `BUILD_VERSION`（`<git-sha 或 nogit>+<UTC 构建时间>`）。SPA 已不再渲染它，确认部署落地只能查这个接口。`backend` 回显请求的 `Host` 头（去掉默认 https/http 端口）；请求穿过 Cloudflare Worker 负载均衡器（`ARCH-LB-WORKER`）时，该头就是 LB 把该实例路由为的公开地址——让穿过负载均衡器的探针分辨命中的是哪个 origin。标签逐请求推导，不来自任何启动期 env，永远不会与 LB 配置漂移。`null` 表示请求未携带可用的 `Host`。
 - `POST /api/admin/session` 接受 `Authorization: Bearer <CONFIG_ENCRYPTION_KEY>`，返回 `{ "session": "<opaque>", "expires_in": 1800 }`；Redis 中保存的是会话令牌的摘要，30 分钟后过期。`POST /api/admin/session/revoke` 可立即撤销会话，成功返回 `204`。
 - 管理页面仅在 JavaScript 内存中保存 session。请求设置 `credentials: omit`、`cache: no-store`，不使用 Cookie、localStorage 或 sessionStorage。管理 API 接受有效 admin session；兼容路径也接受 `WORKER_TOKEN`。Worker 原样透传鉴权头（`SAF-LB-PASSTHRU`）。
 - `GET /api/config` 与 `PUT /api/config` 只读取和写入非敏感运行参数：
@@ -560,7 +560,7 @@ pub enum BotError {
 - axum 采用 **0.8**（`ARCH-AXUM-08`）；如后续审核决定调整版本，以 Cargo.toml 为准并同步本节。
 - 当前不实现 SSE/WebSocket/长轮询/SQLite/本地卷（`C-NO-LONG-CONN`/`NG-SQLITE-PERSIST`/`NG-LOCAL-VOLUME`）；入口鉴权（`R1`/`SAF-AUTH-*`）作为 fail-closed 硬门禁落地，鉴权之后的 Push、Streams worker 和 `/reconcile` 业务路径已实现。
 
-**阶段0 P0 门禁（`GATE-P0`）——已通过。首次冻结时为 45 passed / 0 failed / 1 ignored，此后随 ④–⑥ 轮实现持续增长，当前基线为 105 passed / 0 failed / 4 ignored（2026-10-14 复测；权威值见 `docs/charter.md` 的 `TEST_BASELINE` 行）。以下为阶段0 当时的判据，保留作历史记录：**
+**阶段0 P0 门禁（`GATE-P0`）——已通过。首次冻结时为 45 passed / 0 failed / 1 ignored，此后随 ④–⑥ 轮实现持续增长，当前基线为 106 passed / 0 failed / 4 ignored（2026-10-14 复测；权威值见 `docs/charter.md` 的 `TEST_BASELINE` 行）。以下为阶段0 当时的判据，保留作历史记录：**
 1. `cargo fmt --check` 通过（无格式差异）。
 2. `cargo clippy --all-targets -- -D warnings` 通过（零告警；禁 crate 级 `allow`）。
 3. `cargo test` 通过（含路由/配置最小测试）。
