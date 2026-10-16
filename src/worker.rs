@@ -321,22 +321,46 @@ impl<B: JmapBackend> WorkerHandler for MetadataWorker<B> {
             // write `delivery:committed` + XACK and silently drop an event we do
             // not understand. Falling through to Err routes it to retry/DLQ so it
             // stays observable instead of vanishing.
+            tracing::warn!(
+                stream,
+                "worker.process: unknown stream, routing to retry/DLQ"
+            );
             return Err(());
         }
         let event: WorkerEvent = serde_json::from_str(payload).map_err(|_| ())?;
         let (Some(account), Some(email)) = (event.account_id.as_deref(), event.email_id.as_deref())
         else {
+            tracing::warn!(
+                has_account = event.account_id.is_some(),
+                has_email = event.email_id.is_some(),
+                "worker.process: payload missing accountId or emailId"
+            );
             return Err(());
         };
         if account != self.jmap.account_id() {
+            // The id we are bound to versus the id the event names: logging both
+            // distinguishes a stale event from a misconfigured account binding.
+            tracing::warn!(
+                event_account = %account,
+                bound_account = %self.jmap.account_id(),
+                "worker.process: event account does not match the bound account"
+            );
             return Err(());
         }
-        let content = self
-            .jmap
-            .read_email(email)
-            .await
-            .map_err(|_| ())?
-            .ok_or(())?;
+        let content = match self.jmap.read_email(email).await {
+            Ok(content) => content,
+            Err(error) => {
+                tracing::warn!(
+                    reason = %error,
+                    email_id = %email,
+                    "worker.process: read_email failed"
+                );
+                return Err(());
+            }
+        }
+        .ok_or_else(
+            || tracing::warn!(email_id = %email, "worker.process: read_email returned no email"),
+        )?;
         let metadata = content.metadata;
         self.telegram
             .send_notification(
@@ -351,7 +375,16 @@ impl<B: JmapBackend> WorkerHandler for MetadataWorker<B> {
                 },
             )
             .await
-            .map_err(|_| ())
+            .map_err(|reason| {
+                // The client's render target is a chat id, so the failure can be
+                // logged as such without exposing the token (AGENTS.md §3.2).
+                tracing::warn!(
+                    chat_id = %self.chat_id,
+                    reason = %reason,
+                    email_id = %email,
+                    "worker.process: telegram send failed"
+                )
+            })
     }
 
     async fn reconcile(
@@ -484,7 +517,7 @@ impl<B: JmapBackend> MetadataWorker<B> {
             pages += 1;
             let changes = match self.jmap.email_changes(&state, window).await {
                 Ok(changes) => changes,
-                Err(_) => {
+                Err(error) => {
                     // Re-baseline instead of failing the invocation. jmap-client
                     // 0.4.2 exposes no reset signal: `ChangesResponse` only
                     // carries `oldState`/`newState`/`hasMoreChanges`/`created`/
@@ -499,19 +532,36 @@ impl<B: JmapBackend> MetadataWorker<B> {
                     // state at position 0 recovers on the next run. The 24h
                     // dedup key makes the resulting re-read at-most-duplicate,
                     // never-loss.
-                    let rebaselined = ReconcileCursor::walk_from(
+                    let recovered = ReconcileCursor::walk_from(
                         self.jmap
                             .session_state()
                             .await
                             .map_err(|_| "jmap_session_failed")?,
                     );
-                    return Ok(rebaselined.to_persisted());
+                    // Log at error, not warn: the cursor advances here, so from
+                    // the operator's view the pass succeeded while not one email
+                    // was enqueued. Without this line the state-change log and a
+                    // genuinely successful pull are indistinguishable.
+                    tracing::error!(
+                        reason = %error,
+                        pages,
+                        discarded_since_state = %state,
+                        "reconcile: /changes failed, cursor reset to the position walk at position 0 with zero emails enqueued"
+                    );
+                    return Ok(recovered.to_persisted());
                 }
             };
             for email_id in changes.created.iter().chain(changes.updated.iter()) {
                 self.enqueue_reconcile_event(email_id).await?;
             }
             if !changes.has_more_changes {
+                tracing::info!(
+                    pages,
+                    window,
+                    created = changes.created.len(),
+                    updated = changes.updated.len(),
+                    "reconcile: /changes replay complete"
+                );
                 return Ok(changes.new_state);
             }
             if window < CHANGE_WINDOW_CAP {
@@ -556,11 +606,38 @@ impl<B: JmapBackend> MetadataWorker<B> {
         // mid-way must not leave the dedup key claimed while the payload is
         // absent from the stream (which would drop the event for the whole
         // 24h dedup window).
-        self.state
+        match self
+            .state
             .claim_dedup_and_enqueue(&key, ttl::DEDUP_JMAP_SECONDS, "stalwart:jmap", &payload)
             .await
-            .map_err(|_| "enqueue_failed")?;
-        Ok(())
+        {
+            // A `false` here means the dedup key was already claimed within the
+            // last 24h, so no event was enqueued at all. That is correct
+            // deduplication, but it is otherwise the one silent path in which a
+            // `/changes` response naming this email produces no Telegram message.
+            Ok(true) => {
+                tracing::info!(
+                    email_id = %email_id,
+                    "reconcile: email enqueued to stalwart:jmap"
+                );
+                Ok(())
+            }
+            Ok(false) => {
+                tracing::info!(
+                    email_id = %email_id,
+                    "reconcile: email suppressed by the 24h dedup key"
+                );
+                Ok(())
+            }
+            Err(error) => {
+                tracing::warn!(
+                    reason = %error,
+                    email_id = %email_id,
+                    "reconcile: enqueue failed"
+                );
+                Err("enqueue_failed")
+            }
+        }
     }
 
     async fn process_telegram(&self, payload: &str) -> Result<(), ()> {

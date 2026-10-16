@@ -118,7 +118,7 @@ cd /home/okabe/Repo/messageweave && docker run --rm --user 1000:1000 \
   bash -lc 'export PATH=/usr/local/cargo/bin:$PATH; cargo fmt --all -- --check && cargo check --locked && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked 2>&1 | tail -12'
 ```
 
-**Current baseline: 106 passed / 0 failed / 4 ignored** (4 cursor/walk tests + 2 `/api/status` Host-header tests (label echo + null fallback)), retested 2026-10-14; ignored: `real_server_tests::session_list_and_read_smoke` and `debug::tests::debug_config_reports_timezone_of_business_configured_app` require external real JMAP Server credentials, `real_redis_ttl_tests::ttl_claim_dedup_sets_the_exactly_requested_expiry` and `real_redis_ttl_tests::ttl_consent_and_retry_landing_on_real_redis` require `REDIS_TEST_URL`).
+**Current baseline: 108 passed / 0 failed / 4 ignored** (4 cursor/walk tests + 2 `/api/status` Host-header tests (label echo + null fallback)), retested 2026-10-16; ignored: `real_server_tests::session_list_and_read_smoke` and `debug::tests::debug_config_reports_timezone_of_business_configured_app` require external real JMAP Server credentials, `real_redis_ttl_tests::ttl_claim_dedup_sets_the_exactly_requested_expiry` and `real_redis_ttl_tests::ttl_consent_and_retry_landing_on_real_redis` require `REDIS_TEST_URL`).
 
 **Note**: The bash `-lc` script of `docker run` must be wrapped in **single quotes**. Using double quotes will first expand `$PWD` / `$PATH` on the host, and cargo will not be found in the container.
 

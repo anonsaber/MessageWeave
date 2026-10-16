@@ -490,14 +490,18 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
         for stream in ["stalwart:jmap", "stalwart:telegram"] {
             let messages = match app.state.read_batch(stream, GROUP, CONSUMER, batch).await {
                 Ok(messages) => messages,
-                Err(_) => {
+                Err(error) => {
+                    tracing::warn!(stream, reason = %error, "worker: read_batch failed");
                     return error_response(
                         StatusCode::SERVICE_UNAVAILABLE,
                         "service_unavailable",
                         true,
-                    )
+                    );
                 }
             };
+            if !messages.is_empty() {
+                tracing::info!(stream, fetched = messages.len(), "worker: batch drained");
+            }
             for message in messages.into_iter().take(batch) {
                 // Commit is written only after send succeeds. Before send,
                 // use a short in-flight lease so a crash cannot permanently
@@ -505,6 +509,14 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
                 let delivery_key = format!("delivery:committed:{stream}:{}", message.id);
                 match app.state.dedup_exists(&delivery_key).await {
                     Ok(true) => {
+                        // Already committed: ack the stream entry and drop it.
+                        // Logged so an acked-without-delivery is visible rather
+                        // than looking like a plain successful pass.
+                        tracing::info!(
+                            stream,
+                            message_id = %message.id,
+                            "worker: delivery already committed, acking stream entry"
+                        );
                         if app.state.ack(stream, GROUP, &message.id).await.is_err() {
                             return error_response(
                                 StatusCode::SERVICE_UNAVAILABLE,
@@ -515,12 +527,13 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
                         continue;
                     }
                     Ok(false) => {}
-                    Err(_) => {
+                    Err(error) => {
+                        tracing::warn!(stream, reason = %error, "worker: delivery lookup failed");
                         return error_response(
                             StatusCode::SERVICE_UNAVAILABLE,
                             "service_unavailable",
                             true,
-                        )
+                        );
                     }
                 }
                 let inflight_key = format!("delivery:inflight:{stream}:{}", message.id);
@@ -529,13 +542,22 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
                     .claim_dedup(&inflight_key, ttl::DELIVERY_INFLIGHT_SECONDS)
                     .await
                 {
-                    Ok(false) => continue,
-                    Err(_) => {
+                    // Another instance is already delivering this message.
+                    Ok(false) => {
+                        tracing::info!(
+                            stream,
+                            message_id = %message.id,
+                            "worker: in-flight elsewhere, skipping"
+                        );
+                        continue;
+                    }
+                    Err(error) => {
+                        tracing::warn!(stream, reason = %error, "worker: inflight claim failed");
                         return error_response(
                             StatusCode::SERVICE_UNAVAILABLE,
                             "service_unavailable",
                             true,
-                        )
+                        );
                     }
                     Ok(true) => {}
                 }
@@ -546,6 +568,11 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
                         .await
                         .is_err()
                     {
+                        tracing::warn!(
+                            stream,
+                            message_id = %message.id,
+                            "worker: commit marker write failed"
+                        );
                         let _ = app.state.release_dedup(&inflight_key).await;
                         return error_response(
                             StatusCode::SERVICE_UNAVAILABLE,
@@ -555,25 +582,48 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
                     }
                     let _ = app.state.release_dedup(&inflight_key).await;
                     if app.state.ack(stream, GROUP, &message.id).await.is_err() {
+                        tracing::warn!(stream, message_id = %message.id, "worker: ack failed");
                         return error_response(
                             StatusCode::SERVICE_UNAVAILABLE,
                             "service_unavailable",
                             true,
                         );
                     }
+                    tracing::info!(
+                        stream,
+                        message_id = %message.id,
+                        "worker: message delivered and acked"
+                    );
                 } else {
                     let _ = app.state.release_dedup(&inflight_key).await;
-                    if app
+                    match app
                         .state
                         .retry_or_dlq(stream, &format!("{stream}:dlq"), GROUP, &message, 3)
                         .await
-                        .is_err()
                     {
-                        return error_response(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "service_unavailable",
-                            true,
-                        );
+                        // `retry_or_dlq` returns whether the entry moved to the
+                        // DLQ. The distinction is the whole point of the call:
+                        // a moved entry will not be retried again, so an unlogged
+                        // move is a silent, permanent loss.
+                        Ok(true) => tracing::error!(
+                            stream,
+                            message_id = %message.id,
+                            dlq = %format!("{stream}:dlq"),
+                            "worker: delivery failed after retries, moved to DLQ"
+                        ),
+                        Ok(false) => tracing::warn!(
+                            stream,
+                            message_id = %message.id,
+                            "worker: delivery failed, re-queued for retry"
+                        ),
+                        Err(error) => {
+                            tracing::error!(stream, reason = %error, "worker: retry/DLQ failed");
+                            return error_response(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "service_unavailable",
+                                true,
+                            );
+                        }
                     }
                 }
             }
