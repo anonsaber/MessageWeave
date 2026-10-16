@@ -1290,26 +1290,45 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
     if !business_enabled(&app).await {
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
     }
-    let Ok(push) = serde_json::from_slice::<JmapPush>(&body) else {
+    // Discern the body kind by *content*, not by `@type`: Stalwart's raw body
+    // has never been observed, so `@type` may be absent and keying on it alone
+    // would misroute a real event push to the 400 arm below.
+    // - `verificationCode` present → PushVerification (RFC 8620 §7.2), which
+    //   DOES carry `pushSubscriptionId`.
+    // - `changed` present         → StateChange (RFC 8620 §7.1.1), which
+    //   carries NEITHER `pushSubscriptionId` NOR any emailId — only
+    //   account→type→state-string. The emailIds must be fetched via `/changes`,
+    //   which is what the reconcile path does.
+    // - otherwise → fail closed with 400. A body that is neither used to
+    //   401 silently as "unauthorized", hiding a malformed push behind an
+    //   auth error; 400 makes it observable.
+    let Ok(value): serde_json::Result<Value> = serde_json::from_slice(&body) else {
         return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
     };
-    // Diagnostic request_id minted once here so every push 401 response and
-    // branch log line in this handler carries the same correlation id as the
-    // entry log. The verification_code value is never logged (AGENTS.md §3.2).
+    // Correlation id minted once per push so the entry log, the branch logs and
+    // the 401 response all share it — that is what makes a push 401 in this log
+    // matchable against Stalwart's `Push subscription error` line. The
+    // verification_code value is never logged (AGENTS.md §3.2).
     let request_id = reconcile_lock_owner();
     tracing::info!(
         request_id = %request_id,
-        subscription_id = ?push.subscription_id,
-        account_id = ?push.account_id,
-        email_id = ?push.email_id,
-        has_verification_code = push.verification_code.is_some(),
+        type_tag = ?value.get("@type").and_then(|v| v.as_str()),
+        has_verification_code = value.get("verificationCode").is_some(),
+        has_changed = value.get("changed").is_some(),
         "jmap_push request received"
     );
-    // subscription_id is required on every request (RFC 8620 §7.2/§7.3).
-    let Some(subscription) = push.subscription_id.as_deref() else {
-        return push_401(request_id);
-    };
-    if let Some(code) = push.verification_code.as_deref() {
+    if value.get("verificationCode").is_some() {
+        let Ok(push) = serde_json::from_value::<JmapPush>(value).map_err(|_| ()) else {
+            return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
+        };
+        // subscription_id is required on the verification request (RFC 8620 §7.2).
+        let Some(subscription) = push.subscription_id.as_deref() else {
+            return push_401(request_id);
+        };
+        let Some(code) = push.verification_code.as_deref() else {
+            // Unreachable: the branch was selected on verification_code being Some.
+            unreachable!("verificationCode branch without a verification code")
+        };
         // Verification request (RFC 8620 §7.2): carries verificationCode.
         if !matches!(
             app.state
@@ -1364,103 +1383,114 @@ async fn jmap_push(State(app): State<AppState>, body: Bytes) -> Response {
                         "push verify API call failed; continuing (RFC 8620 §7.2 verification is via callback response)");
                 }
             }
-            // Diagnostic: a verification request rewrites push:subscription:{id}.
-            // If a concurrent event push 401s, this line tells us a verification
-            // raced it (key rewritten mid-window). The code value is not logged.
-            tracing::info!(
-                request_id = %request_id,
-                subscription = %subscription,
-                "jmap_push verification branch wrote key"
-            );
         }
-    } else {
-        // Event push (RFC 8620 §7.3): no verificationCode; the subscription
-        // must have been verified during the initial handshake.
-        let push_key = format!("push:subscription:{subscription}");
-        let exists = matches!(app.state.dedup_exists(&push_key).await, Ok(true));
-        // Diagnostic: this is the line that decides the 401. If subscription is
-        // "b" and exists is false here while a CLI probe shows the key present,
-        // the key was deleted/rewritten in the window (see the verify-branch
-        // log). If subscription is not "b", Stalwart sent a different id than
-        // our stored push:subscription:id pointer — the contradiction's root.
+        // RFC 8620 §7.2: the verification response MUST be a JSON body
+        // containing exactly the verificationCode property (not 204).
+        return axum::Json(serde_json::json!({
+            "verificationCode": code
+        }))
+        .into_response();
+    }
+    if value.get("changed").is_some() {
+        // Event push (StateChange): acknowledge so the server stops retrying,
+        // then pull the delta. The spawned task takes the same `lock:reconcile`
+        // the /reconcile endpoint holds, so a push-triggered pull and a
+        // cron-triggered pull never run concurrently (they would race on
+        // `reconcile:state`). If the lock is already held, do nothing — the
+        // running reconcile will pick this change up on its own.
+        let worker = Arc::clone(&app.worker);
+        let state = Arc::clone(&app.state);
         tracing::info!(
             request_id = %request_id,
-            key = %push_key,
-            exists,
-            "jmap_push event dedup_exists check"
+            accounts_changed = value
+                .get("changed")
+                .and_then(|v| v.as_object())
+                .map_or(0usize, |m| m.len()),
+            "jmap_push state change acked; reconciling"
         );
-        if !exists {
-            return push_401(request_id);
-        }
-    }
-    if push.account_id.is_none() && push.email_id.is_none() {
-        // RFC 8620 §7.2: verification request response MUST be a JSON body
-        // containing exactly the verificationCode property (not 204).
-        if let Some(code) = push.verification_code.as_deref() {
-            return axum::Json(serde_json::json!({
-                "verificationCode": code
-            }))
-            .into_response();
-        }
+        tokio::spawn(push_reconcile_delta(worker, state));
         return StatusCode::NO_CONTENT.into_response();
     }
-    let (Some(account), Some(email)) = (push.account_id, push.email_id) else {
-        return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
-    };
-    let key = format!("dedup:jmap:{account}:{email}");
-    match app.state.claim_dedup(&key, ttl::DEDUP_JMAP_SECONDS).await {
-        Ok(false) => StatusCode::NO_CONTENT.into_response(),
-        Ok(true) => match app
-            .state
-            .enqueue("stalwart:jmap", &String::from_utf8_lossy(&body))
-            .await
-        {
-            Ok(message_id) => {
-                // Diagnostic: the event push was accepted and queued for
-                // delivery. If Telegram still doesn't arrive after this line,
-                // the failure is downstream (worker.process / Telegram), not
-                // in the push 401 path.
-                tracing::info!(
-                    request_id = %request_id,
-                    %message_id,
-                    "jmap_push event enqueued"
-                );
-                // Claim in-flight lease so the cron-triggered worker() drain
-                // skips this message while we process it immediately.
-                let inflight_key = format!("delivery:inflight:stalwart:jmap:{message_id}");
-                if matches!(
-                    app.state
-                        .claim_dedup(&inflight_key, ttl::DELIVERY_INFLIGHT_SECONDS)
-                        .await,
-                    Ok(true)
-                ) {
-                    let worker = Arc::clone(&app.worker);
-                    let state = Arc::clone(&app.state);
-                    let payload = String::from_utf8_lossy(&body).into_owned();
-                    tokio::spawn(async move {
-                        if worker.process("stalwart:jmap", &payload).await.is_ok() {
-                            let committed =
-                                format!("delivery:committed:stalwart:jmap:{message_id}");
-                            let _ = state
-                                .claim_dedup(&committed, ttl::DELIVERY_COMMITTED_SECONDS)
-                                .await;
-                            let _ = state
-                                .ack("stalwart:jmap", "stalwart-workers", &message_id)
-                                .await;
-                        }
-                        let inflight = format!("delivery:inflight:stalwart:jmap:{message_id}");
-                        let _ = state.release_dedup(&inflight).await;
-                    });
-                }
-                StatusCode::NO_CONTENT.into_response()
-            }
-            Err(_) => {
-                let _ = app.state.release_dedup(&key).await;
-                error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true)
-            }
-        },
-        Err(_) => error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true),
+    error_response(StatusCode::BAD_REQUEST, "invalid_request", false)
+}
+
+/// Pull the JMAP delta a StateChange push triggered, on the `/reconcile` lock.
+///
+/// A StateChange body carries no emailId (RFC 8620 §7.1.1 gives only
+/// account→type→state-string), so the only way to learn which messages changed
+/// is the `/changes` call this runs — the same path `/reconcile` uses. It
+/// acquires `lock:reconcile` so a push-triggered pull and the cron pull never
+/// touch `reconcile:state` concurrently. If the lock is held, this does
+/// nothing: the running pull will observe the same state change.
+async fn push_reconcile_delta(worker: Arc<dyn WorkerHandler>, state: Arc<dyn ReliableState>) {
+    const PUSH_RECONCILE_INITIAL_CHANGES: usize = 100;
+    let lock_owner = reconcile_lock_owner();
+    if !matches!(
+        state
+            .acquire_lock("lock:reconcile", &lock_owner, ttl::RECONCILE_LOCK_SECONDS)
+            .await,
+        Ok(true)
+    ) {
+        tracing::info!(
+            "push_reconcile_delta: lock:reconcile busy; deferring to the running reconcile"
+        );
+        return;
     }
+    let since = match state.get_reconcile_state().await {
+        Ok(value) => value,
+        Err(_) => {
+            // Same shape as /reconcile: a state read failure means there is no
+            // safe `since` to reconcile from, so release and give up. The cron
+            // reconcile covers the change on its next tick.
+            tracing::warn!("push_reconcile_delta: reconcile state read failed");
+            let _ = state.release_lock("lock:reconcile", &lock_owner).await;
+            return;
+        }
+    };
+    let heartbeat_state = Arc::clone(&state);
+    let heartbeat_owner = lock_owner.clone();
+    let lease_lost = Arc::new(AtomicBool::new(false));
+    let heartbeat_lease_lost = Arc::clone(&lease_lost);
+    let heartbeat = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(
+                ttl::RECONCILE_HEARTBEAT_INTERVAL_SECONDS,
+            ))
+            .await;
+            match heartbeat_state
+                .renew_lock(
+                    "lock:reconcile",
+                    &heartbeat_owner,
+                    ttl::RECONCILE_HEARTBEAT_SECONDS,
+                )
+                .await
+            {
+                Ok(true) => {}
+                _ => {
+                    heartbeat_lease_lost.store(true, Ordering::Release);
+                    break;
+                }
+            }
+        }
+    });
+    let result = worker
+        .reconcile(since.as_deref(), PUSH_RECONCILE_INITIAL_CHANGES)
+        .await;
+    heartbeat.abort();
+    if lease_lost.load(Ordering::Acquire) {
+        tracing::warn!("push_reconcile_delta: lock lease lost mid-pull; state not advanced");
+    } else {
+        match result {
+            Ok(new_state) => match state.set_reconcile_state(&new_state).await {
+                Ok(()) => tracing::info!("push_reconcile_delta: reconcile state advanced"),
+                Err(_) => tracing::error!("push_reconcile_delta: reconcile state write failed"),
+            },
+            Err(reason) => {
+                tracing::warn!(reason = %reason, "push_reconcile_delta: reconcile failed")
+            }
+        }
+    }
+    let _ = state.release_lock("lock:reconcile", &lock_owner).await;
 }
 
 #[derive(serde::Deserialize)]
@@ -1933,16 +1963,16 @@ impl TelegramUpdate {
         self.message.as_ref().map(|m| m.chat.id)
     }
 }
+/// PushVerification body (RFC 8620 §7.2.3). A StateChange body does not fit
+/// this shape at all — it carries neither `pushSubscriptionId` nor
+/// `verificationCode` — so `jmap_push` discriminates on the parsed `Value`
+/// before reaching for this type.
 #[derive(serde::Deserialize)]
 struct JmapPush {
     #[serde(rename = "pushSubscriptionId")]
     subscription_id: Option<String>,
     #[serde(rename = "verificationCode")]
     verification_code: Option<String>,
-    #[serde(rename = "accountId")]
-    account_id: Option<String>,
-    #[serde(rename = "emailId")]
-    email_id: Option<String>,
 }
 
 fn header_value_matches(headers: &HeaderMap, name: &str, expected: &str) -> bool {
@@ -2538,7 +2568,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn jmap_push_requires_verification_code() {
+    async fn jmap_push_rejects_bodies_without_verification_or_change() {
+        // Neither a verificationCode nor a `changed` map: this is not a push
+        // body at all (RFC 8620 §7). It used to 401 as "unauthorized", which
+        // hid a malformed push behind an auth error; 400 makes it observable.
         assert_eq!(
             request(
                 Request::builder()
@@ -2548,20 +2581,10 @@ mod tests {
                     .unwrap(),
             )
             .await,
-            StatusCode::UNAUTHORIZED
+            StatusCode::BAD_REQUEST
         );
-        assert_eq!(
-            request(
-                Request::builder()
-                    .method("POST")
-                    .uri("/push/jmap")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"verificationCode":""}"#))
-                    .unwrap(),
-            )
-            .await,
-            StatusCode::UNAUTHORIZED
-        );
+        // A verificationCode without a pushSubscriptionId cannot be attributed
+        // to a subscription, so it is refused before any state is written.
         assert_eq!(
             request(
                 Request::builder()
@@ -2574,6 +2597,14 @@ mod tests {
             .await,
             StatusCode::UNAUTHORIZED
         );
+    }
+
+    #[tokio::test]
+    async fn jmap_push_acks_state_change() {
+        // RFC 8620 §7.1.1 StateChange: no pushSubscriptionId, no accountId, no
+        // emailId — only account→type→state-string. This is what Stalwart
+        // actually sends for a new message, and it is the body that used to
+        // 401 for the lifetime of this route.
         assert_eq!(
             request(
                 Request::builder()
@@ -2581,17 +2612,39 @@ mod tests {
                     .uri("/push/jmap")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"pushSubscriptionId":"push-1","verificationCode":"code","accountId":"a","emailId":"e"}"#
+                        r#"{"@type":"StateChange","changed":{"a3123":{"Email":"d35ecb040aab","EmailDelivery":"428d565f2440"}}}"#
                     ))
                     .unwrap(),
             )
             .await,
-            // Hybrid payload (verificationCode + accountId + emailId): the
-            // verification is recorded, then the request falls through to event
-            // enqueue (RFC 8620 §7.3). remember_push_subscription succeeds
-            // (PUSH_SUBSCRIPTION_SECONDS == 0 → no expiry), so the response is
-            // 204 — not 503. The pre-TTL-0 expectation of 503 was stale.
             StatusCode::NO_CONTENT
+        );
+    }
+
+    #[tokio::test]
+    async fn jmap_push_verification_returns_the_code() {
+        // RFC 8620 §7.2: the verification response MUST be a JSON body holding
+        // the verificationCode property, not an empty 204.
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/push/jmap")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"@type":"PushVerification","pushSubscriptionId":"push-1","verificationCode":"code"}"#
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            json!({"verificationCode": "code"})
         );
     }
 
