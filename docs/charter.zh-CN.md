@@ -41,7 +41,7 @@
 | 密钥类型 | secrecy | 0.8 |
 | 加密 | ring | 0.17 |
 | 日志 | tracing + tracing-subscriber | 0.1 / 0.3 |
-| 调度 | 外部 cron → `POST /reconcile` | — |
+| 调度 | 进程内 stream drain（`notify::run_stream_drain`）；外部 cron `POST /reconcile` + `/worker` 为可选安全网 | — |
 | 前端 | 原生 HTML + 单文件 JS + 单文件 CSS，**无构建工具、无框架** | — |
 | 负载均衡器 | Cloudflare Worker（纯 JS，零依赖） | — |
 
@@ -69,7 +69,7 @@
 18. **负载均衡器只透传、不决策**：Worker 不解析请求体、不校验业务逻辑、不下发 `Retry-After`。
 19. **AI 结果不重试**：LLM 分析失败即视为「不通知」，不重试、不降级为无 AI 通知。
 20. **无状态进程**：两个容器实例并发安全；无本地写。
-21. **无长轮询调度**：调度由外部 cron 触发 `POST /reconcile`。
+21. **无长轮询调度**：调度器不得是长连接。对账由短 `POST /reconcile` 请求触发（外部 cron，可选安全网）；stream drain 是进程内循环的一批短 Redis 往返。
 22. **AI 分析不持久化**：分析结果与授权状态之外的中间态不落盘。
 23. **JMAP capability 动态发现**：禁止硬编码 JMAP 能力列表，必须运行时读取。
 
@@ -118,7 +118,7 @@ cd /home/okabe/Repo/messageweave && docker run --rm --user 1000:1000 \
   bash -lc 'export PATH=/usr/local/cargo/bin:$PATH; cargo fmt --all -- --check && cargo check --locked && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked 2>&1 | tail -12'
 ```
 
-**当前基线：106 passed / 0 failed / 4 ignored**（4 个游标解析与 walk 分页单测 + 2 个 `/api/status` Host 头单测（标签回显 + null 回退））后复测，2026-10-14；ignored：`real_server_tests::session_list_and_read_smoke` 与 `debug::tests::debug_config_reports_timezone_of_business_configured_app` 需外部真实 JMAP 服务器凭据，`real_redis_ttl_tests::ttl_claim_dedup_sets_the_exactly_requested_expiry` 与 `real_redis_ttl_tests::ttl_consent_and_retry_landing_on_real_redis` 需 `REDIS_TEST_URL`）。
+**当前基线：111 passed / 0 failed / 4 ignored**（在 108 基线上新增 3 个 `stream_drain` 单测，覆盖成功/提交/ack、重试转 DLQ、已提交短路），2026-10-16 复测；ignored：`real_server_tests::session_list_and_read_smoke` 与 `debug::tests::debug_config_reports_timezone_of_business_configured_app` 需外部真实 JMAP 服务器凭据，`real_redis_ttl_tests::ttl_claim_dedup_sets_the_exactly_requested_expiry` 与 `real_redis_ttl_tests::ttl_consent_and_retry_landing_on_real_redis` 需 `REDIS_TEST_URL`）。
 
 **注意**：`docker run` 的 bash `-lc` 脚本必须用**单引号**包裹。用双引号会先在宿主机展开 `$PWD` / `$PATH`，容器内找不到 cargo。
 

@@ -220,8 +220,9 @@ curl -s "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
 ### 3.8 Turn on processing
 
 Flip **Enable business processing** at the top of the page. This is the master switch: with it off,
-webhooks are accepted but `/worker` and `/reconcile` refuse to drain, so nothing reaches Telegram.
-With it on, incoming mail and messages are enqueued and the worker drains them.
+webhooks are accepted but the in-process drain skips each tick and `/worker` and `/reconcile`
+refuse to drain, so nothing reaches Telegram. With it on, incoming mail and messages are
+enqueued and drained in-process (see §3.10).
 
 ### 3.9 Verify end to end
 
@@ -235,10 +236,19 @@ With it on, incoming mail and messages are enqueued and the worker drains them.
    confirmation; the summary only goes out after you confirm, and only if the LLM section is
    enabled.
 
-### 3.10 Schedule the drain
+### 3.10 Drain timing: in-process, with an external safety net
 
-Push delivery can be delayed or missed; an external scheduler is the safety net. On any machine
-that can reach your origin, every 5–10 minutes:
+Delivery does not wait on an external scheduler. Each backend instance runs an in-process
+background drain: every 10 seconds it reads the `stalwart:*` delivery streams from Redis (short
+request–response round trips only, no long connection — `C-NO-LONG-CONN`), and a successful
+Stalwart push reconcile triggers one immediate drain right after it, so push-delivered mail
+reaches Telegram in seconds. The drain shares the same Redis consumer group and the per-message
+committed/in-flight leases as the route-based `POST /worker`, so a concurrent trigger is a no-op
+rather than a double send — the same holds for multiple instances.
+
+The external scheduler remains an **optional safety net** for what the in-process loop cannot
+see: pushes Stalwart never delivered, or an instance that was down when its mail arrived. On any
+machine that can reach your origin, every 5–10 minutes:
 
 ```sh
 scripts/cron-drain.sh --once \
@@ -256,7 +266,9 @@ must reach the backend origin directly — see §6.3 for why.
 
 - **Nothing arrives after saving.** Check the enable toggle (step 3.8), then
   `getWebhookInfo` (step 3.7). A `last_error_message` about a 401 means the webhook secret does not
-  match what Telegram sends — re-save section 02 and re-register.
+  match what Telegram sends — re-save section 02 and re-register. Mail that was enqueued is picked
+  up by the in-process drain within about 10 seconds without cron; mail that was never enqueued
+  needs `/reconcile` (step 3.10) to rescan.
 - **`/ready` answers 503.** That body is just an error code — it does not name the failing
   component. When `/ready` returns 200, its JSON has per-field booleans (`jmap`, `telegram`,
   `redis`). Common causes are an unreachable `jmap_session_url`, a wrong app password, or

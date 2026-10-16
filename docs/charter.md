@@ -41,7 +41,7 @@ A JMAP email notification service deployed on Docker + externally hosted Redis:
 | key type | secrecy | 0.8 |
 | encryption | ring | 0.17 |
 | Log | tracing + tracing-subscriber | 0.1 / 0.3 |
-| Scheduling | External cron → `POST /reconcile` | — |
+| Scheduling | In-process stream drain (`notify::run_stream_drain`); external cron `POST /reconcile` + `/worker` as an optional safety net | — |
 | Front-end | Native HTML + single-file JS + single-file CSS, **No build tools, no frameworks** | — |
 | Load balancer | Cloudflare Worker (Pure JS, zero dependencies) | — |
 
@@ -69,7 +69,7 @@ A JMAP email notification service deployed on Docker + externally hosted Redis:
 18. **The load balancer only transparently transmits and does not make decisions**: Worker does not parse the request body, does not verify the business logic, and does not issue `Retry-After`.
 19. **No retry for AI results**: Failure of LLM analysis will be regarded as "no notification", no retry, and no downgrade to no AI notification.
 20. **Stateless process**: Two container instances are safe to run concurrently; no local writes.
-21. **No long polling scheduling**: Scheduling is triggered by external cron `POST /reconcile`.
+21. **No long polling scheduling**: No scheduler may be a long connection. Reconciliation is triggered by short `POST /reconcile` requests (external cron, optional safety net); the stream drain is an in-process loop of short Redis round trips.
 22. **AI analysis is not persistent**: The analysis results and intermediate states other than the authorized state are not recorded.
 23. **JMAP capability dynamic discovery**: Hard-coded JMAP capability list is prohibited and must be read at runtime.
 
@@ -118,7 +118,7 @@ cd /home/okabe/Repo/messageweave && docker run --rm --user 1000:1000 \
   bash -lc 'export PATH=/usr/local/cargo/bin:$PATH; cargo fmt --all -- --check && cargo check --locked && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked 2>&1 | tail -12'
 ```
 
-**Current baseline: 108 passed / 0 failed / 4 ignored** (4 cursor/walk tests + 2 `/api/status` Host-header tests (label echo + null fallback)), retested 2026-10-16; ignored: `real_server_tests::session_list_and_read_smoke` and `debug::tests::debug_config_reports_timezone_of_business_configured_app` require external real JMAP Server credentials, `real_redis_ttl_tests::ttl_claim_dedup_sets_the_exactly_requested_expiry` and `real_redis_ttl_tests::ttl_consent_and_retry_landing_on_real_redis` require `REDIS_TEST_URL`).
+**Current baseline: 111 passed / 0 failed / 4 ignored** (3 `stream_drain` unit tests covering success/commit/ack, retry-to-DLQ, and the pre-committed short-circuit, on top of the 108 baseline), retested 2026-10-16; ignored: `real_server_tests::session_list_and_read_smoke` and `debug::tests::debug_config_reports_timezone_of_business_configured_app` require external real JMAP Server credentials, `real_redis_ttl_tests::ttl_claim_dedup_sets_the_exactly_requested_expiry` and `real_redis_ttl_tests::ttl_consent_and_retry_landing_on_real_redis` require `REDIS_TEST_URL`).
 
 **Note**: The bash `-lc` script of `docker run` must be wrapped in **single quotes**. Using double quotes will first expand `$PWD` / `$PATH` on the host, and cargo will not be found in the container.
 

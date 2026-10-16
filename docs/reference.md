@@ -720,8 +720,16 @@ callback URL is idempotent. Registering with a different callback URL destroys t
 subscription first, then creates the new one and repoints the current-pointer mapping, so the old
 origin stops receiving pushes. Use `POST /api/push/disable` with that URL to remove it.
 
-The backend has no internal scheduler. [`scripts/cron-drain.sh`](../scripts/cron-drain.sh)
-calls `/reconcile` (when `MW_RECONCILE_TOKEN` is set) and then `/worker`. Configure
+The normal drain path is the **in-process stream drain** (`notify::run_stream_drain`): a spawned
+periodic loop that drains the Redis Streams worker queue every 10 seconds, plus an immediate
+one-shot drain after each successful push reconcile. It is composed only of short Redis
+round trips, so it does not violate `C-NO-LONG-CONN` (no network long connection). The shared
+consumer group plus per-message committed/in-flight leases make overlapping triggers no-ops
+rather than double sends.
+[`scripts/cron-drain.sh`](../scripts/cron-drain.sh) is the **optional external safety net**:
+it calls `/reconcile` (when `MW_RECONCILE_TOKEN` is set) and then `/worker`, covering the two
+cases the in-process loop cannot see — pushes Stalwart never delivered, and mail piled up
+while an instance was down. Configure
 `MW_APP_URL`, `MW_WORKER_TOKEN`, and optionally `MW_RECONCILE_TOKEN` in the external
 scheduler's secret store. `MW_WORKER_URL` can override the default when the operator needs
 to call a backend origin directly. `--once` is for cron; `--loop` is for a managed process.

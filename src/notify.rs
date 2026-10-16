@@ -458,6 +458,11 @@ pub(crate) fn error_response(status: StatusCode, code: &'static str, retry: bool
     }
 }
 
+/// Consumer identity for the in-process background drain. It shares the
+/// `WORKER_STREAM_GROUP` group with the `/worker` route, so committed/inflight
+/// leases decide delivery rather than consumer identity.
+pub(crate) const INPROC_CONSUMER: &str = "inproc-worker";
+
 async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     refresh_business_config(&app).await;
     if !business_enabled(&app).await {
@@ -471,164 +476,214 @@ async fn worker(State(app): State<AppState>, headers: HeaderMap, body: Bytes) ->
         .map(|token| constant_time_eq(token.as_bytes(), worker_token.expose_secret().as_bytes()))
         .unwrap_or(false);
     if !valid {
-        error_response(StatusCode::UNAUTHORIZED, "unauthorized", false)
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized", false);
+    }
+    let batch = if body.is_empty() {
+        WORKER_STREAM_BATCH
     } else {
-        const GROUP: &str = "stalwart-workers";
-        const CONSUMER: &str = "http-worker";
-        const MAX: usize = 10;
-        let batch = if body.is_empty() {
-            MAX
-        } else {
-            let Ok(request) = serde_json::from_slice::<WorkerRequest>(&body) else {
-                return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
-            };
-            request
-                .batch
-                .filter(|count| *count > 0)
-                .map_or(MAX, |count| count.min(MAX))
+        let Ok(request) = serde_json::from_slice::<WorkerRequest>(&body) else {
+            return error_response(StatusCode::BAD_REQUEST, "invalid_request", false);
         };
-        for stream in ["stalwart:jmap", "stalwart:telegram"] {
-            let messages = match app.state.read_batch(stream, GROUP, CONSUMER, batch).await {
-                Ok(messages) => messages,
-                Err(error) => {
-                    tracing::warn!(stream, reason = %error, "worker: read_batch failed");
-                    return error_response(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "service_unavailable",
-                        true,
-                    );
-                }
-            };
-            if !messages.is_empty() {
-                tracing::info!(stream, fetched = messages.len(), "worker: batch drained");
+        request
+            .batch
+            .filter(|count| *count > 0)
+            .map_or(WORKER_STREAM_BATCH, |count| count.min(WORKER_STREAM_BATCH))
+    };
+    if stream_drain(&app.worker, &app.state, WORKER_HTTP_CONSUMER, batch)
+        .await
+        .is_err()
+    {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", true);
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Delivery consumer group. Both the `/worker` route (`http-worker`) and the
+/// in-process background drain (`inproc-worker`) read this same group, so the
+/// committed/inflight leases decide delivery rather than consumer identity.
+const WORKER_STREAM_GROUP: &str = "stalwart-workers";
+/// Stream entries a single drain pass handles at most.
+pub(crate) const WORKER_STREAM_BATCH: usize = 10;
+/// Streams a single drain pass walks, in order.
+const WORKER_STREAMS: [&str; 2] = ["stalwart:jmap", "stalwart:telegram"];
+/// Consumer identity used by the `/worker` HTTP route.
+pub(crate) const WORKER_HTTP_CONSUMER: &str = "http-worker";
+
+/// Pull one bounded batch from each delivery stream and deliver it.
+///
+/// Shared by the `/worker` route and the in-process background drain, so the
+/// two triggers cannot drift apart on delivery semantics. `Err(())` means a
+/// state-store call failed: the route maps that to a 503 with `Retry-After`,
+/// the background loop logs it and keeps running so one bad tick cannot stop
+/// the loop from running at all.
+///
+/// Per-message order is deliberate: the commit marker is written only after
+/// `process` succeeds, and the short in-flight lease is held only before it, so
+/// a crash cannot permanently suppress an XAUTOCLAIM retry. A message another
+/// consumer is already delivering is skipped, not failed.
+pub(crate) async fn stream_drain(
+    worker: &Arc<dyn WorkerHandler>,
+    state: &Arc<dyn ReliableState>,
+    consumer: &str,
+    batch: usize,
+) -> Result<(), ()> {
+    for stream in WORKER_STREAMS {
+        let messages = match state
+            .read_batch(stream, WORKER_STREAM_GROUP, consumer, batch)
+            .await
+        {
+            Ok(messages) => messages,
+            Err(error) => {
+                tracing::warn!(stream, reason = %error, "worker: read_batch failed");
+                return Err(());
             }
-            for message in messages.into_iter().take(batch) {
-                // Commit is written only after send succeeds. Before send,
-                // use a short in-flight lease so a crash cannot permanently
-                // suppress an XAUTOCLAIM retry.
-                let delivery_key = format!("delivery:committed:{stream}:{}", message.id);
-                match app.state.dedup_exists(&delivery_key).await {
-                    Ok(true) => {
-                        // Already committed: ack the stream entry and drop it.
-                        // Logged so an acked-without-delivery is visible rather
-                        // than looking like a plain successful pass.
-                        tracing::info!(
-                            stream,
-                            message_id = %message.id,
-                            "worker: delivery already committed, acking stream entry"
-                        );
-                        if app.state.ack(stream, GROUP, &message.id).await.is_err() {
-                            return error_response(
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                "service_unavailable",
-                                true,
-                            );
-                        }
-                        continue;
-                    }
-                    Ok(false) => {}
-                    Err(error) => {
-                        tracing::warn!(stream, reason = %error, "worker: delivery lookup failed");
-                        return error_response(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "service_unavailable",
-                            true,
-                        );
-                    }
-                }
-                let inflight_key = format!("delivery:inflight:{stream}:{}", message.id);
-                match app
-                    .state
-                    .claim_dedup(&inflight_key, ttl::DELIVERY_INFLIGHT_SECONDS)
-                    .await
-                {
-                    // Another instance is already delivering this message.
-                    Ok(false) => {
-                        tracing::info!(
-                            stream,
-                            message_id = %message.id,
-                            "worker: in-flight elsewhere, skipping"
-                        );
-                        continue;
-                    }
-                    Err(error) => {
-                        tracing::warn!(stream, reason = %error, "worker: inflight claim failed");
-                        return error_response(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "service_unavailable",
-                            true,
-                        );
-                    }
-                    Ok(true) => {}
-                }
-                if app.worker.process(stream, &message.payload).await.is_ok() {
-                    if app
-                        .state
-                        .claim_dedup(&delivery_key, ttl::DELIVERY_COMMITTED_SECONDS)
-                        .await
-                        .is_err()
-                    {
-                        tracing::warn!(
-                            stream,
-                            message_id = %message.id,
-                            "worker: commit marker write failed"
-                        );
-                        let _ = app.state.release_dedup(&inflight_key).await;
-                        return error_response(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "service_unavailable",
-                            true,
-                        );
-                    }
-                    let _ = app.state.release_dedup(&inflight_key).await;
-                    if app.state.ack(stream, GROUP, &message.id).await.is_err() {
-                        tracing::warn!(stream, message_id = %message.id, "worker: ack failed");
-                        return error_response(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "service_unavailable",
-                            true,
-                        );
-                    }
+        };
+        if !messages.is_empty() {
+            tracing::info!(stream, fetched = messages.len(), "worker: batch drained");
+        }
+        for message in messages.into_iter().take(batch) {
+            // Commit is written only after send succeeds. Before send,
+            // use a short in-flight lease so a crash cannot permanently
+            // suppress an XAUTOCLAIM retry.
+            let delivery_key = format!("delivery:committed:{stream}:{}", message.id);
+            match state.dedup_exists(&delivery_key).await {
+                Ok(true) => {
+                    // Already committed: ack the stream entry and drop it.
+                    // Logged so an acked-without-delivery is visible rather
+                    // than looking like a plain successful pass.
                     tracing::info!(
                         stream,
                         message_id = %message.id,
-                        "worker: message delivered and acked"
+                        "worker: delivery already committed, acking stream entry"
                     );
-                } else {
-                    let _ = app.state.release_dedup(&inflight_key).await;
-                    match app
-                        .state
-                        .retry_or_dlq(stream, &format!("{stream}:dlq"), GROUP, &message, 3)
+                    if state
+                        .ack(stream, WORKER_STREAM_GROUP, &message.id)
                         .await
+                        .is_err()
                     {
-                        // `retry_or_dlq` returns whether the entry moved to the
-                        // DLQ. The distinction is the whole point of the call:
-                        // a moved entry will not be retried again, so an unlogged
-                        // move is a silent, permanent loss.
-                        Ok(true) => tracing::error!(
-                            stream,
-                            message_id = %message.id,
-                            dlq = %format!("{stream}:dlq"),
-                            "worker: delivery failed after retries, moved to DLQ"
-                        ),
-                        Ok(false) => tracing::warn!(
-                            stream,
-                            message_id = %message.id,
-                            "worker: delivery failed, re-queued for retry"
-                        ),
-                        Err(error) => {
-                            tracing::error!(stream, reason = %error, "worker: retry/DLQ failed");
-                            return error_response(
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                "service_unavailable",
-                                true,
-                            );
-                        }
+                        return Err(());
+                    }
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(stream, reason = %error, "worker: delivery lookup failed");
+                    return Err(());
+                }
+            }
+            let inflight_key = format!("delivery:inflight:{stream}:{}", message.id);
+            match state
+                .claim_dedup(&inflight_key, ttl::DELIVERY_INFLIGHT_SECONDS)
+                .await
+            {
+                // Another consumer is already delivering this message.
+                Ok(false) => {
+                    tracing::info!(
+                        stream,
+                        message_id = %message.id,
+                        "worker: in-flight elsewhere, skipping"
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!(stream, reason = %error, "worker: inflight claim failed");
+                    return Err(());
+                }
+                Ok(true) => {}
+            }
+            if worker.process(stream, &message.payload).await.is_ok() {
+                if state
+                    .claim_dedup(&delivery_key, ttl::DELIVERY_COMMITTED_SECONDS)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!(
+                        stream,
+                        message_id = %message.id,
+                        "worker: commit marker write failed"
+                    );
+                    let _ = state.release_dedup(&inflight_key).await;
+                    return Err(());
+                }
+                let _ = state.release_dedup(&inflight_key).await;
+                if state
+                    .ack(stream, WORKER_STREAM_GROUP, &message.id)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!(stream, message_id = %message.id, "worker: ack failed");
+                    return Err(());
+                }
+                tracing::info!(
+                    stream,
+                    message_id = %message.id,
+                    "worker: message delivered and acked"
+                );
+            } else {
+                let _ = state.release_dedup(&inflight_key).await;
+                match state
+                    .retry_or_dlq(
+                        stream,
+                        &format!("{stream}:dlq"),
+                        WORKER_STREAM_GROUP,
+                        &message,
+                        3,
+                    )
+                    .await
+                {
+                    // `retry_or_dlq` returns whether the entry moved to the
+                    // DLQ. The distinction is the whole point of the call:
+                    // a moved entry will not be retried again, so an unlogged
+                    // move is a silent, permanent loss.
+                    Ok(true) => tracing::error!(
+                        stream,
+                        message_id = %message.id,
+                        dlq = %format!("{stream}:dlq"),
+                        "worker: delivery failed after retries, moved to DLQ"
+                    ),
+                    Ok(false) => tracing::warn!(
+                        stream,
+                        message_id = %message.id,
+                        "worker: delivery failed, re-queued for retry"
+                    ),
+                    Err(error) => {
+                        tracing::error!(stream, reason = %error, "worker: retry/DLQ failed");
+                        return Err(());
                     }
                 }
             }
         }
-        StatusCode::NO_CONTENT.into_response()
+    }
+    Ok(())
+}
+
+/// Background drain: pull the `stalwart:*` delivery streams without external
+/// cron.
+///
+/// C-NO-LONG-CONN forbids network long connections; this is an in-process task
+/// on the same short Redis round trips the `/worker` route already uses. The
+/// `delivery:committed:` / `delivery:inflight:` leases are shared with the
+/// route, so running this next to `/worker`, another instance, or cron never
+/// double-delivers. Each tick skips work while business mode is disabled; a
+/// failed tick logs and moves on, so the loop never ends.
+pub(crate) async fn run_stream_drain(
+    worker: Arc<dyn WorkerHandler>,
+    state: Arc<dyn ReliableState>,
+) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(
+            ttl::INPROC_DRAIN_INTERVAL_SECONDS,
+        ))
+        .await;
+        if !state.is_enabled().await.unwrap_or(false) {
+            continue;
+        }
+        if stream_drain(&worker, &state, INPROC_CONSUMER, WORKER_STREAM_BATCH)
+            .await
+            .is_err()
+        {
+            tracing::warn!("worker: background drain tick failed; retrying next tick");
+        }
     }
 }
 
@@ -1490,8 +1545,8 @@ async fn push_reconcile_delta(worker: Arc<dyn WorkerHandler>, state: Arc<dyn Rel
         Ok(value) => value,
         Err(_) => {
             // Same shape as /reconcile: a state read failure means there is no
-            // safe `since` to reconcile from, so release and give up. The cron
-            // reconcile covers the change on its next tick.
+            // safe `since` to reconcile from, so release and give up. The
+            // next `/reconcile` or push call covers the change.
             tracing::warn!("push_reconcile_delta: reconcile state read failed");
             let _ = state.release_lock("lock:reconcile", &lock_owner).await;
             return;
@@ -1532,7 +1587,33 @@ async fn push_reconcile_delta(worker: Arc<dyn WorkerHandler>, state: Arc<dyn Rel
     } else {
         match result {
             Ok(new_state) => match state.set_reconcile_state(&new_state).await {
-                Ok(()) => tracing::info!("push_reconcile_delta: reconcile state advanced"),
+                // The reconcile just enqueued anything new into `stalwart:jmap`.
+                // Drain it here instead of waiting for the background loop's next
+                // tick, so a push-triggered email is delivered within seconds
+                // rather than up to INPROC_DRAIN_INTERVAL_SECONDS. Sharing
+                // stream_drain with the loop keeps the two triggers from drifting
+                // on delivery semantics; the shared committed/inflight leases make
+                // the overlap with the periodic tick a no-op, not a double send.
+                Ok(()) => {
+                    tracing::info!("push_reconcile_delta: reconcile state advanced");
+                    let drain_worker = Arc::clone(&worker);
+                    let drain_state = Arc::clone(&state);
+                    tokio::spawn(async move {
+                        if stream_drain(
+                            &drain_worker,
+                            &drain_state,
+                            INPROC_CONSUMER,
+                            WORKER_STREAM_BATCH,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            tracing::warn!(
+                                "worker: post-reconcile drain failed; background drain will cover it"
+                            );
+                        }
+                    });
+                }
                 Err(_) => tracing::error!("push_reconcile_delta: reconcile state write failed"),
             },
             Err(reason) => {
@@ -2203,7 +2284,65 @@ fn router_with_worker_state_runtime_bootstrap_config<S: ReliableState + 'static>
     debug_token: Option<SecretString>,
     setup_missing: Vec<String>,
 ) -> Router {
-    let worker_handle = Arc::new(WorkerHandle::new(worker_handler));
+    router_with_worker_state_runtime_bootstrap_config_with_handle(
+        secrets,
+        worker_token,
+        state,
+        allowlist,
+        Arc::new(WorkerHandle::new(worker_handler)),
+        runtime,
+        admin_token,
+        debug_token,
+        setup_missing,
+    )
+}
+
+/// Same bootstrap router, but the caller's `WorkerHandle` is shared instead of
+/// a fresh one being built from the raw handler. Production wiring
+/// (`src/main.rs`) passes the same handle to `run_stream_drain`, so the
+/// background drain sees SPA-triggered worker reloads.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "router wiring keeps state dependencies explicit"
+)]
+pub fn router_with_worker_handle_runtime_bootstrap<S: ReliableState + 'static>(
+    secrets: AuthSecrets,
+    worker_token: SecretString,
+    state: S,
+    allowlist: HashSet<i64>,
+    worker_handle: Arc<WorkerHandle>,
+    runtime: RuntimeConfigProvider,
+    admin_token: SecretString,
+    debug_token: Option<SecretString>,
+) -> Router {
+    router_with_worker_state_runtime_bootstrap_config_with_handle(
+        secrets,
+        worker_token,
+        state,
+        allowlist,
+        worker_handle,
+        runtime,
+        admin_token,
+        debug_token,
+        Vec::new(),
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "router wiring keeps state dependencies explicit"
+)]
+fn router_with_worker_state_runtime_bootstrap_config_with_handle<S: ReliableState + 'static>(
+    secrets: AuthSecrets,
+    worker_token: SecretString,
+    state: S,
+    allowlist: HashSet<i64>,
+    worker_handle: Arc<WorkerHandle>,
+    runtime: RuntimeConfigProvider,
+    admin_token: SecretString,
+    debug_token: Option<SecretString>,
+    setup_missing: Vec<String>,
+) -> Router {
     let reload = Arc::new(ReloadCoordinator::new(worker_handle.clone(), None));
     let app_state = AppState {
         auth: AuthState::from(secrets),
@@ -4076,5 +4215,138 @@ mod tests {
                 .as_deref(),
             Some(url)
         );
+    }
+
+    // ── stream_drain 单元测试（进程内 drain 共享的投递核心）──
+    //
+    // 与 `/worker` 路由走同一条路径：成功 → 提交标记 + ack；失败 → 重试计数，
+    // 第 3 次进 DLQ；已提交的条目短路 ack、不再调用 `process`。
+
+    /// 记录调用次数与 payload 的成功 Worker：`process` 恒成功。
+    struct DeliveringMockWorker {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        payloads: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl WorkerHandler for DeliveringMockWorker {
+        async fn process(&self, _stream: &str, payload: &str) -> Result<(), ()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.payloads.lock().unwrap().push(payload.to_owned());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_drain_delivers_acks_and_commits() {
+        let state: Arc<dyn ReliableState> = Arc::new(MemoryState::enabled_for_tests());
+        let id = state
+            .enqueue("stalwart:jmap", r#"{"event":"message/new"}"#)
+            .await
+            .unwrap();
+        let worker = DeliveringMockWorker {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            payloads: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let calls = worker.calls.clone();
+        let payloads = worker.payloads.clone();
+        let handler: Arc<dyn WorkerHandler> = Arc::new(worker);
+
+        assert!(stream_drain(&handler, &state, "test-drain", 10)
+            .await
+            .is_ok());
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *payloads.lock().unwrap(),
+            vec![r#"{"event":"message/new"}"#.to_owned()]
+        );
+        let committed = format!("delivery:committed:stalwart:jmap:{id}");
+        let inflight = format!("delivery:inflight:stalwart:jmap:{id}");
+        assert!(state.dedup_exists(&committed).await.unwrap());
+        assert!(!state.dedup_exists(&inflight).await.unwrap());
+        // acked 条目不再可读：不会重复投递。
+        let drained = state
+            .read_batch("stalwart:jmap", WORKER_STREAM_GROUP, "test-drain", 10)
+            .await
+            .unwrap();
+        assert!(drained.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stream_drain_moves_repeated_failures_to_dlq() {
+        let state: Arc<dyn ReliableState> = Arc::new(MemoryState::enabled_for_tests());
+        let id = state
+            .enqueue("stalwart:telegram", "payload-x")
+            .await
+            .unwrap();
+        let handler: Arc<dyn WorkerHandler> = Arc::new(NoopWorker);
+        let dlq = "stalwart:telegram:dlq";
+        for _ in 0..2 {
+            assert!(stream_drain(&handler, &state, "test-drain", 10)
+                .await
+                .is_ok());
+            // 前两次失败：重新入队等待重试，源流里仍在，DLQ 还是空的。
+            let pending = state
+                .read_batch("stalwart:telegram", WORKER_STREAM_GROUP, "test-drain", 10)
+                .await
+                .unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].id, id);
+            let dlq_batch = state
+                .read_batch(dlq, WORKER_STREAM_GROUP, "test-drain", 10)
+                .await
+                .unwrap();
+            assert!(dlq_batch.is_empty());
+        }
+        // 第 3 次失败：移入 DLQ，源流清空。
+        assert!(stream_drain(&handler, &state, "test-drain", 10)
+            .await
+            .is_ok());
+        assert!(state
+            .read_batch("stalwart:telegram", WORKER_STREAM_GROUP, "test-drain", 10)
+            .await
+            .unwrap()
+            .is_empty());
+        let dlq_batch = state
+            .read_batch(dlq, WORKER_STREAM_GROUP, "test-drain", 10)
+            .await
+            .unwrap();
+        assert_eq!(dlq_batch.len(), 1);
+        assert_eq!(dlq_batch[0].payload, "payload-x");
+    }
+
+    #[tokio::test]
+    async fn stream_drain_short_circuits_precommitted_messages() {
+        let state: Arc<dyn ReliableState> = Arc::new(MemoryState::enabled_for_tests());
+        let id = state
+            .enqueue("stalwart:jmap", "already-done")
+            .await
+            .unwrap();
+        assert!(state
+            .claim_dedup(
+                &format!("delivery:committed:stalwart:jmap:{id}"),
+                crate::state::ttl::DELIVERY_COMMITTED_SECONDS
+            )
+            .await
+            .unwrap());
+        let worker = DeliveringMockWorker {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            payloads: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let calls = worker.calls.clone();
+        let handler: Arc<dyn WorkerHandler> = Arc::new(worker);
+
+        assert!(stream_drain(&handler, &state, "test-drain", 10)
+            .await
+            .is_ok());
+
+        // 已提交：`process` 一次都不调，条目 ack 掉。
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let drained = state
+            .read_batch("stalwart:jmap", WORKER_STREAM_GROUP, "test-drain", 10)
+            .await
+            .unwrap();
+        assert!(drained.is_empty());
     }
 }

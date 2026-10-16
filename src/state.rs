@@ -59,6 +59,12 @@ pub(crate) mod ttl {
     pub const DELIVERY_INFLIGHT_SECONDS: u64 = MINUTE;
     /// Delivery idempotency window.
     pub const DELIVERY_COMMITTED_SECONDS: u64 = WEEK;
+    /// Interval between in-process background drains of `stalwart:*` delivery
+    /// streams. The background drain (consumer `inproc-worker`) is what makes
+    /// delivery timely without external cron; every `/worker` route call and
+    /// `push_reconcile_delta` completion also trigger a drain, so this only
+    /// bounds the latency of enqueues that no other trigger follows.
+    pub const INPROC_DRAIN_INTERVAL_SECONDS: u64 = 10;
     /// How long a `disabled` push subscription stays marked before re-check.
     pub const PUSH_DISABLED_SECONDS: u64 = DAY;
     /// How long a `pending` push subscription waits for verification.

@@ -30,7 +30,7 @@ use crate::channel::telegram::TelegramClient;
 use crate::domain::jmap::{client::JmapClientBackend, JmapService};
 use config::{encryption_key_from_env, Config};
 use notify::{
-    router_configuration_setup, router_with_worker_state_runtime_bootstrap, MetadataWorker,
+    router_configuration_setup, router_with_worker_handle_runtime_bootstrap, MetadataWorker,
     WorkerHandle, WorkerHandler,
 };
 use state::{runtime_provider, RedisState};
@@ -119,6 +119,9 @@ async fn main() -> Result<(), error::BotError> {
         RedisState::connect_with_encryption(redis_url.expose_secret(), Some(encryption_key))
             .await?,
     );
+    // The in-process background drain keeps its own reference to the state
+    // handle: `worker_state` is moved into the metadata worker below.
+    let drain_state = worker_state.clone();
     let config = match worker_state
         .get_business_config()
         .await
@@ -153,6 +156,9 @@ async fn main() -> Result<(), error::BotError> {
     let allowlist: std::collections::HashSet<i64> =
         config.telegram.chat_allowlist.iter().copied().collect();
     let chat_id = config.telegram.chat_id;
+    // One shared `WorkerHandle` for both the router and the in-process
+    // background drain, so SPA-triggered worker reloads are observed by the
+    // drain without re-binding the handle.
     let worker: Arc<dyn WorkerHandler> = if config.telegram.bot_token.expose_secret().is_empty() {
         Arc::new(notify::NoopWorker)
     } else {
@@ -192,17 +198,24 @@ async fn main() -> Result<(), error::BotError> {
             }
         }
     };
-    let app = router_with_worker_state_runtime_bootstrap(
+    let worker_handle = Arc::new(WorkerHandle::new(worker));
+    let app = router_with_worker_handle_runtime_bootstrap(
         config.auth,
         config.worker_token,
         redis,
         allowlist,
-        Arc::new(WorkerHandle::new(worker)),
+        worker_handle.clone(),
         runtime,
         admin_token,
         debug_token,
     )
     .merge(web::router());
+    // Timely delivery without external cron: periodic drain plus the
+    // post-reconcile one-shot hook. The route-based `/worker` and any cron
+    // remain an optional safety net; shared committed/inflight leases make
+    // concurrent triggers a no-op rather than a double send.
+    let worker_drain: Arc<dyn WorkerHandler> = worker_handle.clone();
+    tokio::spawn(notify::run_stream_drain(worker_drain, drain_state));
     axum::serve(listener, app).await?;
     Ok(())
 }

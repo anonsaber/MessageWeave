@@ -13,7 +13,7 @@ use thiserror::Error;
 /// while credentials are never included in these messages.
 #[derive(Debug, Error)]
 pub enum JmapError {
-    #[error("JMAP client error")]
+    #[error("JMAP client error: {0}")]
     Client(#[from] jmap_client::Error),
     #[error("JMAP object was not found")]
     NotFound,

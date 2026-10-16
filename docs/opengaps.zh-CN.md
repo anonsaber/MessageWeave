@@ -19,9 +19,9 @@ TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），�
 | 1 | `Email/changes` 的 `newState` 语义 | 已关闭（提交 `269c8f6`） |
 | 2 | TTL 实测 | 已关闭（代码收口 `0890eb1` + 真机 `ttl` 两条断言跑通） |
 | 3 | Telegram 入站 / Stalwart `PushSubscription` 联调 | 已关闭（真实流量已驱动，操作步骤见 `README.md` §3.7） |
-| 4 | `/worker` 未在部署文档里 | 已关闭（`README.md` §3.10 已补） |
+| 4 | `/worker` 未在部署文档里 | 已关闭（`README.md` §3.10 已补；进程内 drain 后来把外部 `/worker` 触发降级为可选安全网，正常路径不再依赖外部调度器） |
 
-门禁：`cargo fmt --check` / `cargo check --locked` / `cargo clippy --locked --all-targets -- -D warnings` 全绿；`cargo test --locked` **106 passed / 0 failed / 4 ignored**（4 个 `#[ignore]` 里 2 个 TTL 断言已用真实 Upstash 跑过：`REDIS_TEST_URL=… cargo test --locked -- --ignored ttl` → **2 passed / 0 failed**；剩 2 个需要真实 JMAP 服务器，该能力已在 staging 联调验证）；文档门 6/6 全绿，含 49 处行号锚点非空校验。
+门禁：`cargo fmt --check` / `cargo check --locked` / `cargo clippy --locked --all-targets -- -D warnings` 全绿；`cargo test --locked` **111 passed / 0 failed / 4 ignored**（4 个 `#[ignore]` 里 2 个 TTL 断言已用真实 Upstash 跑过：`REDIS_TEST_URL=… cargo test --locked -- --ignored ttl` → **2 passed / 0 failed**；剩 2 个需要真实 JMAP 服务器，该能力已在 staging 联调验证）；文档门 6/6 全绿，含 49 处行号锚点非空校验。
 
 第 5 项不在阶段目标内：多账号产品决策，2026-09-28 已由用户定为不做，决定边界与将来要做的改动面见 §3。
 
@@ -113,6 +113,6 @@ TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），�
 
 ## 本轮发现并修复的部署文档问题
 
-`README.md` §3.10 原来只给了 `/reconcile` 的调度示例，而 `/worker`——全代码库唯一的队列消费入口——被描述成「运维手工触发」，且刻意不在 Worker 白名单里。**照文档照抄部署 = 邮件持续进队列、通知永远发不出去**，这正是联调环境积压了数天才被手工排空的成因。`README.md` §3.10 已补上 `/worker` 的调度步骤、顺序要求、批量上限与「204 不能当成功信号」的说明。
+`README.md` §3.10 原来只给了 `/reconcile` 的调度示例，而 `/worker`——全代码库唯一的队列消费入口——被描述成「运维手工触发」，且刻意不在 Worker 白名单里。**照文档照抄部署 = 邮件持续进队列、通知永远发不出去**，这正是联调环境积压了数天才被手工排空的成因。`README.md` §3.10 已补上 `/worker` 的调度步骤、顺序要求、批量上限与「204 不能当成功信号」的说明。后来进程内 stream drain（`notify::run_stream_drain`，一个被 spawn 的 10 秒循环 + 每次成功的 push 对账之后立即排空一次）把外部 `/worker` 触发从唯一消费路径降级成了**可选安全网**，`scripts/cron-drain.sh` 也相应降级。
 
-同时修正了 `docs/reference.md` 与 `docs/retired.md` 里 `/worker` 的锚点：原值 `notify.rs:340` 落在 `reconcile` 函数体内，锚点审计不会报错（该行存在且非空），但语义是错的；正确值是 `notify.rs:390`。
+同时修正了 `docs/reference.md` 与 `docs/retired.md` 里 `/worker` 的锚点：原值 `notify.rs:340` 落在 `reconcile` 函数体内，锚点审计不会报错（该行存在且非空），但语义是错的；正确值是 `notify.rs:390`。按仓库锚点策略，这些历史锚点未再回补（见 `AGENTS.md` §2.5）。

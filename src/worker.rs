@@ -36,15 +36,17 @@ pub trait WorkerHandler: Send + Sync {
     }
 
     /// Performs one bounded JMAP reconciliation pass. Implementations must not
-    /// persist the cursor; the HTTP coordinator commits it after enqueueing.
+    /// persist the cursor; the two commit sites — the `/reconcile` route
+    /// (`reconcile` in `src/notify.rs`) and `push_reconcile_delta` in
+    /// `src/notify.rs` — call `set_reconcile_state` after enqueuing.
     ///
     /// `initial_changes` sizes the first `/changes` call only. The pass may
     /// widen the window afterwards, which is why it is not called `max_changes`.
     ///
     /// On failure, returns a `&'static str` diagnostic code identifying which
-    /// step broke (e.g. `"jmap_session_failed"`, `"jmap_list_failed"`). The HTTP
-    /// layer surfaces this as a `reason` field in the 503 body so operators can
-    /// see the cause without server-side logs.
+    /// step broke (e.g. `"jmap_session_failed"`, `"jmap_list_failed"`). The
+    /// `/reconcile` route surfaces this as the `reason` field in the 503
+    /// body; `push_reconcile_delta` logs it and leaves the state unadvanced.
     async fn reconcile(
         &self,
         _since_state: Option<&str>,

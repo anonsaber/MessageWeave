@@ -695,8 +695,12 @@ Telegram、JMAP、allowlist、worker、reconcile 和 LLM 业务设置驻留在 R
 重复注册相同 URL 是幂等的。用一个不同的回调 URL 注册时，后端会先销毁上一个订阅，再创建新订阅并重指向当前指针映射，
 因此旧 origin 不再收到推送。调用 `POST /api/push/disable` 并传入该 URL 可删除订阅。
 
-后端没有内置调度器。外部调度器运行 [`scripts/cron-drain.sh`](../scripts/cron-drain.sh)：设置了 `MW_RECONCILE_TOKEN` 时，
-脚本先调用 `/reconcile`，再调用 `/worker`。在调度器的密钥管理器中配置 `MW_APP_URL`、`MW_WORKER_TOKEN`，
+正常排空路径是**进程内 stream drain**（`notify::run_stream_drain`）：一个派生的周期循环，每 10 秒排空一次 Redis Streams 队列，
+另在每次 push 对账成功后立即排空一次。它只由短 Redis 往返构成，不违反 `C-NO-LONG-CONN`（没有网络长连接）。
+共享 consumer group 加 per-message committed/in-flight 租约使重叠触发成为 no-op 而非双发。
+[`scripts/cron-drain.sh`](../scripts/cron-drain.sh) 是**可选的外部安全网**：
+它调用 `/reconcile`（设置了 `MW_RECONCILE_TOKEN` 时），再调用 `/worker`，覆盖进程内循环看不到的两种情况——
+Stalwart 压根未发出的 push，以及实例宕机期间堆积的邮件。在调度器的密钥管理器中配置 `MW_APP_URL`、`MW_WORKER_TOKEN`，
 以及可选的 `MW_RECONCILE_TOKEN`。需要绕过 Worker、直连后端源站时，可用 `MW_WORKER_URL` 覆盖默认地址。
 `--once` 用于 cron 单次运行，`--loop` 用于常驻进程；脚本还提供 `--diagnose` 和 `--test-notify` 排查问题。
 两个端点成功时均返回 `204` 和空响应正文。若另一轮对账仍持有锁，`/reconcile` 会返回 `409`。

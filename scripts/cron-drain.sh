@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # ============================================================================
-# cron-drain.sh — 让 Telegram 通知真正发出去的外部调度器。
+# cron-drain.sh — 出站队列排空与增量对账的外部安全网。
 #
-# 后端**没有任何内部调度器**（C-NO-LONG-CONN：无 tokio-cron、无后台 poller）。
-# 消费出站队列的唯一入口是 POST /worker，增量对账的唯一入口是 POST /reconcile，
-# 两者都必须由外部（cron / k8s CronJob / 定时器）触发。没有这一步，新邮件会一直
-# 堆在 Redis 队列里，通知永远不发——这是「收不到 Telegram 提醒」最常见的原因。
+# 后端现在有**进程内后台 drain**（`run_stream_drain`，每 10 秒一次；每次
+# Stalwart push reconcile 成功后还会立刻 drain 一次），正常路径不依赖本脚本。
+# 本脚本是补充安全网，覆盖进程内循环看不到的两种情况：Stalwart 压根没发出的
+# push，以及实例宕机时堆积的邮件。多实例/多触发并发安全由共享 consumer group
+# 与 per-message committed/in-flight 租约保证：重复触发是 no-op，不会双发。
 #
 # 两个端点的成功码都是 **204 且响应体为空**，不是 200：
 #   POST /reconcile  → 204 成功 / 401 / 409（另一轮进行中）/ 503（带 Retry-After）
 #   POST /worker     → 204 成功 / 400（body 非法）/ 401 / 503（带 Retry-After）
 # 因此看到 204 是正常的，不要当成失败。
 #
-# 详设计说明见 README.md 第 3.10 节（调度与探活）。
+# 详设计说明见 README.md 第 3.10 节（drain 时序与外部安全网）。
 #
 # --- 凭据只从环境变量或命令行 flag 读取 ---
 # 不读 .env、不读配置文件、不写盘（唯一例外是可选的 --log-file / MW_LOG_FILE 运行日志）。
@@ -419,7 +420,7 @@ diagnose() {
     field="$(json_field "$body" ok)"
     if [ "$field" != "true" ]; then
       say "  [4] Telegram bot token 无效 detail=$(json_field "$body" detail)"
-      say "        ★ 通知永远发不出去，与 cron 无关"
+      say "        ★ 通知永远发不出去（与排空机制无关：token 无效时谁来排空都不行）"
       issues=$((issues + 1))
     else
       say "  [4] Telegram bot token 有效（getMe 成功）"
@@ -463,12 +464,12 @@ diagnose() {
 
   say ""
   if [ "$issues" -gt 0 ]; then
-    say "结论：上面标 ★ 的 $issues 项要先修；修完再确认 cron 确实在执行本脚本"
-    say "      （crontab -l / kubectl get cronjob，或手动 bash 本脚本 --once 一次）。"
+    say "结论：上面标 ★ 的 $issues 项要先修；修完再跑一次本脚本 --once 复核"
+    say "      （后台 drain 是进程内的，本脚本只是外部安全网，不是必需步骤）。"
     FAILURES=$((FAILURES + issues))
   else
-    say "结论：配置与依赖全部正常。收不到提醒多半是调度没跑——"
-    say "      确认 cron 确实在执行本脚本，并看它的退出码是否为 0。"
+    say "结论：配置与依赖全部正常。正常路径下进程内 drain 会自动排空出站队列；"
+    say "      收不到提醒时，本脚本 --once 是一次性外部检查手段（看退出码）。"
   fi
 }
 
@@ -598,7 +599,7 @@ main() {
     [ "$DO_TEST_NOTIFY" -eq 1 ] && [ -z "$DEBUG_TOKEN" ] && die "直发测试需要 --debug-token / MW_DEBUG_TOKEN"
   else
     [ -n "$WORKER_URL" ] || usage_die "缺少 --worker-domain / MW_WORKER_DOMAIN（默认取 --app-domain）"
-    [ -n "$WORKER_TOKEN" ] || usage_die "缺少 --worker-token / MW_WORKER_TOKEN（/worker 是排空的唯一入口）"
+    [ -n "$WORKER_TOKEN" ] || usage_die "缺少 --worker-token / MW_WORKER_TOKEN（POST /worker 需要 Bearer 鉴权）"
   fi
 
   BODY_FILE="$(mktemp -d 2>/dev/null)/body" || die "无法创建临时目录"

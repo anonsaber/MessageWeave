@@ -234,8 +234,8 @@ Telegram 渠道用 `src/channel.rs` 的 `reqwest` 自研实现（`ARCH-DEPS-STAG
   1. 加载配置（`config::Config`）。
   2. 构造 `JmapService`（`Client::connect` 完成 session 解析、account_id 缓存、mailbox role→id 映射预热）；sinceState 从外部 Redis 恢复（`MOD-SINCESTATE`）。
   3. 启动 **HTTP 入口**（axum，单端口 `PORT`）：`/webhook/tg`、`/push/jmap`、`/reconcile`、`/healthz`、`/ready`；其中三条写路径先经 `SAF-AUTH-*` 入口鉴权（fail-closed，§7.3），`/healthz`、`/ready` 为公开探针（`SAF-PROBE-PUBLIC`）；`/ready` 已做端到端探测（配置 + Redis + 出站只读探测 JMAP session `GET` 与 TG `getMe`，各 3s、并行，最坏约 3s）。
-  4. 启动 **Redis Streams worker**（后台 task）消费 Push 事件 → `Email/changes` → 通知 → 发往 TG → 推进 sinceState → XACK。
-  5. **不持有任何长连接、不自建定时器**（`C-NO-LONG-CONN`）；对账由**外部 HTTPS Cron** 触发 `/reconcile`（`FLOW-RECONCILE`）。
+  4. 派生**进程内 stream drain**（`notify::run_stream_drain`，`src/main.rs` 中 `tokio::spawn` 循环）：每 `ttl::INPROC_DRAIN_INTERVAL_SECONDS`（10 s）排空一次 Redis Streams worker 队列（`stalwart:jmap`、`stalwart:telegram`）→ `Email/changes` → 通知 → 发往 TG → 推进 sinceState → XACK；每次 push 对账成功后立即再排空一次。drain 复用同一 consumer group，与 `/worker` 重叠触发时是 no-op 而非双发（`MOD-STREAMS-GROUP`、`MOD-DEDUP`）。
+  5. **不持有任何网络长连接**（`C-NO-LONG-CONN`）：每次 drain 迭代只是短 Redis 往返，形态与路由式 `POST /worker` 相同——无 WebSocket、SSE、长轮询或任何持久上游连接。drain 是进程内周期循环，不是网络长连接。对账还由**外部 HTTPS Cron** `/reconcile` 触发（`FLOW-RECONCILE`）；外部调度器现在是可选安全网（见 `scripts/cron-drain.sh`），不再是唯一排空路径。
 - 通知发送与命令处理共享 `Arc<JmapService>`，内部 `tokio::sync::RwLock` 保护可变缓存；跨请求状态一律落外部 Redis（`C-REDIS-ONLY-STATE`）。
 - **多实例与负载均衡（部署形态，`ARCH-LB-WORKER`）**：由于状态全在外部 Redis（`C-REDIS-ONLY-STATE`）且投递幂等（`MOD-DEDUP`），**同一镜像可跨多个 serverless 平台实例化**，前面用免费 Cloudflare Worker 做唯一入口与故障转移（`C-LB-SINGLE-REG-URL`）；`/reconcile` 用 Redis 锁单实例执行（`SAF-RECONCILE-LOCK`），Streams 用同一消费组自动分摊（`MOD-STREAMS-GROUP`）。详见 README.md §6.1。**领域/渠道逻辑无需改动。**
 - **生产红线（`C-NO-DB` / `C-NO-LOCAL-WRITE` / `C-LOG-STDOUT-ONLY` / `SAF-LOG-PURITY` / `C-NO-STATEFUL-RECOVERY`，详见 docs/charter.md §3 / docs/reference.md §9.1）**：
@@ -260,7 +260,7 @@ Stalwart JMAP Push → POST /push/jmap (StateChange{Email/EmailDelivery: new_sta
 ```
 > 关键：`Email/changes` 在 `created` 列出新建邮件 id，避免全量 `email_query`；`sinceState` 存外部 Redis（`C-REDIS-ONLY-STATE`），Redis 丢失时由对账从 JMAP 重建，**事实源在 JMAP**。
 > 通知只含发件人/主题/时间（+附件数），正文绝不出现在通知里（见 `docs/charter.md §3` 安全边界 `SAF-NOTIFY-META`）。
-> 无长连接：Push 为短请求回调，对账由**外部 HTTPS Cron**触发（`C-NO-LONG-CONN`），非容器内自持定时器。
+> 无长连接（`C-NO-LONG-CONN`）：Push 为短请求回调，进程内 stream drain 是短 Redis 往返的周期循环——无 WebSocket、SSE、长轮询或任何网络长连接。对账还可通过**外部 HTTPS Cron** 作为可选安全网触发。
 
 ### 5.5 数据流：`/read <seq>` 命令（长邮件分支）
 ```
@@ -624,12 +624,13 @@ pub enum BotError {
 ### 10.4 阶段 3.5：LLM 门面与回退（1.5 天，尚未执行）
 未实施，见 `docs/retired.md`。
 
-### 10.5 已实现能力：实时推送（推送回调 + Streams 工作进程 + 外部 Cron 定时协调）
+### 10.5 已实现能力：实时推送（推送回调 + 进程内 stream drain + 外部 Cron 安全网）
 `src/notify.rs` 是**单个近 2000 行的平铺文件**，没有子模块（下表中不存在 `notify::push_handler` / `notify::worker` / `notify::reconcile` / `mod_streams` / `mod_sincestate` 这些模块名，对应实现是文件内的自由函数）：
 - `register_push`（`POST /api/push/register`）：接受显式 HTTPS callback URL 并创建订阅；收到 Stalwart 推送时用 JMAP `PushSubscription/set` 回写 `verificationCode`。
 - `jmap_push`（`POST /push/jmap`）：校验 subscription ID + verificationCode → 去重 → 入 Redis Streams → 2xx。
-- `worker`（`POST /worker`）：Redis Streams 消费 → `Email/changes` 增量 → 通知 → 推进 sinceState → XACK。
-- `reconcile`（`POST /reconcile`）：外部 HTTPS Cron 触发（`FLOW-RECONCILE`）；兼做 Redis 丢失后的游标重建。**没有 CLI 子命令形态**。
+- 进程内 stream drain（`notify::run_stream_drain`，`src/main.rs` 中 `tokio::spawn` 循环）：每 `ttl::INPROC_DRAIN_INTERVAL_SECONDS`（10 s）一次，且每次 push 对账成功后立即一次，排空 Redis Streams worker 队列（`stalwart:jmap`、`stalwart:telegram`）→ `Email/changes` 增量 → 通知 → 推进 sinceState → XACK。只有短 Redis 往返（`C-NO-LONG-CONN`），不引入新的网络长连接。
+- `worker`（`POST /worker`）：与进程内循环共享同一 drain 核心，现为可选外部安全网。共享 consumer group 加 per-message committed/in-flight 租约使重叠触发成为 no-op 而非双发。
+- `reconcile`（`POST /reconcile`）：外部 HTTPS 触发（`FLOW-RECONCILE`），也是 `scripts/cron-drain.sh` 运行的可选安全网（覆盖 Stalwart 压根未发出的 push，以及实例宕机期间堆积的邮件）；兼做 Redis 丢失后的游标重建。**没有 CLI 子命令形态**。
 - sinceState 写外部 Redis（`state.rs`，`C-REDIS-ONLY-STATE`；不用 SQLite/文件 `NG-SQLITE-PERSIST`/`NG-LOCAL-VOLUME`）。
 - 目标验收：向 Stalwart 发测试邮件，经 Push 回调 + worker，Telegram 在 ~秒级收到推送；重启不重发；清空 Redis 后由对账补发。当前代码门禁已通过，但仍需在真实 Stalwart、Redis 和 Telegram 环境完成端到端验证，不能将此处目标当作已验证事实。
 
@@ -692,7 +693,7 @@ Push 事件经 Streams 消费并投递到 Telegram，其关键路径交付语义
 - 影响：`Credentials::Basic` 构造；无需 OAuth client / token 自动刷新模块。
 
 ### 11.2 实时通信渠道（已决定，参见 docs/charter.md §8）
-- 通道 = **JMAP Push HTTPS 回调 + 外部 Cron 对账与排空**（`C-NO-LONG-CONN`/`C-HTTPS-INBOUND`）；EventSource/SSE/WebSocket 均**非目标**（`NG-POLLING-SSE`）。Push 注册通过受保护的 `POST /api/push/register` 显式触发；外部 Cron 必须同时调 `/reconcile`（增量入队）与 `/worker`（排空并发通知）——**只调对账会让通知永远发不出去**（README.md §3.10）。
+- 通道 = **JMAP Push HTTPS 回调 + 进程内 stream drain（正常排空路径）+ 外部 Cron 对账安全网**（`C-NO-LONG-CONN`/`C-HTTPS-INBOUND`）；EventSource/SSE/WebSocket 均**非目标**（`NG-POLLING-SSE`）。Push 注册通过受保护的 `POST /api/push/register` 显式触发。排空与通知正常由**进程内 stream drain**（`notify::run_stream_drain`，每 10 s + 每次对账后立即一次）完成，不再依赖外部 Cron 调 `/worker`；`scripts/cron-drain.sh`（`--once` 跑 `/reconcile` 与 `/worker`）降级为**可选安全网**，覆盖 Stalwart 未发出的 push 与实例宕机堆积。共享 consumer group 与 per-message 租约使外部触发与进程内触发重叠时是 no-op 而非双发（README.md §3.10）。
 - Stalwart 侧接入已在真实环境验证：内置角色具备 `PushSubscription` 权限，注册、验证往返与真实回调投递全部走通。回调重试次数与幂等键 TTL / 对账间隔的匹配属于运维调参项，不是验收门槛：`docs/reference.md` §9.3 给重试建议、README.md §3.10 给对账间隔取值、`docs/reference.md` §1 说明幂等键 TTL 必须覆盖 TG rate-limit 回退上限。`docs/opengaps.md` 当前无未完成项。
 
 ### 11.3 部署形式（已确认，架构相关）
