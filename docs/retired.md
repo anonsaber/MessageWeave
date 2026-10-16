@@ -110,6 +110,7 @@ These names never exist in the code. Some of them appear in the directory tree o
 |---|---|---|---|
 | `docs/todo.md` | Superseded (deleted) | Unclear structure, overlapping with design/deployment, and once carrying historical narratives such as "this round has been closed" | First replaced by `docs/roadmap.md`, which was renamed and narrowed to `docs/opengaps.md` on 2026-09-29 (only unfinished/unverified gaps, blockages and next-stage goals are included) |
 | Temporary handover files in the root directory (no such files are left) | Temporary handover files, **never entered the git history** | Handover content should be returned to the permanent document, no temporary files in the root directory are left | Contents are merged into `docs/design.md`, `docs/reference.md`, `docs/opengaps.md` |
+| `HANDOFF-push-401.md` | Retired handover document (deleted 2026-10-16; committed as `09a108b`, still in git history) | One-off handover for the 2026-10-13 push-401 incident. All follow-ups closed: TTL of the push-verification key `push:subscription:{id}` 300s→0 (commits `d452f95` / `7331cb7`), verification reply / best-effort API call (`f9160c0`), verification-writeback vs. rate-limiter ordering (`3b36fe3`), and the full chain was confirmed by a real-machine user test on 2026-10-16. Its "two delivery paths" table is superseded by the in-process drain (`ac0f291`); the file was outside every validator's document list | Closing records and lessons in `docs/opengaps.md` §4 / §5; current facts in `docs/reference.md` |
 
 ---
 

@@ -111,6 +111,43 @@ Single accounts are fixed by requirement (`REQ-SINGLE-ACCOUNT`) and never enter 
 
 This item is not skipped, but explicitly rejected: the deployment unit saved by single instance and multiple accounts cannot be exchanged for the routing and cursor complexity it introduces.
 
+### 4. Push 401: the push-verification key carried a TTL (closed 2026-10-13)
+
+Symptom: Stalwart event pushes (`changed` batches hitting `jmap_push`) were rejected with 401 while the verification requests still passed; the cron reconcile path kept delivering, so mail arrived late instead of not at all.
+
+Root cause: the JMAP push verification code is stored under `push:subscription:{id}` with a TTL that had started at 300 s. Stalwart verifies a subscription exactly once, at registration, and never re-verifies: once the key expired, every subsequent event push was rejected with 401, silently.
+
+Fix chain (all committed):
+
+- `d452f95`: TTL 300 s → 604_800 s (a week).
+- `7331cb7`: → 0 (never expires). `ttl::PUSH_SUBSCRIPTION_SECONDS` is now 0, and the key is explicitly deleted by `forget_push_subscription` when a subscription is retired. A finite TTL here is a time bomb, not a cleanup mechanism.
+- `f9160c0`: the verification response conforms to RFC 8620 §7.2 (JSON `{"verificationCode": …}`); the outbound verification API call is best-effort — a failure still records the subscription.
+- `3b36fe3`: ordering fixed — `remember_push_subscription` runs before the rate limiter, so `ttl::PUSH_VERIFY_LIMIT_SECONDS` (30 s) now gates only the outbound API call and never the verification writeback.
+
+Lesson: state that an external server checks only once, at registration, must not carry an expiry. The correct posture is TTL 0 + an explicit delete path, not "let Redis sweep it later".
+
+### 5. Untimely delivery: the sole stream consumer was an out-of-process cron (closed 2026-10-16)
+
+Symptom: mail reached JMAP but the Telegram notification did not arrive for days; the stream backlog only drained when someone invoked the external `/worker` by hand.
+
+Root cause: the stream's only consumer was the external cron's `POST /reconcile` + `POST /worker`. When that cron was paused, enqueued messages sat unprocessed. (The deployment docs described `/worker` as "manual ops trigger" and deliberately kept it out of the Worker whitelist — that defect is recorded in the section "Deployment document defects discovered and fixed in this round".)
+
+Fix (`ac0f291`, in-process stream drain):
+
+- `notify::run_stream_drain` is spawned from `src/main.rs` as a 10 s loop (`ttl::INPROC_DRAIN_INTERVAL_SECONDS`), using the consumer `notify::INPROC_CONSUMER`; after each successful push reconcile it also does an immediate one-shot drain, so a push event is delivered within one drain interval instead of waiting for the next cron tick.
+- The external `/worker` shares the same Redis consumer group `stalwart-workers`, so overlapping triggers are no-ops, not double-sends. It is demoted to an optional safety net, and `scripts/cron-drain.sh` was demoted accordingly.
+- Charter invariant 21 ("no long polling scheduling") was re-stated in the same batch: the drain is a loop of short Redis round trips, not a long-lived connection.
+
+Confirmation: 2026-10-16, real-machine user test — the full mail→Telegram chain was confirmed working by the operator ("现在收到邮件了").
+
+Lesson: a sole delivery path must not depend on an out-of-process scheduler — cron can be paused or lost on restart. A Redis consumer group makes dual triggering idempotent, so the in-process loop and the external trigger can safely coexist.
+
+## Process lessons from the two incidents
+
+- **One-off handoff documents live outside every validator's document list.** `HANDOFF-push-401.md` (root, retired this round with a row in `docs/retired.md` "Deleted documents") carried "known residuals" that had already been fixed upstream, and no gate saw the drift. The stance is: retire such files, move reusable facts into the permanent documents, and verify on a real machine before closing the incident.
+- **When a fix inverts an assumption, docs move in the same batch.** The in-process drain made "external cron is the only trigger" false in `README.md` §3.10, `docs/design.md`, `docs/reference.md`, this file, and `docs/charter.md` (tech-choice "Scheduling" row + invariant 21); all of it was synced in the same batch as `ac0f291`.
+- **Real traffic is the final authority for "does it work".** Both incidents were closed by the operator's on-device confirmation, not by unit tests or doc-reading.
+
 ## Deployment document defects discovered and fixed in this round
 
 `README.md` §3.10 Originally, only the scheduling example of `/reconcile` was given, and `/worker` - the only queue consumption entry in the entire code base - was described as "manual triggering of operation and maintenance" and was deliberately not included in the Worker whitelist. **Copying the deployment according to the document = emails continue to be queued and notifications are never sent out**. This is the reason why the joint debugging environment is backlogged for several days before being emptied manually. `README.md` §3.10 The description of `/worker`’s scheduling steps, sequence requirements, batch limit and "204 cannot be used as a success signal" has been added. Later the in-process stream drain (`notify::run_stream_drain`, a spawned 10-second loop plus an immediate drain after each successful push reconcile) made the external `/worker` trigger an optional safety net instead of the only consumption path; `scripts/cron-drain.sh` was demoted accordingly.

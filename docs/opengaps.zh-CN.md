@@ -111,6 +111,43 @@ TTL 那条真机绿灯已经用你给的 Upstash URL 跑过了（见 §1），�
 
 这条不是被跳过，是被明确拒绝：单实例多账户省下的一个部署单元，换不来它引入的路由与游标复杂度。
 
+### 4. push 401：push 校验码带了 TTL（2026-10-13 已关闭）
+
+现象：Stalwart 事件推送（命中 `jmap_push` 的 `changed` 批次）被 401 拒绝，而校验请求本身仍然通过；cron 对账路径继续投递，所以表现为「邮件迟到」而不是「邮件不到」。
+
+根因：JMAP push 校验码存在 `push:subscription:{id}` 下，TTL 原为 300 s。Stalwart 只在订阅注册时校验一次，之后永不重新校验：键过期后，每次事件推送都被 401 拒绝，且没有任何告警。
+
+修复链（均已提交）：
+
+- `d452f95`：TTL 300 s → 604_800 s（一周）。
+- `7331cb7`：→ 0（永不过期）。`ttl::PUSH_SUBSCRIPTION_SECONDS` 现为 0，键在订阅退役时由 `forget_push_subscription` 显式删除。这里的有限 TTL 是定时炸弹，不是清理机制。
+- `f9160c0`：校验响应符合 RFC 8620 §7.2（JSON `{"verificationCode": …}`）；出站校验 API 调用改为尽力而为——调用失败仍记录订阅。
+- `3b36fe3`：顺序修正——`remember_push_subscription` 移到速率限制器之前，`ttl::PUSH_VERIFY_LIMIT_SECONDS`（30 s）现在只限制出站 API 调用，不会挡校验码落库。
+
+经验：外部服务器只在注册时校验一次的状态，绝不能带过期时间。正确姿态是 TTL 0 + 显式删除路径，而不是「让 Redis 以后扫掉」。
+
+### 5. 投递不及时：唯一的 stream 消费者是进程外 cron（2026-10-16 已关闭）
+
+现象：邮件到达 JMAP，但 Telegram 通知几天都没来；stream 积压直到有人手工触发外部 `/worker` 才排空。
+
+根因：stream 的唯一消费者是外部 cron 的 `POST /reconcile` + `POST /worker`。cron 被暂停时，入队消息无人处理。（部署文档当时把 `/worker` 描述为「运维手工触发」并刻意排除在 Worker 白名单之外——该文档缺陷记录在下文「本轮发现并修复的部署文档问题」。）
+
+修复（`ac0f291`，进程内 stream drain）：
+
+- `notify::run_stream_drain` 从 `src/main.rs` spawn 成一个 10 秒循环（`ttl::INPROC_DRAIN_INTERVAL_SECONDS`），消费者为 `notify::INPROC_CONSUMER`；每次成功的 push 对账之后立即排空一次，所以 push 事件在一次 drain 间隔内投递，不必等下一个 cron tick。
+- 外部 `/worker` 与它共用同一个 Redis 消费者组 `stalwart-workers`，重叠触发是空操作而不是重复发送。`/worker` 降级为可选安全网，`scripts/cron-drain.sh` 相应降级。
+- 章程不变量 21（「无长轮询调度」）在同一批里重新表述：drain 是短 Redis 往返的循环，不是长连接。
+
+确认：2026-10-16 真机用户测试，邮件→Telegram 全链路由运维在设备上确认通过（「现在收到邮件了」）。
+
+经验：唯一投递路径不能依赖进程外调度器——cron 会被暂停、会随重启丢失。Redis 消费者组让双重触发幂等，所以进程内循环与外部触发可以安全共存。
+
+## 两次事故沉淀的流程经验
+
+- **一次性交接文档不在任何校验器的文档清单里。** `HANDOFF-push-401.md`（仓库根，本轮退役并在 `docs/retired.md`「已删除文档」表留了一行）里的「已知残留」实际已在上游修复，而没有任何门禁发现这个漂移。对策：这类文件退役掉，可复用事实搬进常驻文档，事故收口前用真机验证。
+- **修改变了一个假设时，文档必须同批改。** 进程内 drain 让 `README.md` §3.10、`docs/design.md`、`docs/reference.md`、本文件、`docs/charter.md`（技术选型「调度」行 + 不变量 21）里「外部 cron 是唯一触发器」的表述都变成了假的；这几处在 `ac0f291` 同一批内同步完毕。
+- **真流量是「到底通不通」的最终权威。** 两次事故都以运维在设备上的确认为收口依据，而不是单测或读文档。
+
 ## 本轮发现并修复的部署文档问题
 
 `README.md` §3.10 原来只给了 `/reconcile` 的调度示例，而 `/worker`——全代码库唯一的队列消费入口——被描述成「运维手工触发」，且刻意不在 Worker 白名单里。**照文档照抄部署 = 邮件持续进队列、通知永远发不出去**，这正是联调环境积压了数天才被手工排空的成因。`README.md` §3.10 已补上 `/worker` 的调度步骤、顺序要求、批量上限与「204 不能当成功信号」的说明。后来进程内 stream drain（`notify::run_stream_drain`，一个被 spawn 的 10 秒循环 + 每次成功的 push 对账之后立即排空一次）把外部 `/worker` 触发从唯一消费路径降级成了**可选安全网**，`scripts/cron-drain.sh` 也相应降级。
